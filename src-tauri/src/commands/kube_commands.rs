@@ -910,7 +910,12 @@ pub fn kube_get_tunnel_local_port(store: State<'_, KubeClientStore>, env_id: Str
 }
 
 #[tauri::command]
-pub async fn kube_remove_client(store: State<'_, KubeClientStore>, env_id: String) -> Result<(), String> {
+pub async fn kube_remove_client(
+    store: State<'_, KubeClientStore>,
+    watch_store: State<'_, Arc<WatchStore>>,
+    env_id: String,
+) -> Result<(), String> {
+    watch_store.stop(&env_id).await;
     store.remove(&env_id).await;
     Ok(())
 }

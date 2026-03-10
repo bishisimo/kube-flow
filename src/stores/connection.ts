@@ -44,7 +44,10 @@ export function isConnectionError(msg: string): boolean {
     s.includes("timed out") ||
     s.includes("tunnel") ||
     s.includes("ssh") ||
-    s.includes("network")
+    s.includes("network") ||
+    s.includes("client error") ||
+    s.includes("serviceerror") ||
+    s.includes("failed to perform")
   );
 }
 
