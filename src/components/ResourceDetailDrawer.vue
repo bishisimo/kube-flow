@@ -262,10 +262,25 @@ async function applyEdit(yamlOverride?: string) {
 }
 
 watch(
-  () => [props.visible, props.envId, props.resource?.kind, props.resource?.name, props.resource?.namespace] as const,
-  ([visible, envId, kind, name]) => {
+  () => [props.visible, props.envId, props.resource?.kind, props.resource?.name, props.resource?.namespace, props.initialTab] as const,
+  ([visible, envId, kind, name, _namespace, initialTab]) => {
     if (visible && envId && kind && name) {
-      activeTab.value = "yaml";
+      let nextTab: DetailTab = "yaml";
+      if (initialTab === "editConfig" && (kind === "ConfigMap" || kind === "Secret")) {
+        nextTab = "editConfig";
+      } else if (
+        initialTab === "logs" &&
+        (kind === "Pod" ||
+          kind === "Deployment" ||
+          kind === "StatefulSet" ||
+          kind === "DaemonSet")
+      ) {
+        nextTab = "logs";
+      } else if (initialTab === "topology") {
+        nextTab = "topology";
+      }
+
+      activeTab.value = nextTab;
       fetchYaml();
     } else {
       rawYaml.value = "";
@@ -280,31 +295,15 @@ watch(
   { immediate: true }
 );
 
-watch(activeTab, (tab) => {
-  if (tab === "describe" && props.resource && !describeMarkdown.value && !describeLoading.value) {
-    fetchDescribe();
-  }
-  if ((tab === "edit" || tab === "editConfig") && rawYaml.value) {
-    editYaml.value = stripManagedFields(rawYaml.value);
-    editError.value = null;
-  }
-});
-
 watch(
-  () => [props.visible, props.initialTab] as const,
-  ([visible, initial]) => {
-    if (!visible) return;
-    if (initial === "editConfig" && (props.resource?.kind === "ConfigMap" || props.resource?.kind === "Secret")) {
-      activeTab.value = "editConfig";
-    } else if (
-      initial === "logs" &&
-      props.resource &&
-      (props.resource.kind === "Pod" ||
-        props.resource.kind === "Deployment" ||
-        props.resource.kind === "StatefulSet" ||
-        props.resource.kind === "DaemonSet")
-    ) {
-      activeTab.value = "logs";
+  () => [activeTab.value, rawYaml.value] as const,
+  ([tab, yaml]) => {
+    if (tab === "describe" && props.resource && !describeMarkdown.value && !describeLoading.value) {
+      fetchDescribe();
+    }
+    if ((tab === "edit" || tab === "editConfig") && yaml) {
+      editYaml.value = stripManagedFields(yaml);
+      editError.value = null;
     }
   }
 );
@@ -392,7 +391,7 @@ watch(
                 :class="{ active: activeTab === 'topology' }"
                 @click="activeTab = 'topology'"
               >
-                关联
+                关联资源
               </button>
             </div>
             <template v-if="activeTab === 'yaml' && rawYaml">

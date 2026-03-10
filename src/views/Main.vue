@@ -394,6 +394,12 @@ function openEditConfig() {
   closeActionMenu();
 }
 
+function openTopology() {
+  detailDrawerInitialTab.value = "topology";
+  detailDrawerVisible.value = true;
+  closeActionMenu();
+}
+
 function openChangeImageModal() {
   changeImageModalVisible.value = true;
   closeActionMenu();
@@ -1753,6 +1759,13 @@ onUnmounted(() => {
             @click="openChangeImageModal"
           >
             修改镜像
+          </button>
+          <button 
+            type="button" 
+            class="action-menu-item" 
+            @click="openTopology"
+          >
+            关联资源
           </button>
           <button type="button" class="action-menu-item action-menu-item-danger" @click="openDeleteConfirm">
             删除

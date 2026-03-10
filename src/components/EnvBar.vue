@@ -18,7 +18,7 @@ const {
   setCurrent,
   closeEnv,
 } = useEnvStore();
-const { getState, getProgress, getError } = useConnectionStore();
+const { getState, getError } = useConnectionStore();
 
 const hasOpened = computed(() => openedEnvs.value.length > 0);
 
