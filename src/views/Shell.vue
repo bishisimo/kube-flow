@@ -2,27 +2,35 @@
 import { ref, computed, onMounted, watch } from "vue";
 import { useEnvStore } from "../stores/env";
 import { useShellStore } from "../stores/shell";
+import { useOrchestratorStore } from "../stores/orchestrator";
 import EnvManage from "./EnvManage.vue";
 import Main from "./Main.vue";
 import PodShellView from "./PodShellView.vue";
 import Settings from "./Settings.vue";
 import LogView from "./LogView.vue";
+import ResourceOrchestratorView from "./ResourceOrchestratorView.vue";
 
-type TabId = "env" | "main" | "shell" | "settings" | "log";
+type TabId = "env" | "main" | "orchestrator" | "shell" | "settings" | "log";
 
 const currentTab = ref<TabId>("env");
-const { openedEnvs, loadEnvironments } = useEnvStore();
+const { environments, openedEnvs, loadEnvironments } = useEnvStore();
 const { switchToShellRequested } = useShellStore();
+const { switchToOrchestratorRequested } = useOrchestratorStore();
 
 watch(switchToShellRequested, () => {
   if (canAccessMain.value) setTab("shell");
 });
+watch(switchToOrchestratorRequested, () => {
+  if (canAccessOrchestrator.value) setTab("orchestrator");
+});
 
 const canAccessMain = computed(() => openedEnvs.value.length > 0);
 const canAccessShell = computed(() => openedEnvs.value.length > 0);
+const canAccessOrchestrator = computed(() => environments.value.length > 0);
 
 function setTab(tab: TabId) {
   if ((tab === "main" || tab === "shell") && !canAccessMain.value) return;
+  if (tab === "orchestrator" && !canAccessOrchestrator.value) return;
   currentTab.value = tab;
 }
 
@@ -59,6 +67,16 @@ onMounted(async () => {
       <button
         type="button"
         class="tab"
+        :class="{ active: currentTab === 'orchestrator', disabled: !canAccessOrchestrator }"
+        :title="canAccessOrchestrator ? '资源编排台' : '请先创建至少一个环境'"
+        :disabled="!canAccessOrchestrator"
+        @click="setTab('orchestrator')"
+      >
+        资源编排台
+      </button>
+      <button
+        type="button"
+        class="tab"
         :class="{ active: currentTab === 'shell', disabled: !canAccessShell }"
         :title="canAccessShell ? 'Pod Shell' : '请先在环境管理中打开至少一个环境'"
         :disabled="!canAccessShell"
@@ -86,6 +104,7 @@ onMounted(async () => {
     <main class="shell-content">
       <EnvManage v-show="currentTab === 'env'" @use-env="onUseEnv" />
       <Main v-show="currentTab === 'main'" />
+      <ResourceOrchestratorView v-show="currentTab === 'orchestrator'" />
       <PodShellView v-show="currentTab === 'shell'" />
       <Settings v-show="currentTab === 'settings'" />
       <LogView v-show="currentTab === 'log'" :visible="currentTab === 'log'" />

@@ -13,7 +13,7 @@ import {
   kubeDescribeResource,
   kubeGetResource,
 } from "../api/kube";
-import { useYamlTheme } from "../stores/yamlTheme";
+import { useYamlMonacoTheme } from "../stores/yamlTheme";
 import { useShellStore } from "../stores/shell";
 import { useEnvStore } from "../stores/env";
 
@@ -58,7 +58,7 @@ const describeError = ref<string | null>(null);
 const editError = ref<string | null>(null);
 const editSaving = ref(false);
 const showManagedFields = ref(false);
-const { themeId } = useYamlTheme();
+const { monacoTheme } = useYamlMonacoTheme();
 const { pendingOpen, requestSwitchToShell } = useShellStore();
 const { openedEnvs } = useEnvStore();
 
@@ -90,19 +90,6 @@ function openPodShell() {
 }
 
 
-const MONACO_DARK_THEMES = new Set([
-  "atom-one-dark",
-  "monokai",
-  "dracula",
-  "nord",
-  "github-dark",
-  "vs2015",
-  "tomorrow-night-bright",
-  "shades-of-purple",
-]);
-const monacoTheme = computed(() =>
-  MONACO_DARK_THEMES.has(themeId.value) ? "vs-dark" : "vs"
-);
 const monacoOptions = {
   fontSize: 13,
   minimap: { enabled: false },

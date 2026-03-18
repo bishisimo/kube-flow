@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
+import * as jsYaml from "js-yaml";
 import { useEnvStore } from "../stores/env";
 import EnvBar from "../components/EnvBar.vue";
 import { RESOURCE_GROUPS, RESOURCE_KINDS_FLAT, type ResourceKind } from "../constants/resourceKinds";
@@ -13,7 +14,9 @@ import { kubeDeleteResource, kubeRemoveClient } from "../api/kube";
 import { useConnectionStore, isConnectionError } from "../stores/connection";
 import { useSshAuthStore } from "../stores/sshAuth";
 import { useShellStore } from "../stores/shell";
+import { useOrchestratorStore } from "../stores/orchestrator";
 import {
+  kubeGetResource,
   kubeListNamespaces,
   kubeStartWatch,
   kubeStopWatch,
@@ -81,6 +84,7 @@ import { defaultNamespace } from "../api/env";
 
 const { openedEnvs, currentEnv, currentId, touchEnv, loadEnvironments, getEnvViewState, setEnvViewState } = useEnvStore();
 const { pendingOpen, requestSwitchToShell } = useShellStore();
+const { upsertFromWorkbenchSync, requestSwitchToOrchestrator } = useOrchestratorStore();
 const {
   getProgress,
   getState,
@@ -427,6 +431,131 @@ function openDeleteConfirm() {
   deleteConfirmError.value = null;
   deleteConfirmVisible.value = true;
   closeActionMenu();
+}
+
+async function syncToOrchestrator() {
+  const envId = currentId.value;
+  const envName = currentEnv.value?.display_name;
+  const r = selectedResource.value;
+  if (!envId || !envName || !r) return;
+  try {
+    const yaml = await kubeGetResource(envId, r.kind, r.name, r.namespace);
+    const componentName = r.name;
+    upsertFromWorkbenchSync(envId, envName, r, yaml, componentName);
+    const relatedRefs = collectConfigAndSecretRefsFromWorkloadYaml(yaml, r.namespace ?? "default");
+    if (relatedRefs.length > 0) {
+      const failed: string[] = [];
+      for (const ref of relatedRefs) {
+        try {
+          const relatedYaml = await kubeGetResource(envId, ref.kind, ref.name, ref.namespace);
+          upsertFromWorkbenchSync(
+            envId,
+            envName,
+            { kind: ref.kind, name: ref.name, namespace: ref.namespace },
+            relatedYaml,
+            componentName
+          );
+        } catch (e) {
+          failed.push(`${ref.kind}/${ref.name}: ${extractErrorMessage(e)}`);
+        }
+      }
+      if (failed.length > 0) {
+        listError.value = `主资源已同步，部分关联资源同步失败：${failed.join("；")}`;
+      }
+    }
+    requestSwitchToOrchestrator();
+  } catch (e) {
+    listError.value = extractErrorMessage(e);
+  } finally {
+    closeActionMenu();
+  }
+}
+
+function collectConfigAndSecretRefsFromWorkloadYaml(
+  yaml: string,
+  defaultNamespace: string
+): Array<{ kind: "ConfigMap" | "Secret"; name: string; namespace: string | null }> {
+  let parsed: unknown;
+  try {
+    parsed = jsYaml.load(yaml);
+  } catch {
+    return [];
+  }
+  if (!parsed || typeof parsed !== "object") return [];
+  const obj = parsed as Record<string, unknown>;
+  const kind = typeof obj.kind === "string" ? obj.kind : "";
+  if (!["Deployment", "StatefulSet", "DaemonSet"].includes(kind)) return [];
+
+  const spec = obj.spec && typeof obj.spec === "object" ? (obj.spec as Record<string, unknown>) : null;
+  const template =
+    spec?.template && typeof spec.template === "object" ? (spec.template as Record<string, unknown>) : null;
+  const podSpec =
+    template?.spec && typeof template.spec === "object" ? (template.spec as Record<string, unknown>) : null;
+  if (!podSpec) return [];
+
+  const refs: Array<{ kind: "ConfigMap" | "Secret"; name: string; namespace: string | null }> = [];
+  const pushRef = (refKind: "ConfigMap" | "Secret", refName: string) => {
+    const n = refName.trim();
+    if (!n) return;
+    refs.push({ kind: refKind, name: n, namespace: defaultNamespace || "default" });
+  };
+
+  const volumes = Array.isArray(podSpec.volumes) ? (podSpec.volumes as Array<Record<string, unknown>>) : [];
+  for (const v of volumes) {
+    const cm = v.configMap && typeof v.configMap === "object" ? (v.configMap as Record<string, unknown>) : null;
+    if (cm && typeof cm.name === "string") pushRef("ConfigMap", cm.name);
+    const sec = v.secret && typeof v.secret === "object" ? (v.secret as Record<string, unknown>) : null;
+    if (sec && typeof sec.secretName === "string") pushRef("Secret", sec.secretName);
+  }
+
+  const imagePullSecrets = Array.isArray(podSpec.imagePullSecrets)
+    ? (podSpec.imagePullSecrets as Array<Record<string, unknown>>)
+    : [];
+  for (const s of imagePullSecrets) {
+    if (typeof s.name === "string") pushRef("Secret", s.name);
+  }
+
+  const containers = [
+    ...(Array.isArray(podSpec.containers) ? (podSpec.containers as Array<Record<string, unknown>>) : []),
+    ...(Array.isArray(podSpec.initContainers) ? (podSpec.initContainers as Array<Record<string, unknown>>) : []),
+  ];
+  for (const c of containers) {
+    const envFrom = Array.isArray(c.envFrom) ? (c.envFrom as Array<Record<string, unknown>>) : [];
+    for (const ef of envFrom) {
+      const cm =
+        ef.configMapRef && typeof ef.configMapRef === "object"
+          ? (ef.configMapRef as Record<string, unknown>)
+          : null;
+      if (cm && typeof cm.name === "string") pushRef("ConfigMap", cm.name);
+      const sec =
+        ef.secretRef && typeof ef.secretRef === "object" ? (ef.secretRef as Record<string, unknown>) : null;
+      if (sec && typeof sec.name === "string") pushRef("Secret", sec.name);
+    }
+
+    const envList = Array.isArray(c.env) ? (c.env as Array<Record<string, unknown>>) : [];
+    for (const env of envList) {
+      const valueFrom =
+        env.valueFrom && typeof env.valueFrom === "object"
+          ? (env.valueFrom as Record<string, unknown>)
+          : null;
+      const cmRef =
+        valueFrom?.configMapKeyRef && typeof valueFrom.configMapKeyRef === "object"
+          ? (valueFrom.configMapKeyRef as Record<string, unknown>)
+          : null;
+      if (cmRef && typeof cmRef.name === "string") pushRef("ConfigMap", cmRef.name);
+      const secRef =
+        valueFrom?.secretKeyRef && typeof valueFrom.secretKeyRef === "object"
+          ? (valueFrom.secretKeyRef as Record<string, unknown>)
+          : null;
+      if (secRef && typeof secRef.name === "string") pushRef("Secret", secRef.name);
+    }
+  }
+
+  const dedup = new Map<string, { kind: "ConfigMap" | "Secret"; name: string; namespace: string | null }>();
+  for (const ref of refs) {
+    dedup.set(`${ref.kind}|${ref.namespace ?? ""}|${ref.name}`, ref);
+  }
+  return Array.from(dedup.values());
 }
 
 function enterBatchDeleteMode() {
@@ -1799,6 +1928,9 @@ onUnmounted(() => {
             @click="openTopology"
           >
             关联资源
+          </button>
+          <button type="button" class="action-menu-item" @click="syncToOrchestrator">
+            同步到资源编排台
           </button>
           <button type="button" class="action-menu-item action-menu-item-danger" @click="openDeleteConfirm">
             删除

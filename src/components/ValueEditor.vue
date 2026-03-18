@@ -2,7 +2,7 @@
 import { computed } from "vue";
 import * as jsYaml from "js-yaml";
 import { CodeEditor } from "monaco-editor-vue3";
-import { useYamlTheme } from "../stores/yamlTheme";
+import { useYamlMonacoTheme } from "../stores/yamlTheme";
 
 /** 根据内容推断 value 的格式，用于语法高亮。JSON 优先，否则尝试 YAML 结构，默认 plaintext。 */
 function detectValueLanguage(value: string): "json" | "yaml" | "plaintext" {
@@ -40,20 +40,7 @@ const emit = defineEmits<{
   (e: "update:modelValue", v: string): void;
 }>();
 
-const { themeId } = useYamlTheme();
-const MONACO_DARK_THEMES = new Set([
-  "atom-one-dark",
-  "monokai",
-  "dracula",
-  "nord",
-  "github-dark",
-  "vs2015",
-  "tomorrow-night-bright",
-  "shades-of-purple",
-]);
-const monacoTheme = computed(() =>
-  MONACO_DARK_THEMES.has(themeId.value) ? "vs-dark" : "vs"
-);
+const { monacoTheme } = useYamlMonacoTheme();
 const language = computed(() => detectValueLanguage(props.modelValue));
 
 const monacoOptions = computed(() => ({

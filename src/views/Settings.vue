@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
+import { CodeEditor } from "monaco-editor-vue3";
 import {
   logGetLevel,
   logSetLevel,
@@ -13,7 +14,7 @@ import {
   type LogDisplayFormat,
 } from "../api/log";
 import { useLogStore } from "../stores/log";
-import { useYamlTheme, YAML_THEMES } from "../stores/yamlTheme";
+import { useYamlTheme, useYamlMonacoTheme, YAML_THEMES } from "../stores/yamlTheme";
 import {
   appSettingsGetSshTunnelMode,
   appSettingsSetSshTunnelMode,
@@ -36,24 +37,59 @@ import {
   type CredentialStoreKind,
 } from "../api/credential";
 
-type CategoryId = "debug" | "ssh" | "security" | "appearance";
+type CategoryId = "appearance" | "debug" | "ssh" | "security";
 
 const CATEGORIES: { id: CategoryId; label: string; icon: string }[] = [
+  { id: "appearance", label: "外观", icon: "🎨" },
   { id: "debug", label: "调试", icon: "🔧" },
   { id: "ssh", label: "SSH 隧道", icon: "📡" },
   { id: "security", label: "安全与凭证", icon: "🔒" },
-  { id: "appearance", label: "外观", icon: "🎨" },
 ];
 
 const { themeId } = useYamlTheme();
+const { monacoTheme } = useYamlMonacoTheme();
 const { triggerLogRefresh } = useLogStore();
-const activeCategory = ref<CategoryId>("debug");
+const activeCategory = ref<CategoryId>("appearance");
 const currentLevel = ref<string>("off");
 const currentOrder = ref<LogDisplayOrder>("asc");
 const currentFormat = ref<LogDisplayFormat>("json");
 const currentSshTunnelMode = ref<TunnelMappingMode>("ssh");
 const saving = ref(false);
 const message = ref<string | null>(null);
+const yamlThemePreview = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app
+  namespace: default
+  labels:
+    app: web-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web-app
+  template:
+    metadata:
+      labels:
+        app: web-app
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27
+          ports:
+            - containerPort: 80
+          env:
+            - name: LOG_LEVEL
+              value: info`;
+const previewOptions = {
+  readOnly: true,
+  minimap: { enabled: false },
+  automaticLayout: true,
+  wordWrap: "on",
+  lineNumbers: "on",
+  scrollBeyondLastLine: false,
+  fontSize: 13,
+};
 
 // 安全与凭证
 const securityCfg = ref<SecurityConfig>({
@@ -608,6 +644,17 @@ onMounted(() => {
               <option v-for="t in YAML_THEMES" :key="t.id" :value="t.id">{{ t.label }}</option>
             </select>
           </div>
+          <p class="card-desc preview-desc">示例 YAML 会实时应用当前主题，便于对比视觉效果。</p>
+          <div class="yaml-preview-wrap">
+            <CodeEditor
+              :key="`yaml-theme-preview-${themeId}`"
+              :value="yamlThemePreview"
+              language="yaml"
+              :theme="monacoTheme"
+              :options="previewOptions"
+              class="yaml-preview-editor"
+            />
+          </div>
         </section>
       </template>
     </main>
@@ -787,6 +834,19 @@ onMounted(() => {
   outline: none;
   border-color: #2563eb;
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+.preview-desc {
+  margin-top: 1rem;
+  margin-bottom: 0.75rem;
+}
+.yaml-preview-wrap {
+  height: 300px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.yaml-preview-editor {
+  height: 100%;
 }
 
 /* 安全与凭证 */
