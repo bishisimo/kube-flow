@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, watch, onMounted } from "vue";
+import { ref, watch, onMounted, onUnmounted } from "vue";
 import { useShellStore } from "../stores/shell";
 import { useEnvStore } from "../stores/env";
 import {
   kubePodExecStart,
   kubePodExecStop,
+  kubeRemoveClient,
   kubeGetPodContainers,
   kubeListPodsForWorkload,
   type PodItem,
@@ -29,6 +30,118 @@ const sessionListCollapsed = ref(false);
 const podOptions = ref<PodItem[]>([]);
 const containerOptions = ref<string[]>([]);
 const switcherLoading = ref(false);
+const reconnectAttemptMap = ref<Record<string, number>>({});
+const reconnectTimerMap = new Map<string, ReturnType<typeof setTimeout>>();
+const reconnectingSessionIds = new Set<string>();
+const suppressEndStreamIds = new Set<string>();
+
+const RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000, 15000];
+const MAX_RECONNECT_ATTEMPTS = RECONNECT_DELAYS_MS.length;
+
+function extractErrorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+function isLikelyConnectionError(message?: string): boolean {
+  if (!message) return false;
+  const m = message.toLowerCase();
+  return [
+    "timeout",
+    "timed out",
+    "connection reset",
+    "broken pipe",
+    "eof",
+    "disconnected",
+    "unreachable",
+    "transport",
+    "ssh",
+    "tcp",
+    "session not found",
+  ].some((k) => m.includes(k));
+}
+
+function clearReconnectState(sessionId: string) {
+  const next = { ...reconnectAttemptMap.value };
+  delete next[sessionId];
+  reconnectAttemptMap.value = next;
+  const timer = reconnectTimerMap.get(sessionId);
+  if (timer) {
+    clearTimeout(timer);
+    reconnectTimerMap.delete(sessionId);
+  }
+  reconnectingSessionIds.delete(sessionId);
+}
+
+function markStreamSuppressEnd(streamId: string | null) {
+  if (streamId) suppressEndStreamIds.add(streamId);
+}
+
+async function tryReconnectSession(sessionId: string, resetClient: boolean): Promise<boolean> {
+  if (reconnectingSessionIds.has(sessionId)) return false;
+  const s = sessions.value.find((x) => x.id === sessionId);
+  if (!s) return false;
+  reconnectingSessionIds.add(sessionId);
+  try {
+    if (resetClient) {
+      await kubeRemoveClient(s.envId).catch(() => {});
+    }
+    const streamId = await kubePodExecStart(
+      s.envId,
+      s.namespace,
+      s.podName,
+      s.container || null
+    );
+    updateSession(sessionId, {
+      streamId,
+      status: "connected",
+      error: undefined,
+    });
+    clearReconnectState(sessionId);
+    return true;
+  } catch (e) {
+    updateSession(sessionId, {
+      streamId: null,
+      status: "reconnecting",
+      error: extractErrorMessage(e),
+    });
+    return false;
+  } finally {
+    reconnectingSessionIds.delete(sessionId);
+  }
+}
+
+function scheduleReconnect(sessionId: string, reason?: string) {
+  const s = sessions.value.find((x) => x.id === sessionId);
+  if (!s || reconnectTimerMap.has(sessionId)) return;
+  const attempt = (reconnectAttemptMap.value[sessionId] ?? 0) + 1;
+  reconnectAttemptMap.value = { ...reconnectAttemptMap.value, [sessionId]: attempt };
+  if (attempt > MAX_RECONNECT_ATTEMPTS) {
+    updateSession(sessionId, {
+      streamId: null,
+      status: "disconnected",
+      error: reason
+        ? `${reason}；已重试 ${MAX_RECONNECT_ATTEMPTS} 次，连接仍未恢复`
+        : `已重试 ${MAX_RECONNECT_ATTEMPTS} 次，连接仍未恢复`,
+    });
+    return;
+  }
+  const delay = RECONNECT_DELAYS_MS[Math.min(attempt - 1, RECONNECT_DELAYS_MS.length - 1)];
+  updateSession(sessionId, {
+    streamId: null,
+    status: "reconnecting",
+    error: `连接中断，${Math.round(delay / 1000)} 秒后进行第 ${attempt} 次重连`,
+  });
+  const timer = setTimeout(async () => {
+    reconnectTimerMap.delete(sessionId);
+    const resetClient = isLikelyConnectionError(reason);
+    const ok = await tryReconnectSession(sessionId, resetClient);
+    if (!ok) {
+      const latest = sessions.value.find((x) => x.id === sessionId);
+      scheduleReconnect(sessionId, latest?.error ?? reason);
+    }
+  }, delay);
+  reconnectTimerMap.set(sessionId, timer);
+}
 
 async function openConnection(
   envId: string,
@@ -55,11 +168,12 @@ async function openConnection(
       podName,
       container || null
     );
-    updateSession(id, { streamId, status: "connected" });
+    updateSession(id, { streamId, status: "connected", error: undefined });
+    clearReconnectState(id);
   } catch (e) {
     updateSession(id, {
       status: "error",
-      error: e instanceof Error ? e.message : String(e),
+      error: extractErrorMessage(e),
     });
   }
 }
@@ -163,8 +277,10 @@ async function switchPod(newPodName: string) {
   const s = currentSession.value;
   if (!s || s.podName === newPodName) return;
   if (s.streamId) {
+    markStreamSuppressEnd(s.streamId);
     await kubePodExecStop(s.streamId);
   }
+  clearReconnectState(s.id);
   updateSession(s.id, { streamId: null, status: "connecting", podName: newPodName });
   try {
     const containers = await kubeGetPodContainers(s.envId, s.namespace, newPodName);
@@ -176,12 +292,12 @@ async function switchPod(newPodName: string) {
       newPodName,
       container || null
     );
-    updateSession(s.id, { streamId, status: "connected" });
+    updateSession(s.id, { streamId, status: "connected", error: undefined });
     containerOptions.value = containers;
   } catch (e) {
     updateSession(s.id, {
       status: "error",
-      error: e instanceof Error ? e.message : String(e),
+      error: extractErrorMessage(e),
     });
   }
 }
@@ -190,8 +306,10 @@ async function switchContainer(newContainer: string) {
   const s = currentSession.value;
   if (!s || s.container === newContainer) return;
   if (s.streamId) {
+    markStreamSuppressEnd(s.streamId);
     await kubePodExecStop(s.streamId);
   }
+  clearReconnectState(s.id);
   updateSession(s.id, { streamId: null, status: "connecting", container: newContainer });
   try {
     const streamId = await kubePodExecStart(
@@ -200,11 +318,11 @@ async function switchContainer(newContainer: string) {
       s.podName,
       newContainer || null
     );
-    updateSession(s.id, { streamId, status: "connected" });
+    updateSession(s.id, { streamId, status: "connected", error: undefined });
   } catch (e) {
     updateSession(s.id, {
       status: "error",
-      error: e instanceof Error ? e.message : String(e),
+      error: extractErrorMessage(e),
     });
   }
 }
@@ -212,16 +330,41 @@ async function switchContainer(newContainer: string) {
 function closeSession(id: string) {
   const s = sessions.value.find((x) => x.id === id);
   if (s?.streamId) {
+    markStreamSuppressEnd(s.streamId);
     kubePodExecStop(s.streamId).catch(() => {});
   }
+  clearReconnectState(id);
   removeSession(id);
 }
 
-function onTerminalEnd(sessionId: string, error?: string) {
+function onTerminalEnd(sessionId: string, payload: { streamId: string; error?: string }) {
+  if (suppressEndStreamIds.has(payload.streamId)) {
+    suppressEndStreamIds.delete(payload.streamId);
+    return;
+  }
+  const s = sessions.value.find((x) => x.id === sessionId);
+  if (!s) return;
+  if (s.streamId && s.streamId !== payload.streamId) return;
   updateSession(sessionId, {
-    status: "closed",
-    error: error ?? undefined,
+    streamId: null,
+    status: "reconnecting",
+    error: payload.error ?? "Shell 连接已断开",
   });
+  scheduleReconnect(sessionId, payload.error);
+}
+
+async function reconnectSessionNow(sessionId: string) {
+  clearReconnectState(sessionId);
+  updateSession(sessionId, {
+    streamId: null,
+    status: "reconnecting",
+    error: "正在重连…",
+  });
+  const ok = await tryReconnectSession(sessionId, true);
+  if (!ok) {
+    const latest = sessions.value.find((x) => x.id === sessionId);
+    scheduleReconnect(sessionId, latest?.error ?? "重连失败");
+  }
 }
 
 watch(pendingOpen, (p) => {
@@ -253,6 +396,13 @@ watch(
 onMounted(() => {
   if (pendingOpen.value) handlePendingOpen();
 });
+
+onUnmounted(() => {
+  for (const timer of reconnectTimerMap.values()) clearTimeout(timer);
+  reconnectTimerMap.clear();
+  reconnectingSessionIds.clear();
+  suppressEndStreamIds.clear();
+});
 </script>
 
 <template>
@@ -276,10 +426,17 @@ onMounted(() => {
             {{ s.podName }}{{ s.container ? ` (${s.container})` : "" }}
           </span>
           <span
-            v-if="s.status === 'connecting'"
+            v-if="s.status === 'connecting' || s.status === 'reconnecting'"
             class="status-badge connecting"
           >
-            连接中
+            {{ s.status === "reconnecting" ? "重连中" : "连接中" }}
+          </span>
+          <span
+            v-else-if="s.status === 'disconnected'"
+            class="status-badge error"
+            :title="s.error"
+          >
+            已断开
           </span>
           <span
             v-else-if="s.status === 'error'"
@@ -307,7 +464,7 @@ onMounted(() => {
       <div
         v-if="
           currentSession &&
-          (currentSession.streamId || currentSession.status === 'connecting')
+          (currentSession.streamId || currentSession.status === 'connecting' || currentSession.status === 'reconnecting')
         "
         class="shell-terminal-wrap"
       >
@@ -317,7 +474,7 @@ onMounted(() => {
             <select
               :value="currentSession.podName"
               class="switcher-select"
-              :disabled="switcherLoading || currentSession.status === 'connecting'"
+              :disabled="switcherLoading || currentSession.status === 'connecting' || currentSession.status === 'reconnecting'"
               @change="switchPod(($event.target as HTMLSelectElement).value)"
             >
               <option v-for="po in podOptions" :key="po.name" :value="po.name">
@@ -330,7 +487,7 @@ onMounted(() => {
             <select
               :value="currentSession.container"
               class="switcher-select"
-              :disabled="currentSession.status === 'connecting'"
+              :disabled="currentSession.status === 'connecting' || currentSession.status === 'reconnecting'"
               @change="switchContainer(($event.target as HTMLSelectElement).value)"
             >
               <option v-for="c in containerOptions" :key="c" :value="c">
@@ -345,20 +502,33 @@ onMounted(() => {
           @end="onTerminalEnd(currentSession.id, $event)"
         />
         <div v-else class="empty-state connecting">
-          正在连接 {{ currentSession.podName }}…
+          <p v-if="currentSession.status === 'reconnecting'">
+            正在重连 {{ currentSession.podName }}…
+          </p>
+          <p v-else>
+            正在连接 {{ currentSession.podName }}…
+          </p>
+          <p v-if="currentSession.error" class="reconnect-hint">{{ currentSession.error }}</p>
         </div>
       </div>
-      <template v-else-if="currentSession && currentSession.status === 'connecting'">
+      <template v-else-if="currentSession && (currentSession.status === 'connecting' || currentSession.status === 'reconnecting')">
         <div class="empty-state">
-          <p>正在连接 {{ currentSession.podName }}…</p>
+          <p v-if="currentSession.status === 'reconnecting'">正在重连 {{ currentSession.podName }}…</p>
+          <p v-else>正在连接 {{ currentSession.podName }}…</p>
+          <p v-if="currentSession.error" class="reconnect-hint">{{ currentSession.error }}</p>
         </div>
       </template>
-      <template v-else-if="currentSession && currentSession.status === 'error'">
+      <template v-else-if="currentSession && (currentSession.status === 'error' || currentSession.status === 'disconnected')">
         <div class="empty-state error">
           <p>连接失败：{{ currentSession.error }}</p>
-          <button type="button" class="btn-reconnect" @click="closeSession(currentSession.id)">
-            关闭
-          </button>
+          <div class="error-actions">
+            <button type="button" class="btn-reconnect" @click="reconnectSessionNow(currentSession.id)">
+              立即重连
+            </button>
+            <button type="button" class="btn-reconnect" @click="closeSession(currentSession.id)">
+              关闭
+            </button>
+          </div>
         </div>
       </template>
       <template v-else>
@@ -540,6 +710,15 @@ onMounted(() => {
 }
 .empty-state.connecting {
   color: #94a3b8;
+}
+.empty-state .reconnect-hint {
+  margin: 0;
+  font-size: 0.8125rem;
+  opacity: 0.9;
+}
+.empty-state .error-actions {
+  display: flex;
+  gap: 0.5rem;
 }
 .empty-state .btn-reconnect {
   padding: 0.35rem 0.75rem;

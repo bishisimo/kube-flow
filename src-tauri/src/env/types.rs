@@ -46,6 +46,9 @@ pub struct Environment {
     pub current_context: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_used_at: Option<String>,
+    /// SSH 环境空闲保护：Some(true) 时启用；未配置或 false 时不启用。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_idle_protection: Option<bool>,
 }
 
 impl Environment {
@@ -64,6 +67,11 @@ impl Environment {
         self.effective_context()
             .and_then(|name| self.contexts.iter().find(|c| c.context_name == name))
             .and_then(|c| c.default_namespace.as_deref())
+    }
+
+    /// SSH 空闲保护是否启用（仅显式配置为 true 才启用）。
+    pub fn ssh_idle_protection_enabled(&self) -> bool {
+        matches!(self.ssh_idle_protection, Some(true))
     }
 }
 

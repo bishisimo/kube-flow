@@ -11,7 +11,7 @@ export interface ShellSession {
   podName: string;
   container: string;
   streamId: string | null;
-  status: "connecting" | "connected" | "error" | "closed";
+  status: "connecting" | "connected" | "reconnecting" | "disconnected" | "error" | "closed";
   error?: string;
   /** 从 Workload 打开时，用于 Pod 切换器 */
   workloadKind?: string;

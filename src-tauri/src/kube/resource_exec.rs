@@ -99,12 +99,15 @@ pub async fn run_pod_exec(
     let command: Vec<String> = vec![
         "/bin/sh".into(),
         "-c".into(),
-        "if command -v bash >/dev/null 2>&1; then exec bash; else exec sh; fi".into(),
+        "export TERM=\"${TERM:-xterm-256color}\"; \
+export LANG=\"${LANG:-C.UTF-8}\"; \
+export LC_CTYPE=\"${LC_CTYPE:-$LANG}\"; \
+if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi"
+            .into(),
     ];
 
     let stream_id_final = stream_id.clone();
-
-    match api.exec(&pod_name, command, &attach_params).await {
+    let end_error: Option<String> = match api.exec(&pod_name, command, &attach_params).await {
         Ok(mut attached) => {
             let (stdin_tx, mut stdin_rx) = mpsc::channel::<Vec<u8>>(64);
             let (resize_tx, mut resize_rx) = mpsc::channel::<(u16, u16)>(8);
@@ -117,17 +120,19 @@ pub async fn run_pod_exec(
             let stream_id_clone = stream_id.clone();
             let app_clone = app.clone();
 
-            let task = tokio::spawn(async move {
+            let task: tokio::task::JoinHandle<Option<String>> = tokio::spawn(async move {
                 let mut read_buf = [0u8; 4096];
-
-                loop {
+                let end_reason = loop {
                     tokio::select! {
-                        biased;
-
                         Some(data) = stdin_rx.recv() => {
                             if let Some(ref mut stdin) = stdin_opt {
-                                let _ = stdin.write_all(&data).await;
-                                let _ = stdin.flush().await;
+                                let mut merged = data;
+                                while let Ok(extra) = stdin_rx.try_recv() {
+                                    merged.extend_from_slice(&extra);
+                                }
+                                if let Err(e) = stdin.write_all(&merged).await {
+                                    break Some(format!("stdin write failed: {}", e));
+                                }
                             }
                         }
 
@@ -137,7 +142,9 @@ pub async fn run_pod_exec(
                                     width: cols,
                                     height: rows,
                                 };
-                                let _ = ts.send(size).await;
+                                if let Err(e) = ts.send(size).await {
+                                    break Some(format!("terminal resize failed: {}", e));
+                                }
                             }
                         }
 
@@ -150,21 +157,21 @@ pub async fn run_pod_exec(
                             }
                         } => {
                             match result {
-                                Ok(0) => break,
+                                Ok(0) => break None,
                                 Ok(n) => {
-                                    let chunk = String::from_utf8_lossy(&read_buf[..n]).to_string();
                                     if app_clone.emit(POD_EXEC_CHUNK_EVENT, serde_json::json!({
                                         "stream_id": stream_id_clone,
-                                        "chunk": chunk
+                                        "chunk_bytes": &read_buf[..n]
                                     })).is_err() {
-                                        break;
+                                        break Some("emit chunk failed".to_string());
                                     }
                                 }
-                                Err(_) => break,
+                                Err(e) => break Some(format!("stdout read failed: {}", e)),
                             }
                         }
                     }
-                }
+                };
+                end_reason
             });
 
             let abort_handle = task.abort_handle();
@@ -179,22 +186,21 @@ pub async fn run_pod_exec(
                 )
                 .await;
 
-            let _ = task.await;
+            match task.await {
+                Ok(err) => err,
+                Err(e) if e.is_cancelled() => None,
+                Err(e) => Some(format!("exec task join failed: {}", e)),
+            }
         }
-        Err(e) => {
-            let _ = app.emit(
-                POD_EXEC_END_EVENT,
-                serde_json::json!({
-                    "stream_id": stream_id,
-                    "error": e.to_string()
-                }),
-            );
-        }
-    }
+        Err(e) => Some(e.to_string()),
+    };
 
     store.remove(&stream_id_final).await;
     let _ = app.emit(
         POD_EXEC_END_EVENT,
-        serde_json::json!({ "stream_id": stream_id_final }),
+        serde_json::json!({
+            "stream_id": stream_id_final,
+            "error": end_error
+        }),
     );
 }

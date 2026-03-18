@@ -36,6 +36,7 @@ const sshConfigHosts = ref<string[]>([]);
 const newSshHost = ref("");
 const newRemoteKubeconfigPath = ref("~/.kube/config");
 const newLocalPort = ref("");
+const newSshIdleProtection = ref(false);
 const createLoading = ref(false);
 const createError = ref("");
 const newTags = ref<string[]>([]);
@@ -48,6 +49,7 @@ const editDisplayName = ref("");
 const editSshHost = ref("");
 const editRemoteKubeconfigPath = ref("~/.kube/config");
 const editLocalPort = ref("");
+const editSshIdleProtection = ref(false);
 const editLoading = ref(false);
 const editError = ref("");
 
@@ -162,6 +164,7 @@ async function openNewModal() {
   newSshHost.value = "";
   newRemoteKubeconfigPath.value = "~/.kube/config";
   newLocalPort.value = "";
+  newSshIdleProtection.value = false;
   newTags.value = [];
   newTagDraft.value = "";
   try {
@@ -243,7 +246,8 @@ async function doCreate() {
         newRemoteKubeconfigPath.value.trim() || "~/.kube/config",
         port,
         [],
-        newTags.value
+        newTags.value,
+        newSshIdleProtection.value ? true : null
       );
     }
     await loadList();
@@ -263,6 +267,7 @@ async function openEditModal(env: Environment) {
   editError.value = "";
   editSshHost.value = "";
   editRemoteKubeconfigPath.value = "~/.kube/config";
+  editSshIdleProtection.value = !!env.ssh_idle_protection;
   // 重置密码区状态
   editTunnelId.value = null;
   editCredentialExists.value = false;
@@ -358,7 +363,11 @@ async function doUpdate() {
         editRemoteKubeconfigPath.value.trim() || "~/.kube/config",
         port
       );
-      payload = { ...payload, ssh_tunnel_id: tunnelId };
+      payload = {
+        ...payload,
+        ssh_tunnel_id: tunnelId,
+        ssh_idle_protection: editSshIdleProtection.value ? true : null,
+      };
       await kubeRemoveClient(env.id);
     }
     await envUpdate(payload);
@@ -546,6 +555,10 @@ onMounted(() => {
             <input v-model="newRemoteKubeconfigPath" type="text" placeholder="~/.kube/config" />
             <label>本地端口</label>
             <input v-model="newLocalPort" type="text" placeholder="留空=自动分配" inputmode="numeric" />
+            <label class="checkbox-row">
+              <input v-model="newSshIdleProtection" type="checkbox" />
+              <span>启用空闲保护</span>
+            </label>
             <label>标签</label>
             <div class="tag-input-wrap">
               <span v-for="t in newTags" :key="t" class="tag-chip removable">
@@ -603,6 +616,10 @@ onMounted(() => {
               <input v-model="editRemoteKubeconfigPath" type="text" placeholder="~/.kube/config" />
               <label>本地端口</label>
               <input v-model="editLocalPort" type="text" placeholder="留空=自动分配" inputmode="numeric" />
+              <label class="checkbox-row">
+                <input v-model="editSshIdleProtection" type="checkbox" />
+                <span>启用空闲保护</span>
+              </label>
 
               <!-- SSH 认证密码持久化配置 -->
               <div class="credential-section">
@@ -1101,6 +1118,20 @@ onMounted(() => {
 }
 .form label:first-child {
   margin-top: 0;
+}
+.form label.checkbox-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  margin-bottom: 0;
+  font-weight: 400;
+  color: #334155;
+  cursor: pointer;
+}
+.form label.checkbox-row input {
+  width: auto;
+  margin: 0;
 }
 .form input,
 .form select {

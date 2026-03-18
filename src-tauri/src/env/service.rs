@@ -180,6 +180,7 @@ impl EnvService {
             contexts,
             current_context: current,
             last_used_at: None,
+            ssh_idle_protection: None,
         };
         Self::add(env.clone())?;
         Ok(env)
@@ -201,6 +202,7 @@ impl EnvService {
         ssh_tunnel_id: String,
         contexts: Vec<EnvironmentContext>,
         tags: Vec<String>,
+        ssh_idle_protection: Option<bool>,
     ) -> Result<Environment, config::ConfigError> {
         let current = contexts.first().map(|c| c.context_name.clone());
         let tags: Vec<String> = tags.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
@@ -216,6 +218,7 @@ impl EnvService {
             contexts,
             current_context: current,
             last_used_at: None,
+            ssh_idle_protection,
         };
         Self::add(env.clone())?;
         Ok(env)
@@ -229,6 +232,7 @@ impl EnvService {
         local_port: Option<u16>,
         contexts: Vec<EnvironmentContext>,
         tags: Vec<String>,
+        ssh_idle_protection: Option<bool>,
     ) -> Result<Environment, config::ConfigError> {
         let tunnel_id = format!(
             "ssh-{}",
@@ -260,7 +264,7 @@ impl EnvService {
             Self::save_config(&cfg)?;
             tunnel_id
         };
-        Self::create_ssh(display_name, id, contexts, tags)
+        Self::create_ssh(display_name, id, contexts, tags, ssh_idle_protection)
     }
 
     /// 确保存在对应 Host 的隧道配置，返回 tunnel id；若已存在则更新 remote_kubeconfig_path、local_port。

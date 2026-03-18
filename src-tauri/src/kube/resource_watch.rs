@@ -91,10 +91,26 @@ pub enum WatchPayload {
 }
 
 fn pod_to_item(p: Pod, ns: &str) -> PodItem {
+    let total = p
+        .spec
+        .as_ref()
+        .map(|s| s.containers.len())
+        .unwrap_or(0);
+    let ready = p
+        .status
+        .as_ref()
+        .and_then(|s| s.container_statuses.as_ref())
+        .map(|statuses| statuses.iter().filter(|cs| cs.ready).count())
+        .unwrap_or(0);
     PodItem {
         name: p.metadata.name.unwrap_or_default(),
         namespace: p.metadata.namespace.unwrap_or_else(|| ns.to_string()),
-        phase: p.status.and_then(|s| s.phase),
+        phase: p.status.as_ref().and_then(|s| s.phase.clone()),
+        container_status: if total > 0 {
+            Some(format!("{}/{}", ready, total))
+        } else {
+            None
+        },
         node_name: p.spec.and_then(|s| s.node_name),
         creation_time: format_creation_time(p.metadata.creation_timestamp.as_ref()),
     }

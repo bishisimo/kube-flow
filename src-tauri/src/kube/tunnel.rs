@@ -261,6 +261,20 @@ fn shell_escape(s: &str) -> String {
     }
 }
 
+fn append_idle_protection_ssh_args(cmd: &mut Command, enabled: bool) {
+    if !enabled {
+        return;
+    }
+    cmd.args([
+        "-o",
+        "ServerAliveInterval=30",
+        "-o",
+        "ServerAliveCountMax=3",
+        "-o",
+        "TCPKeepAlive=yes",
+    ]);
+}
+
 /// 通过 ProxyCommand 建立连接；仅 Unix。返回 UnixStream 供 libssh2 使用。
 #[cfg(unix)]
 fn connect_via_proxy(proxy_args: Vec<String>) -> Result<std::os::unix::net::UnixStream, TunnelError> {
@@ -333,11 +347,33 @@ fn run_tunnel_blocking(
     preferred_context: Option<String>,
     tunnel_mode: TunnelMappingMode,
     password: Option<String>,
+    idle_protection_enabled: bool,
     progress_tx: Option<mpsc::Sender<ConnectionProgressPayload>>,
 ) -> Result<(), TunnelError> {
     match tunnel_mode {
-        TunnelMappingMode::Ssh => run_tunnel_ssh(tx, shutdown, env_id, tunnel_id, ssh_host, remote_kubeconfig_path, local_port, preferred_context, password, progress_tx),
-        TunnelMappingMode::Builtin => run_tunnel_builtin(tx, shutdown, env_id, ssh_host, remote_kubeconfig_path, local_port, preferred_context, progress_tx),
+        TunnelMappingMode::Ssh => run_tunnel_ssh(
+            tx,
+            shutdown,
+            env_id,
+            tunnel_id,
+            ssh_host,
+            remote_kubeconfig_path,
+            local_port,
+            preferred_context,
+            password,
+            idle_protection_enabled,
+            progress_tx,
+        ),
+        TunnelMappingMode::Builtin => run_tunnel_builtin(
+            tx,
+            shutdown,
+            env_id,
+            ssh_host,
+            remote_kubeconfig_path,
+            local_port,
+            preferred_context,
+            progress_tx,
+        ),
     }
 }
 
@@ -357,6 +393,7 @@ fn run_tunnel_ssh(
     local_port: Option<u16>,
     preferred_context: Option<String>,
     password: Option<String>,
+    idle_protection_enabled: bool,
     progress_tx: Option<mpsc::Sender<ConnectionProgressPayload>>,
 ) -> Result<(), TunnelError> {
     let _ = ssh_config_get_host_config(&ssh_host).ok_or_else(|| {
@@ -408,6 +445,7 @@ fn run_tunnel_ssh(
 
     let mut cat_cmd_builder = Command::new("ssh");
     cat_cmd_builder.stdin(Stdio::null());
+    append_idle_protection_ssh_args(&mut cat_cmd_builder, idle_protection_enabled);
 
     if let Some(ref ap) = askpass_path {
         // 有密码：通过 SSH_ASKPASS 注入，SSH_ASKPASS_REQUIRE=force 不依赖 DISPLAY
@@ -535,6 +573,7 @@ fn run_tunnel_ssh(
 
     // 启动 ssh -L -N 端口转发子进程，同样注入 SSH_ASKPASS（如有）
     let mut tunnel_cmd = std::process::Command::new("ssh");
+    append_idle_protection_ssh_args(&mut tunnel_cmd, idle_protection_enabled);
     tunnel_cmd
         .args([
             "-L",
@@ -882,6 +921,7 @@ impl SshTunnelRunner {
         preferred_context: Option<String>,
         tunnel_mode: TunnelMappingMode,
         password: Option<String>,
+        idle_protection_enabled: bool,
         progress_tx: Option<mpsc::Sender<ConnectionProgressPayload>>,
     ) -> Result<(u16, String), TunnelError> {
         {
@@ -906,7 +946,20 @@ impl SshTunnelRunner {
         let env_id_c = env_id.clone();
         let tunnel_id_c = tunnel_id.clone();
         let handle = thread::spawn(move || {
-            if let Err(e) = run_tunnel_blocking(tx.clone(), shutdown_clone, env_id_c.clone(), tunnel_id_c, ssh_host_c, path_c, local_port_c, preferred_ctx_c, tunnel_mode, password, progress_tx) {
+            if let Err(e) = run_tunnel_blocking(
+                tx.clone(),
+                shutdown_clone,
+                env_id_c.clone(),
+                tunnel_id_c,
+                ssh_host_c,
+                path_c,
+                local_port_c,
+                preferred_ctx_c,
+                tunnel_mode,
+                password,
+                idle_protection_enabled,
+                progress_tx,
+            ) {
                 debug_log::log_tunnel_err(Some(&env_id_c), &e.to_string(), LogLevel::Error);
                 // AuthRequired 需要保留结构化错误码，不能 to_string() 丢失信息
                 let err_str = e.to_string();

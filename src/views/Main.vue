@@ -138,6 +138,7 @@ function selectKindAndClearDrill(kind: ResourceKind) {
   drillFrom.value = null;
   labelSelector.value = "";
   nameFilter.value = "";
+  nodeFilter.value = "all";
   selectedRowKeys.value = new Set();
   batchDeleteMode.value = false;
 }
@@ -147,6 +148,7 @@ function clearDrillAndReload() {
   drillFrom.value = null;
   labelSelector.value = "";
   nameFilter.value = "";
+  nodeFilter.value = "all";
   kindDropdownOpen.value = false;
   selectedRowKeys.value = new Set();
   batchDeleteMode.value = false;
@@ -160,6 +162,7 @@ function onBreadcrumbResourceNameClick() {
   selectedKind.value = kindId;
   selectedNamespace.value = drillFrom.value.namespace;
   nameFilter.value = drillFrom.value.name;
+  nodeFilter.value = "all";
   labelSelector.value = "";
   kindDropdownOpen.value = false;
   loadList();
@@ -174,6 +177,7 @@ function onBreadcrumbKindClick() {
   drillFrom.value = null;
   labelSelector.value = "";
   nameFilter.value = "";
+  nodeFilter.value = "all";
   kindDropdownOpen.value = false;
   loadList();
 }
@@ -225,6 +229,8 @@ const nsFilter = ref("");
 const kindFilter = ref("");
 /** 按名称筛选：前端过滤，支持模糊匹配（包含） */
 const nameFilter = ref("");
+/** 按 Node 筛选：仅在 Pods 视图生效，默认 all（不过滤） */
+const nodeFilter = ref("all");
 /** 按 label 筛选：传给 K8s API，格式如 app=nginx 或 env in (prod,staging) */
 const labelSelector = ref("");
 /** Watch 实时更新：开启后通过 Tauri 事件接收增量，仅部分 kind 支持 */
@@ -263,6 +269,16 @@ const filteredKindGroups = computed(() => {
     ...g,
     kinds: g.kinds.filter((k) => k.label.toLowerCase().includes(q)),
   })).filter((g) => g.kinds.length > 0);
+});
+
+/** Pods 视图可选 Node 列表（来自当前 Pods 数据，去重并排序） */
+const podNodeOptions = computed(() => {
+  const values = new Set<string>();
+  for (const p of pods.value) {
+    const v = (p.node_name ?? "").trim();
+    if (v) values.add(v);
+  }
+  return Array.from(values).sort((a, b) => a.localeCompare(b));
 });
 
 const selectedKindLabel = computed(() => RESOURCE_KINDS.find((k) => k.id === selectedKind.value)?.label ?? selectedKind.value);
@@ -637,6 +653,7 @@ const rawTableRows = computed(() => {
         name: p.name,
         ns: p.namespace,
         phase: p.phase ?? "-",
+        containerStatus: p.container_status ?? "-",
         node: p.node_name ?? "-",
         creationTime: p.creation_time ?? "-",
       }));
@@ -883,11 +900,14 @@ function onSortColumn(key: string) {
   }
 }
 
-/** 应用名称筛选与排序 */
+/** 应用名称/Node 筛选与排序 */
 const tableRows = computed(() => {
   let raw = rawTableRows.value as Record<string, unknown>[];
   const q = nameFilter.value.trim().toLowerCase();
   if (q) raw = raw.filter((r) => String(r.name ?? "").toLowerCase().includes(q));
+  if (selectedKind.value === "pods" && nodeFilter.value !== "all") {
+    raw = raw.filter((r) => String(r.node ?? "") === nodeFilter.value);
+  }
   const by = sortBy.value;
   const order = sortOrder.value;
   if (by && tableColumns.value.some((c) => c.key === by)) {
@@ -915,6 +935,7 @@ const tableColumns = computed(() => {
         { key: "name", label: "名称" },
         { key: "ns", label: "Namespace" },
         { key: "phase", label: "状态" },
+        { key: "containerStatus", label: "容器启动" },
         { key: "node", label: "Node" },
         { key: "creationTime", label: "创建时间" },
       ];
@@ -1333,6 +1354,7 @@ onUnmounted(() => {
 watch(selectedKind, () => {
   sortBy.value = "creationTime";
   sortOrder.value = "desc";
+  nodeFilter.value = "all";
 });
 watch(currentId, (id) => {
   if (id) restoreEnvViewState(id);
@@ -1549,6 +1571,17 @@ onUnmounted(() => {
             autocomplete="off"
             title="按名称包含匹配（前端过滤）"
           />
+          <select
+            v-if="currentId && selectedKind === 'pods'"
+            v-model="nodeFilter"
+            class="filter-input"
+            title="按 Node 选项筛选"
+          >
+            <option value="all">Node: All</option>
+            <option v-for="node in podNodeOptions" :key="node" :value="node">
+              Node: {{ node }}
+            </option>
+          </select>
           <input
             v-if="currentId"
             v-model="labelSelector"

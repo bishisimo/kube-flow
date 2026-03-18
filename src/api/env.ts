@@ -22,6 +22,8 @@ export interface Environment {
   contexts: EnvironmentContext[];
   current_context?: string | null;
   last_used_at?: string | null;
+  /** SSH 环境空闲保护：仅 true 时启用；未配置或 false 时不启用 */
+  ssh_idle_protection?: boolean | null;
 }
 
 export interface KubeContextInfo {
@@ -117,10 +119,11 @@ export function envCreateLocal(
 export function envCreateSsh(
   displayName: string,
   sshTunnelId: string,
-  contexts: EnvironmentContext[]
+  contexts: EnvironmentContext[],
+  sshIdleProtection?: boolean | null
 ): Promise<Environment> {
   return invoke("env_create_ssh", {
-    args: { displayName, sshTunnelId, contexts },
+    args: { displayName, sshTunnelId, contexts, sshIdleProtection: sshIdleProtection ?? null },
   });
 }
 
@@ -131,7 +134,8 @@ export function envCreateSshWithHost(
   remoteKubeconfigPath: string,
   localPort: number | null,
   contexts: EnvironmentContext[],
-  tags: string[] = []
+  tags: string[] = [],
+  sshIdleProtection?: boolean | null
 ): Promise<Environment> {
   return invoke("env_create_ssh_with_host", {
     args: {
@@ -141,6 +145,7 @@ export function envCreateSshWithHost(
       localPort,
       contexts,
       tags,
+      sshIdleProtection: sshIdleProtection ?? null,
     },
   });
 }

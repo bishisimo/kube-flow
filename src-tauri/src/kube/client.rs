@@ -88,6 +88,7 @@ impl KubeClientStore {
         let remote_path = tunnel.remote_kubeconfig_path.clone();
         let preferred_port = tunnel.local_port;
         let preferred_context = env.effective_context().map(String::from);
+        let idle_protection_enabled = env.ssh_idle_protection_enabled();
         let settings = app_settings_config_path()
             .and_then(|p| AppSettingsConfig::load(&p).ok())
             .unwrap_or_default();
@@ -122,6 +123,7 @@ impl KubeClientStore {
                 preferred_context,
                 tunnel_mode,
                 password,
+                idle_protection_enabled,
                 Some(progress_tx),
             )
         })

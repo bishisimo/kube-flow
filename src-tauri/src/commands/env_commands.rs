@@ -30,6 +30,8 @@ pub(crate) struct EnvCreateSshArgs {
     pub contexts: Vec<EnvironmentContext>,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub ssh_idle_protection: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -43,6 +45,8 @@ pub(crate) struct EnvCreateSshWithHostArgs {
     pub contexts: Vec<EnvironmentContext>,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub ssh_idle_protection: Option<bool>,
 }
 
 #[tauri::command]
@@ -103,7 +107,13 @@ pub fn env_list_ssh_config_hosts() -> Result<Vec<String>, String> {
 
 #[tauri::command]
 pub fn env_create_ssh(args: EnvCreateSshArgs) -> Result<Environment, String> {
-    EnvService::create_ssh(args.display_name, args.ssh_tunnel_id, args.contexts, args.tags)
+    EnvService::create_ssh(
+        args.display_name,
+        args.ssh_tunnel_id,
+        args.contexts,
+        args.tags,
+        args.ssh_idle_protection,
+    )
         .map_err(|e| e.to_string())
 }
 
@@ -116,6 +126,7 @@ pub fn env_create_ssh_with_host(args: EnvCreateSshWithHostArgs) -> Result<Enviro
         args.local_port,
         args.contexts,
         args.tags,
+        args.ssh_idle_protection,
     )
     .map_err(|e| e.to_string())
 }

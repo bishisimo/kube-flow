@@ -86,6 +86,8 @@ pub struct PodItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phase: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub container_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub node_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub creation_time: Option<String>,
@@ -519,12 +521,30 @@ pub async fn list_pods(
     let items = list
         .items
         .into_iter()
-        .map(|p| PodItem {
-            name: p.metadata.name.unwrap_or_default(),
-            namespace: p.metadata.namespace.unwrap_or_else(|| ns.to_string()),
-            phase: p.status.and_then(|s| s.phase),
-            node_name: p.spec.and_then(|s| s.node_name),
-            creation_time: format_creation_time(p.metadata.creation_timestamp.as_ref()),
+        .map(|p| {
+            let total = p
+                .spec
+                .as_ref()
+                .map(|s| s.containers.len())
+                .unwrap_or(0);
+            let ready = p
+                .status
+                .as_ref()
+                .and_then(|s| s.container_statuses.as_ref())
+                .map(|statuses| statuses.iter().filter(|cs| cs.ready).count())
+                .unwrap_or(0);
+            PodItem {
+                name: p.metadata.name.unwrap_or_default(),
+                namespace: p.metadata.namespace.unwrap_or_else(|| ns.to_string()),
+                phase: p.status.as_ref().and_then(|s| s.phase.clone()),
+                container_status: if total > 0 {
+                    Some(format!("{}/{}", ready, total))
+                } else {
+                    None
+                },
+                node_name: p.spec.and_then(|s| s.node_name),
+                creation_time: format_creation_time(p.metadata.creation_timestamp.as_ref()),
+            }
         })
         .collect();
     Ok(items)
@@ -555,12 +575,30 @@ pub async fn list_pods_using_pvc(
                 })
                 .unwrap_or(false)
         })
-        .map(|p| PodItem {
-            name: p.metadata.name.unwrap_or_default(),
-            namespace: p.metadata.namespace.unwrap_or_else(|| namespace.to_string()),
-            phase: p.status.and_then(|s| s.phase),
-            node_name: p.spec.and_then(|s| s.node_name),
-            creation_time: format_creation_time(p.metadata.creation_timestamp.as_ref()),
+        .map(|p| {
+            let total = p
+                .spec
+                .as_ref()
+                .map(|s| s.containers.len())
+                .unwrap_or(0);
+            let ready = p
+                .status
+                .as_ref()
+                .and_then(|s| s.container_statuses.as_ref())
+                .map(|statuses| statuses.iter().filter(|cs| cs.ready).count())
+                .unwrap_or(0);
+            PodItem {
+                name: p.metadata.name.unwrap_or_default(),
+                namespace: p.metadata.namespace.unwrap_or_else(|| namespace.to_string()),
+                phase: p.status.as_ref().and_then(|s| s.phase.clone()),
+                container_status: if total > 0 {
+                    Some(format!("{}/{}", ready, total))
+                } else {
+                    None
+                },
+                node_name: p.spec.and_then(|s| s.node_name),
+                creation_time: format_creation_time(p.metadata.creation_timestamp.as_ref()),
+            }
         })
         .collect();
     Ok(items)

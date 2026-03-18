@@ -11,7 +11,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (e: "end", error?: string): void;
+  (e: "end", payload: { streamId: string; error?: string }): void;
 }>();
 
 const terminalRef = ref<HTMLElement | null>(null);
@@ -20,8 +20,62 @@ let fitAddon: FitAddon | null = null;
 let unlistenChunk: (() => void) | null = null;
 let unlistenEnd: (() => void) | null = null;
 let resizeObserver: ResizeObserver | null = null;
+let stdinWriteQueue: Promise<void> = Promise.resolve();
+let inputFlushTimer: number | null = null;
+let pendingInputBytes: number[] = [];
+const inputEncoder = new TextEncoder();
 let lastResizeCols = 0;
 let lastResizeRows = 0;
+const INPUT_FLUSH_MS = 8;
+
+function clearInputBuffer() {
+  if (inputFlushTimer !== null) {
+    window.clearTimeout(inputFlushTimer);
+    inputFlushTimer = null;
+  }
+  pendingInputBytes = [];
+}
+
+function scheduleInputFlush() {
+  if (inputFlushTimer !== null) return;
+  inputFlushTimer = window.setTimeout(() => {
+    inputFlushTimer = null;
+    flushInputBuffer();
+  }, INPUT_FLUSH_MS);
+}
+
+function enqueueInputBytes(bytes: Uint8Array | number[]) {
+  if (!bytes.length) return;
+  if (bytes instanceof Uint8Array) {
+    pendingInputBytes.push(...Array.from(bytes));
+  } else {
+    pendingInputBytes.push(...bytes);
+  }
+  scheduleInputFlush();
+}
+
+function flushInputBuffer() {
+  if (!pendingInputBytes.length) return;
+  const streamId = props.streamId;
+  if (!streamId) {
+    pendingInputBytes = [];
+    return;
+  }
+  const batch = pendingInputBytes;
+  pendingInputBytes = [];
+  stdinWriteQueue = stdinWriteQueue
+    .catch(() => {})
+    .then(() => kubePodExecStdin(streamId, batch))
+    .catch(() => {});
+}
+
+function sanitizeTerminalInput(text: string): string {
+  return text
+    .replace(/\u00A0/g, " ")
+    .replace(/[\u200B-\u200D\u2060]/g, "")
+    .replace(/[\u202A-\u202E\u2066-\u2069]/g, "")
+    .replace(/\uFEFF/g, "");
+}
 
 function initTerminal() {
   if (!terminalRef.value) return;
@@ -42,10 +96,14 @@ function initTerminal() {
   fitAddon.fit();
 
   terminal.onData((data) => {
-    if (props.streamId) {
-      const bytes = Array.from(new TextEncoder().encode(data));
-      kubePodExecStdin(props.streamId, bytes).catch(() => {});
-    }
+    const sanitized = sanitizeTerminalInput(data);
+    if (!sanitized) return;
+    enqueueInputBytes(inputEncoder.encode(sanitized));
+  });
+
+  terminal.onBinary((data) => {
+    const bytes = Array.from(data).map((ch) => ch.charCodeAt(0));
+    enqueueInputBytes(bytes);
   });
 
   // ResizeObserver 处理容器尺寸变化（切换侧边栏、窗口缩放、tab 从隐藏变可见）
@@ -73,11 +131,14 @@ async function setupListeners() {
   unlistenEnd = null;
   if (!props.streamId) return;
 
-  unlistenChunk = await listen<{ stream_id: string; chunk: string }>(
+  unlistenChunk = await listen<{
+    stream_id: string;
+    chunk_bytes: number[];
+  }>(
     "pod-exec-chunk",
     (ev) => {
       if (ev.payload?.stream_id !== props.streamId || !terminal) return;
-      terminal.write(ev.payload.chunk);
+      terminal.write(new Uint8Array(ev.payload.chunk_bytes));
     }
   );
 
@@ -85,7 +146,10 @@ async function setupListeners() {
     "pod-exec-end",
     (ev) => {
       if (ev.payload?.stream_id === props.streamId) {
-        emit("end", ev.payload?.error);
+        emit("end", {
+          streamId: ev.payload.stream_id,
+          error: ev.payload?.error,
+        });
       }
     }
   );
@@ -100,6 +164,7 @@ function fitAndResize() {
 watch(
   () => props.streamId,
   async (id) => {
+    clearInputBuffer();
     lastResizeCols = 0;
     lastResizeRows = 0;
     await setupListeners();
@@ -119,12 +184,14 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  clearInputBuffer();
   unlistenChunk?.();
   unlistenEnd?.();
   resizeObserver?.disconnect();
   terminal?.dispose();
   terminal = null;
   fitAddon = null;
+  stdinWriteQueue = Promise.resolve();
 });
 </script>
 

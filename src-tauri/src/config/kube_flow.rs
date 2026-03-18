@@ -49,6 +49,8 @@ pub struct EnvironmentRow {
     pub current_context: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_used_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_idle_protection: Option<bool>,
     // 兼容旧版：单 context 时存在
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_name: Option<String>,
@@ -72,6 +74,7 @@ impl From<Environment> for EnvironmentRow {
             contexts: e.contexts.iter().cloned().map(EnvironmentContextRow::from).collect(),
             current_context: e.current_context,
             last_used_at: e.last_used_at,
+            ssh_idle_protection: e.ssh_idle_protection,
             context_name: None,
             default_namespace: None,
             cluster_name: None,
@@ -128,6 +131,7 @@ impl From<EnvironmentRow> for Environment {
             contexts,
             current_context,
             last_used_at: r.last_used_at,
+            ssh_idle_protection: r.ssh_idle_protection,
         }
     }
 }
