@@ -1104,16 +1104,18 @@ async function onCopyComponentToEnv() {
   cursor: pointer;
 }
 .history-item.history-sync {
-  border-color: #0284c7;
-  background: #f0f9ff;
+  border-color: #0e7490;
+  background: #ecfeff;
+  box-shadow: inset 2px 0 0 #0891b2;
 }
 .history-item.history-save {
   border-color: #16a34a;
   background: #f0fdf4;
 }
 .history-item.history-apply {
-  border-color: #2563eb;
-  background: #eff6ff;
+  border-color: #6d28d9;
+  background: #f5f3ff;
+  box-shadow: inset 2px 0 0 #7c3aed;
 }
 .history-item.history-restore {
   border-color: #d97706;

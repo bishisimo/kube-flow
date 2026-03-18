@@ -9,6 +9,7 @@ pub mod log_commands;
 use crate::config::AppSettingsConfig;
 use crate::credentials::new_from_settings;
 use crate::kube::{KubeClientStore, PodExecStore, PodLogStreamStore, WatchStore};
+use credential_commands::StrongholdAutoLockController;
 use std::sync::Arc;
 use tauri::Manager;
 
@@ -23,6 +24,7 @@ pub fn setup_app_state(app: &mut tauri::App) -> Result<(), Box<dyn std::error::E
         .and_then(|p| AppSettingsConfig::load(&p).ok())
         .unwrap_or_default();
     app.manage(new_from_settings(&settings));
+    app.manage(StrongholdAutoLockController::default());
 
     Ok(())
 }

@@ -502,7 +502,7 @@ onMounted(() => {
 
             <!-- 自动锁定 -->
             <div class="option-group" style="margin-top: 1rem">
-              <label class="option-label">自动锁定（分钟，0 = 不锁定）</label>
+              <label class="option-label">自动锁定（分钟，0 = 运行期间不自动锁定）</label>
               <div class="option-buttons">
                 <button
                   v-for="opt in [0, 15, 30, 60]"

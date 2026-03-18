@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from "vue";
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from "vue";
 import * as jsYaml from "js-yaml";
 import { useEnvStore } from "../stores/env";
 import EnvBar from "../components/EnvBar.vue";
@@ -98,6 +98,10 @@ const {
 const sshAuth = useSshAuthStore();
 
 const ENV_BAR_COLLAPSED_KEY = "kube-flow:env-bar-collapsed";
+const NS_FAVORITES_KEY = "kube-flow:ns-favorites";
+const NS_RECENT_KEY_PREFIX = "kube-flow:ns-recent:";
+const RECENT_KINDS_KEY = "kube-flow:recent-kinds";
+const MAX_RECENT_KINDS = 5;
 const envBarCollapsed = ref(
   (() => {
     try {
@@ -138,6 +142,7 @@ function restoreEnvViewState(envId: string) {
 /** 选择资源类型并退出钻取（侧栏/下拉点击） */
 function selectKindAndClearDrill(kind: ResourceKind) {
   selectedKind.value = kind;
+  touchRecentKind(kind);
   kindDropdownOpen.value = false;
   drillFrom.value = null;
   labelSelector.value = "";
@@ -229,6 +234,8 @@ const nsDropdownOpen = ref(false);
 const kindDropdownOpen = ref(false);
 const nsDropdownRef = ref<HTMLElement | null>(null);
 const kindDropdownRef = ref<HTMLElement | null>(null);
+const nsMenuRef = ref<HTMLElement | null>(null);
+const kindMenuRef = ref<HTMLElement | null>(null);
 const nsFilter = ref("");
 const kindFilter = ref("");
 /** 按名称筛选：前端过滤，支持模糊匹配（包含） */
@@ -265,6 +272,22 @@ const filteredNamespaceOptions = computed(() => {
   return namespaceOptions.value.filter((n) => n.name.toLowerCase().includes(q));
 });
 
+const namespaceFavorites = computed(() =>
+  filteredNamespaceOptions.value.filter((n) => favoriteNamespaces.value.has(n.name))
+);
+const namespaceRecent = computed(() =>
+  recentNamespaces.value
+    .filter((n) => !favoriteNamespaces.value.has(n))
+    .map((name) => filteredNamespaceOptions.value.find((n) => n.name === name))
+    .filter((n): n is NamespaceItem => Boolean(n))
+);
+const namespaceOthers = computed(() => {
+  const recent = new Set(namespaceRecent.value.map((n) => n.name));
+  return filteredNamespaceOptions.value.filter(
+    (n) => !favoriteNamespaces.value.has(n.name) && !recent.has(n.name)
+  );
+});
+
 /** 按分组过滤后的资源类型，供下拉使用 */
 const filteredKindGroups = computed(() => {
   const q = kindFilter.value.trim().toLowerCase();
@@ -274,6 +297,12 @@ const filteredKindGroups = computed(() => {
     kinds: g.kinds.filter((k) => k.label.toLowerCase().includes(q)),
   })).filter((g) => g.kinds.length > 0);
 });
+
+const recentKindItems = computed(() =>
+  recentKinds.value
+    .map((id) => RESOURCE_KINDS.find((k) => k.id === id))
+    .filter((k): k is (typeof RESOURCE_KINDS)[number] => Boolean(k))
+);
 
 /** Pods 视图可选 Node 列表（来自当前 Pods 数据，去重并排序） */
 const podNodeOptions = computed(() => {
@@ -286,6 +315,106 @@ const podNodeOptions = computed(() => {
 });
 
 const selectedKindLabel = computed(() => RESOURCE_KINDS.find((k) => k.id === selectedKind.value)?.label ?? selectedKind.value);
+const nsSelectionDisabled = computed(() => CLUSTER_SCOPED_KINDS.has(selectedKind.value));
+
+const favoriteNamespaces = ref<Set<string>>(new Set());
+const recentNamespaces = ref<string[]>([]);
+const recentKinds = ref<ResourceKind[]>([]);
+
+function loadFavoriteNamespaces(): Set<string> {
+  try {
+    const s = localStorage.getItem(NS_FAVORITES_KEY);
+    if (!s) return new Set();
+    const arr = JSON.parse(s) as unknown;
+    if (!Array.isArray(arr)) return new Set();
+    return new Set(arr.filter((v): v is string => typeof v === "string" && v.trim().length > 0));
+  } catch {
+    return new Set();
+  }
+}
+
+function persistFavoriteNamespaces() {
+  try {
+    localStorage.setItem(NS_FAVORITES_KEY, JSON.stringify(Array.from(favoriteNamespaces.value)));
+  } catch {}
+}
+
+function loadRecentNamespaces(envId: string | null): string[] {
+  if (!envId) return [];
+  try {
+    const s = localStorage.getItem(`${NS_RECENT_KEY_PREFIX}${envId}`);
+    if (!s) return [];
+    const arr = JSON.parse(s) as unknown;
+    if (!Array.isArray(arr)) return [];
+    return arr.filter((v): v is string => typeof v === "string" && v.trim().length > 0);
+  } catch {
+    return [];
+  }
+}
+
+function persistRecentNamespaces(envId: string | null) {
+  if (!envId) return;
+  try {
+    localStorage.setItem(`${NS_RECENT_KEY_PREFIX}${envId}`, JSON.stringify(recentNamespaces.value.slice(0, 8)));
+  } catch {}
+}
+
+function loadRecentKinds(): ResourceKind[] {
+  try {
+    const s = localStorage.getItem(RECENT_KINDS_KEY);
+    if (!s) return [];
+    const arr = JSON.parse(s) as unknown;
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter((v): v is ResourceKind => typeof v === "string" && VALID_KINDS.has(v))
+      .slice(0, MAX_RECENT_KINDS);
+  } catch {
+    return [];
+  }
+}
+
+function persistRecentKinds() {
+  try {
+    localStorage.setItem(RECENT_KINDS_KEY, JSON.stringify(recentKinds.value.slice(0, MAX_RECENT_KINDS)));
+  } catch {}
+}
+
+function touchRecentNamespace(ns: string | null) {
+  if (!ns || !ns.trim()) return;
+  recentNamespaces.value = [ns, ...recentNamespaces.value.filter((v) => v !== ns)].slice(0, 8);
+  persistRecentNamespaces(currentId.value);
+}
+
+function toggleFavoriteNamespace(ns: string) {
+  const next = new Set(favoriteNamespaces.value);
+  if (next.has(ns)) next.delete(ns);
+  else next.add(ns);
+  favoriteNamespaces.value = next;
+  persistFavoriteNamespaces();
+}
+
+function touchRecentKind(kind: ResourceKind) {
+  recentKinds.value = [kind, ...recentKinds.value.filter((k) => k !== kind)].slice(0, MAX_RECENT_KINDS);
+  persistRecentKinds();
+}
+
+function selectNamespace(ns: string | null) {
+  selectedNamespace.value = ns;
+  nsDropdownOpen.value = false;
+  if (ns) touchRecentNamespace(ns);
+}
+
+function openKindSelector() {
+  kindDropdownOpen.value = true;
+  kindFilter.value = "";
+  nsDropdownOpen.value = false;
+  nextTick(() => {
+    const active = kindMenuRef.value?.querySelector(".combobox-item.active");
+    if (active && "scrollIntoView" in active) {
+      (active as HTMLElement).scrollIntoView({ block: "nearest" });
+    }
+  });
+}
 
 /** API Kind（如 Service）到 ResourceKind id（如 services）的映射 */
 const API_KIND_TO_ID: Record<string, ResourceKind> = Object.fromEntries(
@@ -327,6 +456,7 @@ const IMAGE_PATCH_KINDS = new Set(["Deployment", "StatefulSet", "DaemonSet"]);
 const actionMenuVisible = ref(false);
 const actionMenuPosition = ref({ x: 0, y: 0 });
 const actionMenuRef = ref<HTMLElement | null>(null);
+const deleteActionArmed = ref(false);
 
 function selectResourceFromRow(row: Record<string, unknown>) {
   const name = row.name as string | undefined;
@@ -353,6 +483,7 @@ function onRowContextMenu(row: Record<string, unknown>, e: MouseEvent) {
   const resource = selectResourceFromRow(row);
   if (!resource) return;
   selectedResource.value = resource;
+  deleteActionArmed.value = false;
   actionMenuPosition.value = { x: e.clientX, y: e.clientY };
   actionMenuVisible.value = true;
 }
@@ -368,6 +499,7 @@ function onRowClick(row: Record<string, unknown>) {
 
 function closeActionMenu() {
   actionMenuVisible.value = false;
+  deleteActionArmed.value = false;
 }
 
 function openResourceDetail() {
@@ -431,6 +563,14 @@ function openDeleteConfirm() {
   deleteConfirmError.value = null;
   deleteConfirmVisible.value = true;
   closeActionMenu();
+}
+
+function handleDeleteAction() {
+  if (!deleteActionArmed.value) {
+    deleteActionArmed.value = true;
+    return;
+  }
+  openDeleteConfirm();
 }
 
 async function syncToOrchestrator() {
@@ -1045,6 +1185,83 @@ const tableRows = computed(() => {
   return sortRows(raw, "creationTime", "desc");
 });
 
+type ActiveFilterChip = {
+  id: "name" | "node" | "label";
+  label: string;
+  value: string;
+};
+
+const activeFilterChips = computed<ActiveFilterChip[]>(() => {
+  const chips: ActiveFilterChip[] = [];
+  const name = nameFilter.value.trim();
+  const label = labelSelector.value.trim();
+  if (name) chips.push({ id: "name", label: "名称", value: name });
+  if (selectedKind.value === "pods" && nodeFilter.value !== "all") {
+    chips.push({ id: "node", label: "Node", value: nodeFilter.value });
+  }
+  if (label) chips.push({ id: "label", label: "Label", value: label });
+  return chips;
+});
+
+function clearFilterChip(id: ActiveFilterChip["id"]) {
+  if (id === "name") nameFilter.value = "";
+  else if (id === "node") nodeFilter.value = "all";
+  else if (id === "label") labelSelector.value = "";
+  if (watchEnabled.value && WATCH_SUPPORTED_KINDS.has(selectedKind.value)) applyWatch();
+  else loadList();
+}
+
+function clearAllFilters() {
+  nameFilter.value = "";
+  nodeFilter.value = "all";
+  labelSelector.value = "";
+  if (watchEnabled.value && WATCH_SUPPORTED_KINDS.has(selectedKind.value)) applyWatch();
+  else loadList();
+}
+
+function normalizeStatus(raw: unknown): string {
+  const v = String(raw ?? "-").trim();
+  return v || "-";
+}
+
+function statusTone(statusValue: unknown): "ok" | "warn" | "error" | "neutral" {
+  const v = normalizeStatus(statusValue).toLowerCase();
+  if (!v || v === "-") return "neutral";
+  if (v.includes("running") || v.includes("ready") || v.includes("bound") || v.includes("active")) return "ok";
+  if (
+    v.includes("pending") ||
+    v.includes("containercreating") ||
+    v.includes("terminating") ||
+    v.includes("unknown")
+  ) {
+    return "warn";
+  }
+  if (
+    v.includes("failed") ||
+    v.includes("error") ||
+    v.includes("crashloopbackoff") ||
+    v.includes("imagepullbackoff")
+  ) {
+    return "error";
+  }
+  return "neutral";
+}
+
+function isStatusColumn(colKey: string): boolean {
+  return colKey === "phase" || colKey === "status" || colKey === "containerStatus";
+}
+
+function isSelectedRow(row: Record<string, unknown>): boolean {
+  if (!selectedResource.value) return false;
+  const resource = selectResourceFromRow(row);
+  if (!resource) return false;
+  return (
+    resource.kind === selectedResource.value.kind &&
+    resource.name === selectedResource.value.name &&
+    resource.namespace === selectedResource.value.namespace
+  );
+}
+
 const tableColumns = computed(() => {
   switch (selectedKind.value) {
     case "namespaces":
@@ -1472,6 +1689,9 @@ async function handleReconnect(envId: string) {
 }
 
 onMounted(() => {
+  favoriteNamespaces.value = loadFavoriteNamespaces();
+  recentKinds.value = loadRecentKinds();
+  recentNamespaces.value = loadRecentNamespaces(currentId.value);
   const id = currentId.value;
   if (id) restoreEnvViewState(id);
   loadList();
@@ -1486,7 +1706,26 @@ watch(selectedKind, () => {
   nodeFilter.value = "all";
 });
 watch(currentId, (id) => {
+  recentNamespaces.value = loadRecentNamespaces(id);
   if (id) restoreEnvViewState(id);
+});
+watch(nsDropdownOpen, (open) => {
+  if (!open) return;
+  nextTick(() => {
+    const active = nsMenuRef.value?.querySelector(".combobox-item.active");
+    if (active && "scrollIntoView" in active) {
+      (active as HTMLElement).scrollIntoView({ block: "nearest" });
+    }
+  });
+});
+watch(kindDropdownOpen, (open) => {
+  if (!open) return;
+  nextTick(() => {
+    const active = kindMenuRef.value?.querySelector(".combobox-item.active");
+    if (active && "scrollIntoView" in active) {
+      (active as HTMLElement).scrollIntoView({ block: "nearest" });
+    }
+  });
 });
 watch([selectedNamespace, selectedKind], () => {
   const id = currentId.value;
@@ -1620,143 +1859,236 @@ onUnmounted(() => {
           </template>
         </nav>
         <header class="toolbar">
-          <span v-if="currentEnv" class="env-name">{{ currentEnv.display_name }}</span>
-          <div v-if="currentId" ref="nsDropdownRef" class="combobox-wrap">
-            <button
-              type="button"
-              class="combobox-trigger"
-              :class="{ open: nsDropdownOpen }"
-              title="命名空间：输入筛选后选择"
-              @click="nsDropdownOpen = !nsDropdownOpen; if (nsDropdownOpen) { nsFilter = ''; kindDropdownOpen = false }"
-            >
-              <span class="combobox-label">NS</span>
-              <span class="combobox-value">{{ effectiveNamespace }}</span>
-              <span class="combobox-arrow">▼</span>
-            </button>
-            <div v-show="nsDropdownOpen" class="combobox-menu">
-              <input
-                v-model="nsFilter"
-                type="text"
-                class="combobox-input"
-                placeholder="输入筛选…"
-                autocomplete="off"
-              />
-              <button type="button" class="combobox-item" :class="{ active: selectedNamespace === null }" @click="selectedNamespace = null; nsDropdownOpen = false">
-                默认
-              </button>
-              <button
-                v-for="n in filteredNamespaceOptions"
-                :key="n.name"
-                type="button"
-                class="combobox-item"
-                :class="{ active: selectedNamespace === n.name }"
-                @click="selectedNamespace = n.name; nsDropdownOpen = false"
-              >
-                {{ n.name }}
-              </button>
-            </div>
-          </div>
-          <div ref="kindDropdownRef" class="combobox-wrap">
-            <button
-              type="button"
-              class="combobox-trigger"
-              :class="{ open: kindDropdownOpen }"
-              title="资源类型：输入筛选后选择"
-              @click="kindDropdownOpen = !kindDropdownOpen; if (kindDropdownOpen) { kindFilter = ''; nsDropdownOpen = false }"
-            >
-              <span class="combobox-label">资源</span>
-              <span class="combobox-value">{{ selectedKindLabel }}</span>
-              <span class="combobox-arrow">▼</span>
-            </button>
-            <div v-show="kindDropdownOpen" class="combobox-menu combobox-menu-grouped">
-              <input
-                v-model="kindFilter"
-                type="text"
-                class="combobox-input"
-                placeholder="输入筛选…"
-                autocomplete="off"
-              />
-              <template v-for="group in filteredKindGroups" :key="group.id">
-                <div class="combobox-group-label">{{ group.label }}</div>
+          <div class="toolbar-card">
+            <div class="toolbar-main">
+              <span v-if="currentEnv" class="env-name">{{ currentEnv.display_name }}</span>
+              <div v-if="currentId" ref="nsDropdownRef" class="combobox-wrap">
                 <button
-                  v-for="k in group.kinds"
-                  :key="k.id"
                   type="button"
-                  class="combobox-item"
-                  :class="{ active: selectedKind === k.id }"
-                  @click="selectKindAndClearDrill(k.id)"
+                  class="combobox-trigger"
+              :class="{ open: nsDropdownOpen, disabled: nsSelectionDisabled }"
+              :disabled="nsSelectionDisabled"
+              :title="nsSelectionDisabled ? '当前资源为集群级，命名空间不生效' : '命名空间：输入筛选后选择'"
+              @click="
+                nsDropdownOpen = !nsDropdownOpen;
+                if (nsDropdownOpen) {
+                  nsFilter = '';
+                  kindDropdownOpen = false;
+                }
+              "
                 >
-                  {{ k.label }}
+                  <span class="combobox-label">NS</span>
+              <span class="combobox-value">{{ nsSelectionDisabled ? '集群级资源' : effectiveNamespace }}</span>
+                  <span class="combobox-arrow">▼</span>
+                </button>
+            <div v-show="nsDropdownOpen" ref="nsMenuRef" class="combobox-menu">
+                  <input
+                    v-model="nsFilter"
+                    type="text"
+                    class="combobox-input"
+                    placeholder="输入筛选…"
+                    autocomplete="off"
+                  />
+              <button type="button" class="combobox-item" :class="{ active: selectedNamespace === null }" @click="selectNamespace(null)">
+                    默认
+                  </button>
+              <template v-if="namespaceFavorites.length > 0">
+                <div class="combobox-group-label">收藏</div>
+                <button
+                  v-for="n in namespaceFavorites"
+                  :key="`fav-${n.name}`"
+                  type="button"
+                  class="combobox-item combobox-item-with-action"
+                  :class="{ active: selectedNamespace === n.name }"
+                  @click="selectNamespace(n.name)"
+                >
+                  <span>{{ n.name }}</span>
+                  <span
+                    class="ns-star active"
+                    title="取消收藏"
+                    @click.stop="toggleFavoriteNamespace(n.name)"
+                  >
+                    ★
+                  </span>
                 </button>
               </template>
+              <template v-if="namespaceRecent.length > 0">
+                <div class="combobox-group-label">最近</div>
+                <button
+                  v-for="n in namespaceRecent"
+                  :key="`recent-${n.name}`"
+                  type="button"
+                  class="combobox-item combobox-item-with-action"
+                  :class="{ active: selectedNamespace === n.name }"
+                  @click="selectNamespace(n.name)"
+                >
+                  <span>{{ n.name }}</span>
+                  <span
+                    class="ns-star"
+                    :class="{ active: favoriteNamespaces.has(n.name) }"
+                    :title="favoriteNamespaces.has(n.name) ? '取消收藏' : '收藏'"
+                    @click.stop="toggleFavoriteNamespace(n.name)"
+                  >
+                    ★
+                  </span>
+                </button>
+              </template>
+              <div class="combobox-group-label">全部</div>
+                  <button
+                v-for="n in namespaceOthers"
+                    :key="n.name"
+                    type="button"
+                class="combobox-item combobox-item-with-action"
+                    :class="{ active: selectedNamespace === n.name }"
+                @click="selectNamespace(n.name)"
+                  >
+                <span>{{ n.name }}</span>
+                <span
+                  class="ns-star"
+                  :class="{ active: favoriteNamespaces.has(n.name) }"
+                  :title="favoriteNamespaces.has(n.name) ? '取消收藏' : '收藏'"
+                  @click.stop="toggleFavoriteNamespace(n.name)"
+                >
+                  ★
+                </span>
+                  </button>
+                </div>
+              </div>
+              <div ref="kindDropdownRef" class="combobox-wrap">
+                <button
+                  type="button"
+                  class="combobox-trigger"
+                  :class="{ open: kindDropdownOpen }"
+                  title="资源类型：输入筛选后选择"
+                  @click="kindDropdownOpen = !kindDropdownOpen; if (kindDropdownOpen) { kindFilter = ''; nsDropdownOpen = false }"
+                >
+                  <span class="combobox-label">资源</span>
+                  <span class="combobox-value">{{ selectedKindLabel }}</span>
+                  <span class="combobox-arrow">▼</span>
+                </button>
+            <div v-show="kindDropdownOpen" ref="kindMenuRef" class="combobox-menu combobox-menu-grouped">
+                  <input
+                    v-model="kindFilter"
+                    type="text"
+                    class="combobox-input"
+                    placeholder="输入筛选…"
+                    autocomplete="off"
+                  />
+              <div v-if="recentKindItems.length > 0 && !kindFilter.trim()" class="recent-kind-panel">
+                <div class="recent-kind-title">最近使用（快捷入口）</div>
+                <div class="recent-kind-list">
+                  <button
+                    v-for="k in recentKindItems"
+                    :key="`recent-kind-${k.id}`"
+                    type="button"
+                    class="recent-kind-pill"
+                    :class="{ active: selectedKind === k.id }"
+                    @click="selectKindAndClearDrill(k.id)"
+                  >
+                    {{ k.label }}
+                  </button>
+                </div>
+              </div>
+                  <template v-for="group in filteredKindGroups" :key="group.id">
+                    <div class="combobox-group-label">{{ group.label }}</div>
+                    <button
+                      v-for="k in group.kinds"
+                      :key="k.id"
+                      type="button"
+                      class="combobox-item"
+                      :class="{ active: selectedKind === k.id }"
+                      @click="selectKindAndClearDrill(k.id)"
+                    >
+                      {{ k.label }}
+                    </button>
+                  </template>
+                </div>
+              </div>
+              <div class="toolbar-actions">
+                <button
+                  v-if="currentId && WATCH_SUPPORTED_KINDS.has(selectedKind)"
+                  type="button"
+                  class="btn-watch"
+                  :class="{ active: watchEnabled }"
+                  :title="watchEnabled ? '关闭 Watch 实时更新' : '开启 Watch 实时更新'"
+                  @click="watchEnabled = !watchEnabled"
+                >
+                  {{ watchEnabled ? "Watch 开" : "Watch" }}
+                </button>
+                <button type="button" class="btn-refresh" :disabled="listLoading" @click="loadList">
+                  {{ listLoading ? "刷新中…" : "刷新" }}
+                </button>
+                <template v-if="currentId">
+                  <button
+                    v-if="!batchDeleteMode"
+                    type="button"
+                    class="btn-secondary-outline"
+                    @click="enterBatchDeleteMode"
+                  >
+                    批量删除
+                  </button>
+                  <template v-else>
+                    <button type="button" class="btn-secondary-outline" @click="exitBatchDeleteMode">
+                      取消
+                    </button>
+                    <button
+                      type="button"
+                      class="btn-danger-outline"
+                      :disabled="selectedRowKeys.size === 0"
+                      @click="openBatchDeleteConfirm"
+                    >
+                      删除选中 ({{ selectedRowKeys.size }})
+                    </button>
+                  </template>
+                </template>
+              </div>
+            </div>
+            <div v-if="currentId" class="toolbar-filters">
+              <input
+                v-model="nameFilter"
+                type="text"
+                class="filter-input"
+                placeholder="按名称筛选…"
+                autocomplete="off"
+                title="按名称包含匹配（前端过滤）"
+              />
+              <select
+                v-if="selectedKind === 'pods'"
+                v-model="nodeFilter"
+                class="filter-input"
+                title="按 Node 选项筛选"
+              >
+                <option value="all">Node: All</option>
+                <option v-for="node in podNodeOptions" :key="node" :value="node">
+                  Node: {{ node }}
+                </option>
+              </select>
+              <input
+                v-model="labelSelector"
+                type="text"
+                class="filter-input filter-input-label"
+                placeholder="Label 筛选，如 app=nginx"
+                autocomplete="off"
+                title="K8s label selector，如 app=nginx 或 env in (prod,staging)"
+                @keyup.enter="watchEnabled && WATCH_SUPPORTED_KINDS.has(selectedKind) ? applyWatch() : loadList()"
+              />
+            </div>
+            <div v-if="activeFilterChips.length" class="filter-chip-bar">
+              <span class="filter-chip-label">已启用筛选</span>
+              <button
+                v-for="chip in activeFilterChips"
+                :key="chip.id"
+                type="button"
+                class="filter-chip"
+                @click="clearFilterChip(chip.id)"
+                :title="`点击移除 ${chip.label} 筛选`"
+              >
+                {{ chip.label }}: {{ chip.value }}
+                <span class="filter-chip-close" aria-hidden="true">×</span>
+              </button>
+              <button type="button" class="filter-chip-clear-all" @click="clearAllFilters">清除全部</button>
             </div>
           </div>
-          <input
-            v-if="currentId"
-            v-model="nameFilter"
-            type="text"
-            class="filter-input"
-            placeholder="按名称筛选…"
-            autocomplete="off"
-            title="按名称包含匹配（前端过滤）"
-          />
-          <select
-            v-if="currentId && selectedKind === 'pods'"
-            v-model="nodeFilter"
-            class="filter-input"
-            title="按 Node 选项筛选"
-          >
-            <option value="all">Node: All</option>
-            <option v-for="node in podNodeOptions" :key="node" :value="node">
-              Node: {{ node }}
-            </option>
-          </select>
-          <input
-            v-if="currentId"
-            v-model="labelSelector"
-            type="text"
-            class="filter-input filter-input-label"
-            placeholder="Label 筛选，如 app=nginx"
-            autocomplete="off"
-            title="K8s label selector，如 app=nginx 或 env in (prod,staging)"
-            @keyup.enter="watchEnabled && WATCH_SUPPORTED_KINDS.has(selectedKind) ? applyWatch() : loadList()"
-          />
-          <button
-            v-if="currentId && WATCH_SUPPORTED_KINDS.has(selectedKind)"
-            type="button"
-            class="btn-watch"
-            :class="{ active: watchEnabled }"
-            :title="watchEnabled ? '关闭 Watch 实时更新' : '开启 Watch 实时更新'"
-            @click="watchEnabled = !watchEnabled"
-          >
-            {{ watchEnabled ? "Watch 开" : "Watch" }}
-          </button>
-          <button type="button" class="btn-refresh" :disabled="listLoading" @click="loadList">
-            {{ listLoading ? "刷新中…" : "刷新" }}
-          </button>
-          <template v-if="currentId">
-            <button
-              v-if="!batchDeleteMode"
-              type="button"
-              class="btn-secondary-outline"
-              @click="enterBatchDeleteMode"
-            >
-              批量删除
-            </button>
-            <template v-else>
-              <button type="button" class="btn-secondary-outline" @click="exitBatchDeleteMode">
-                取消
-              </button>
-              <button
-                type="button"
-                class="btn-danger-outline"
-                :disabled="selectedRowKeys.size === 0"
-                @click="openBatchDeleteConfirm"
-              >
-                删除选中 ({{ selectedRowKeys.size }})
-              </button>
-            </template>
-          </template>
         </header>
         <div v-if="currentId && getState(currentId) === 'disconnected'" class="disconnect-banner">
           <span class="disconnect-text">连接已断开</span>
@@ -1820,6 +2152,7 @@ onUnmounted(() => {
                 v-for="(row, i) in tableRows"
                 :key="i"
                 class="row-clickable"
+                :class="{ 'row-selected': isSelectedRow(row) }"
                 @click="onRowClick(row)"
                 @contextmenu.prevent="onRowContextMenu(row, $event)"
                 @dblclick="selectedKind === 'namespaces' && row.name && onNamespaceRowClick(String(row.name))"
@@ -1858,18 +2191,44 @@ onUnmounted(() => {
                     </template>
                   </template>
                   <template v-else>
-                    {{ row[col.key as keyof typeof row] }}
+                    <span
+                      v-if="isStatusColumn(col.key)"
+                      class="status-pill"
+                      :class="`status-${statusTone(row[col.key as keyof typeof row])}`"
+                    >
+                      {{ normalizeStatus(row[col.key as keyof typeof row]) }}
+                    </span>
+                    <template v-else>
+                      {{ row[col.key as keyof typeof row] }}
+                    </template>
                   </template>
                 </td>
               </tr>
             </tbody>
           </table>
-          <p v-if="!tableRows.length" class="empty-table">暂无资源</p>
+          <div v-if="!tableRows.length" class="empty-table">
+            <div class="empty-emoji" aria-hidden="true">📭</div>
+            <p class="empty-title">暂无资源</p>
+            <p class="empty-desc">可尝试调整命名空间、资源类型或筛选条件。</p>
+            <div class="empty-actions">
+              <button type="button" class="btn-secondary-outline" @click="clearAllFilters">清空筛选</button>
+              <button
+                v-if="!nsSelectionDisabled && selectedNamespace !== null"
+                type="button"
+                class="btn-secondary-outline"
+                @click="selectNamespace(null)"
+              >
+                切回默认命名空间
+              </button>
+              <button type="button" class="btn-secondary-outline" @click="openKindSelector">切换资源类型</button>
+            </div>
+          </div>
         </div>
       </div>
     </template>
     <div v-else class="empty-state">
-      <p>暂无打开的环境</p>
+      <div class="empty-emoji" aria-hidden="true">🌐</div>
+      <p class="empty-title">暂无打开的环境</p>
       <p class="empty-desc">请先在「环境管理」中打开至少一个环境。</p>
     </div>
 
@@ -1887,55 +2246,104 @@ onUnmounted(() => {
           role="menu"
           @click.stop
         >
-        <div class="action-menu-section">
-          <div class="action-menu-section-title">资源管理</div>
-          <button type="button" class="action-menu-item" @click="openResourceDetail">查看详情</button>
-          <button
-            v-if="selectedResource && selectedResource.kind === 'Pod'"
-            type="button"
-            class="action-menu-item"
-            @click="openPodLogs"
-          >
-            查看日志
-          </button>
-          <button
-            v-if="selectedResource && SHELL_WORKLOAD_KINDS.has(selectedResource.kind)"
-            type="button"
-            class="action-menu-item"
-            @click="openPodShell"
-          >
-            打开 Shell
-          </button>
-          <button
-            v-if="selectedResource && (selectedResource.kind === 'ConfigMap' || selectedResource.kind === 'Secret')"
-            type="button"
-            class="action-menu-item"
-            @click="openEditConfig"
-          >
-            修改配置
-          </button>
-          <button
-            v-if="selectedResource && IMAGE_PATCH_KINDS.has(selectedResource.kind)"
-            type="button"
-            class="action-menu-item"
-            @click="openChangeImageModal"
-          >
-            修改镜像
-          </button>
-          <button 
-            type="button" 
-            class="action-menu-item" 
-            @click="openTopology"
-          >
-            关联资源
-          </button>
-          <button type="button" class="action-menu-item" @click="syncToOrchestrator">
-            同步到资源编排台
-          </button>
-          <button type="button" class="action-menu-item action-menu-item-danger" @click="openDeleteConfirm">
-            删除
-          </button>
-        </div>
+          <div class="action-menu-section">
+            <div class="action-menu-section-title">查看与导航</div>
+            <button type="button" class="action-menu-item" @click="openResourceDetail">
+              <span class="action-menu-icon" aria-hidden="true">📄</span>
+              <span class="action-menu-text">
+                <span class="action-menu-main">查看详情</span>
+                <span class="action-menu-sub">打开 YAML、Describe 与编辑面板</span>
+              </span>
+            </button>
+            <button type="button" class="action-menu-item" @click="openTopology">
+              <span class="action-menu-icon" aria-hidden="true">🧭</span>
+              <span class="action-menu-text">
+                <span class="action-menu-main">关联资源</span>
+                <span class="action-menu-sub">查看上下游资源拓扑并快速跳转</span>
+              </span>
+            </button>
+            <button
+              v-if="selectedResource && selectedResource.kind === 'Pod'"
+              type="button"
+              class="action-menu-item"
+              @click="openPodLogs"
+            >
+              <span class="action-menu-icon" aria-hidden="true">📜</span>
+              <span class="action-menu-text">
+                <span class="action-menu-main">查看日志</span>
+                <span class="action-menu-sub">查看 Pod 运行日志与输出</span>
+              </span>
+            </button>
+            <button
+              v-if="selectedResource && SHELL_WORKLOAD_KINDS.has(selectedResource.kind)"
+              type="button"
+              class="action-menu-item"
+              @click="openPodShell"
+            >
+              <span class="action-menu-icon" aria-hidden="true">⌨</span>
+              <span class="action-menu-text">
+                <span class="action-menu-main">打开 Shell</span>
+                <span class="action-menu-sub">进入容器执行命令与排障</span>
+              </span>
+            </button>
+          </div>
+          <div class="action-menu-section">
+            <div class="action-menu-section-title">编辑与变更</div>
+            <button
+              v-if="selectedResource && (selectedResource.kind === 'ConfigMap' || selectedResource.kind === 'Secret')"
+              type="button"
+              class="action-menu-item"
+              @click="openEditConfig"
+            >
+              <span class="action-menu-icon" aria-hidden="true">⚙</span>
+              <span class="action-menu-text">
+                <span class="action-menu-main">修改配置</span>
+                <span class="action-menu-sub">编辑 ConfigMap / Secret 内容</span>
+              </span>
+            </button>
+            <button
+              v-if="selectedResource && IMAGE_PATCH_KINDS.has(selectedResource.kind)"
+              type="button"
+              class="action-menu-item"
+              @click="openChangeImageModal"
+            >
+              <span class="action-menu-icon" aria-hidden="true">🧩</span>
+              <span class="action-menu-text">
+                <span class="action-menu-main">修改镜像</span>
+                <span class="action-menu-sub">更新工作负载容器镜像版本</span>
+              </span>
+            </button>
+            <button type="button" class="action-menu-item" @click="syncToOrchestrator">
+              <span class="action-menu-icon" aria-hidden="true">🧱</span>
+              <span class="action-menu-text">
+                <span class="action-menu-main">资源编排</span>
+                <span class="action-menu-sub">同步到编排台并统一维护 YAML</span>
+              </span>
+            </button>
+          </div>
+          <div class="action-menu-section action-menu-section-danger">
+            <div class="action-menu-section-title">危险操作</div>
+            <button
+              type="button"
+              class="action-menu-item action-menu-item-danger"
+              :class="{ 'action-menu-item-danger-armed': deleteActionArmed }"
+              @click="handleDeleteAction"
+            >
+              <span class="action-menu-icon" aria-hidden="true">🗑</span>
+              <span class="action-menu-text">
+                <span class="action-menu-main">
+                  {{ deleteActionArmed ? "再次点击确认删除" : "删除" }}
+                </span>
+                <span class="action-menu-sub">
+                  {{
+                    deleteActionArmed
+                      ? "将打开删除确认弹窗，避免误操作"
+                      : "高风险操作，资源删除后通常不可恢复"
+                  }}
+                </span>
+              </span>
+            </button>
+          </div>
         </div>
       </div>
     </Teleport>
@@ -1998,17 +2406,47 @@ onUnmounted(() => {
   overflow: hidden;
 }
 .toolbar {
-  padding: 0.5rem 1rem;
-  border-bottom: 1px solid var(--border-color, #e2e8f0);
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f8fafc;
+  display: block;
+  flex-shrink: 0;
+}
+.toolbar-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+}
+.toolbar-main {
   display: flex;
   align-items: center;
-  gap: 1rem;
-  flex-shrink: 0;
-  background: #fff;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.toolbar-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding-top: 0.1rem;
+}
+.toolbar-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 .env-name {
   font-weight: 500;
   font-size: 0.875rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
 }
 .breadcrumb-bar {
   display: flex;
@@ -2052,7 +2490,7 @@ onUnmounted(() => {
   position: fixed;
   z-index: 1000;
   margin: 0.25rem 0 0 0.25rem;
-  min-width: 160px;
+  min-width: 220px;
   padding: 0.5rem 0;
   background: #fff;
   border: 1px solid #e2e8f0;
@@ -2063,8 +2501,8 @@ onUnmounted(() => {
   padding: 0 0.25rem;
 }
 .action-menu-section:not(:last-child) {
-  margin-bottom: 0.25rem;
-  padding-bottom: 0.25rem;
+  margin-bottom: 0.35rem;
+  padding-bottom: 0.35rem;
   border-bottom: 1px solid #f1f5f9;
 }
 .action-menu-section-title {
@@ -2076,9 +2514,11 @@ onUnmounted(() => {
   color: #94a3b8;
 }
 .action-menu-item {
-  display: block;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
   width: 100%;
-  padding: 0.4rem 0.75rem;
+  padding: 0.45rem 0.75rem;
   border: none;
   background: none;
   font-size: 0.8125rem;
@@ -2087,13 +2527,53 @@ onUnmounted(() => {
   cursor: pointer;
   border-radius: 4px;
 }
+.action-menu-icon {
+  width: 1rem;
+  text-align: center;
+  opacity: 0.9;
+  margin-top: 0.1rem;
+}
+.action-menu-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.action-menu-main {
+  color: inherit;
+  line-height: 1.2;
+}
+.action-menu-sub {
+  margin-top: 0.12rem;
+  font-size: 0.72rem;
+  line-height: 1.25;
+  color: #94a3b8;
+}
+.action-menu-item:hover .action-menu-sub {
+  color: #64748b;
+}
 .action-menu-item:hover {
   background: #f1f5f9;
   color: #2563eb;
 }
+.action-menu-section-danger {
+  border-left: 2px solid #fecaca;
+  margin-left: 0.25rem;
+  padding-left: 0.25rem;
+}
 .action-menu-item-danger:hover {
   background: #fef2f2;
   color: #dc2626;
+}
+.action-menu-item-danger:hover .action-menu-sub {
+  color: #b91c1c;
+}
+.action-menu-item-danger-armed {
+  background: #fee2e2;
+  color: #b91c1c;
+  box-shadow: inset 2px 0 0 #dc2626;
+}
+.action-menu-item-danger-armed .action-menu-sub {
+  color: #b91c1c;
 }
 .action-menu-loading {
   padding: 0.4rem 0.75rem;
@@ -2119,6 +2599,11 @@ onUnmounted(() => {
 .combobox-trigger:hover {
   background: #f8fafc;
   border-color: #cbd5e1;
+}
+.combobox-trigger.disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  background: #f8fafc;
 }
 .combobox-trigger.open {
   border-color: #2563eb;
@@ -2176,6 +2661,7 @@ onUnmounted(() => {
 .filter-input:focus {
   outline: none;
   border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
 }
 .filter-input-label {
   min-width: 160px;
@@ -2191,6 +2677,24 @@ onUnmounted(() => {
   text-align: left;
   cursor: pointer;
   color: #334155;
+}
+.combobox-item-with-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.ns-star {
+  font-size: 0.875rem;
+  line-height: 1;
+  color: #cbd5e1;
+  padding: 0.1rem 0.2rem;
+  border-radius: 4px;
+}
+.ns-star.active {
+  color: #f59e0b;
+}
+.ns-star:hover {
+  background: #f1f5f9;
 }
 .combobox-item:hover {
   background: #f1f5f9;
@@ -2209,18 +2713,61 @@ onUnmounted(() => {
   color: #94a3b8;
   border-top: 1px solid #f1f5f9;
 }
+.recent-kind-panel {
+  margin: 0.2rem 0.5rem 0.45rem;
+  padding: 0.35rem 0.45rem 0.45rem;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  background: #f0f7ff;
+}
+.recent-kind-title {
+  margin: 0.1rem 0.1rem 0.3rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: #3b82f6;
+  letter-spacing: 0.03em;
+}
+.recent-kind-list {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+.recent-kind-pill {
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+  font-size: 0.75rem;
+  line-height: 1.2;
+  cursor: pointer;
+}
+.recent-kind-pill:hover {
+  background: #dbeafe;
+}
+.recent-kind-pill.active {
+  border-color: #3b82f6;
+  background: #bfdbfe;
+  color: #1e40af;
+  font-weight: 600;
+}
 .combobox-group-label:first-of-type {
   border-top: none;
   padding-top: 0.25rem;
 }
 .resource-table tbody tr.row-clickable {
   cursor: pointer;
+  background: #fff;
 }
 .resource-table tbody tr.row-clickable:hover {
-  background: #f8fafc;
+  background: #f7faff;
+}
+.resource-table tbody tr.row-clickable.row-selected {
+  background: #ecf4ff;
+  box-shadow: inset 3px 0 0 #2563eb;
 }
 .btn-refresh {
-  margin-left: auto;
   padding: 0.35rem 0.75rem;
   border: 1px solid #e2e8f0;
   border-radius: 6px;
@@ -2338,6 +2885,7 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
+  border-bottom: 1px solid #fecaca;
 }
 .error-dismiss {
   flex-shrink: 0;
@@ -2388,20 +2936,26 @@ onUnmounted(() => {
   justify-content: flex-end;
 }
 .loading-state {
-  padding: 1.5rem;
+  padding: 2rem 1.5rem;
   text-align: center;
   color: #64748b;
   font-size: 0.875rem;
+  background: #fff;
 }
 .table-wrap {
   flex: 1;
   overflow: auto;
-  padding: 1rem;
+  padding: 0.9rem 1rem 1rem;
+  background: #f8fafc;
 }
 .resource-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.8125rem;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  overflow: hidden;
 }
 .resource-table th.col-checkbox,
 .resource-table td.col-checkbox {
@@ -2424,6 +2978,9 @@ onUnmounted(() => {
   font-weight: 600;
   color: #475569;
   background: #f8fafc;
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 .resource-table th.sortable {
   cursor: pointer;
@@ -2437,8 +2994,9 @@ onUnmounted(() => {
   font-size: 0.75rem;
   color: #64748b;
 }
-.resource-table tbody tr:hover {
-  background: #f8fafc;
+.resource-table tbody tr:nth-child(odd),
+.resource-table tbody tr:nth-child(even) {
+  background: #fff;
 }
 .resource-table td.cell-drillable {
   cursor: pointer;
@@ -2446,6 +3004,36 @@ onUnmounted(() => {
 }
 .resource-table td.cell-drillable:hover {
   text-decoration: underline;
+}
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.12rem 0.48rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  line-height: 1.2;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+.status-pill.status-ok {
+  color: #15803d;
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+}
+.status-pill.status-warn {
+  color: #b45309;
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+.status-pill.status-error {
+  color: #b91c1c;
+  background: #fef2f2;
+  border-color: #fecaca;
+}
+.status-pill.status-neutral {
+  color: #475569;
+  background: #f8fafc;
+  border-color: #e2e8f0;
 }
 .resource-table .cell-link {
   cursor: pointer;
@@ -2455,9 +3043,20 @@ onUnmounted(() => {
   text-decoration: underline;
 }
 .empty-table {
-  margin: 1rem 0 0 0;
-  color: #94a3b8;
-  font-size: 0.875rem;
+  margin: 1rem 0 0;
+  border: 1px dashed #cbd5e1;
+  border-radius: 10px;
+  background: #fff;
+  padding: 1.25rem 1rem;
+  text-align: center;
+}
+.empty-actions {
+  margin-top: 0.8rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
 }
 .empty-state {
   flex: 1;
@@ -2468,12 +3067,60 @@ onUnmounted(() => {
   gap: 0.5rem;
   color: #64748b;
   font-size: 0.875rem;
+  background: #f8fafc;
 }
 .empty-state p {
   margin: 0;
 }
+.empty-emoji {
+  font-size: 1.5rem;
+  line-height: 1;
+}
+.empty-title {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #334155;
+  font-weight: 600;
+}
 .empty-desc {
   font-size: 0.8125rem;
   color: #94a3b8;
+}
+.filter-chip-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+.filter-chip-label {
+  font-size: 0.75rem;
+  color: #64748b;
+}
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.75rem;
+  color: #1d4ed8;
+  background: #eff6ff;
+  cursor: pointer;
+}
+.filter-chip:hover {
+  background: #dbeafe;
+}
+.filter-chip-close {
+  opacity: 0.75;
+}
+.filter-chip-clear-all {
+  border: none;
+  background: transparent;
+  color: #64748b;
+  font-size: 0.75rem;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 0.1rem 0.2rem;
 }
 </style>
