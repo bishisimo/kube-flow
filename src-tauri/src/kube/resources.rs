@@ -88,6 +88,8 @@ pub struct PodItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub container_status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub pod_ip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub node_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub creation_time: Option<String>,
@@ -542,6 +544,7 @@ pub async fn list_pods(
                 } else {
                     None
                 },
+                pod_ip: p.status.as_ref().and_then(|s| s.pod_ip.clone()),
                 node_name: p.spec.and_then(|s| s.node_name),
                 creation_time: format_creation_time(p.metadata.creation_timestamp.as_ref()),
             }
@@ -596,6 +599,7 @@ pub async fn list_pods_using_pvc(
                 } else {
                     None
                 },
+                pod_ip: p.status.as_ref().and_then(|s| s.pod_ip.clone()),
                 node_name: p.spec.and_then(|s| s.node_name),
                 creation_time: format_creation_time(p.metadata.creation_timestamp.as_ref()),
             }

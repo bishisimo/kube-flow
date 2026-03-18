@@ -84,7 +84,7 @@ import { defaultNamespace } from "../api/env";
 
 const { openedEnvs, currentEnv, currentId, touchEnv, loadEnvironments, getEnvViewState, setEnvViewState } = useEnvStore();
 const { pendingOpen, requestSwitchToShell } = useShellStore();
-const { upsertFromWorkbenchSync, requestSwitchToOrchestrator } = useOrchestratorStore();
+const { manifests, upsertFromWorkbenchSync, requestSwitchToOrchestrator } = useOrchestratorStore();
 const {
   getProgress,
   getState,
@@ -102,6 +102,7 @@ const NS_FAVORITES_KEY = "kube-flow:ns-favorites";
 const NS_RECENT_KEY_PREFIX = "kube-flow:ns-recent:";
 const RECENT_KINDS_KEY = "kube-flow:recent-kinds";
 const MAX_RECENT_KINDS = 5;
+const ALL_NAMESPACES_SENTINEL = "__all__";
 const envBarCollapsed = ref(
   (() => {
     try {
@@ -148,6 +149,7 @@ function selectKindAndClearDrill(kind: ResourceKind) {
   labelSelector.value = "";
   nameFilter.value = "";
   nodeFilter.value = "all";
+  podIpFilter.value = "";
   selectedRowKeys.value = new Set();
   batchDeleteMode.value = false;
 }
@@ -158,6 +160,7 @@ function clearDrillAndReload() {
   labelSelector.value = "";
   nameFilter.value = "";
   nodeFilter.value = "all";
+  podIpFilter.value = "";
   kindDropdownOpen.value = false;
   selectedRowKeys.value = new Set();
   batchDeleteMode.value = false;
@@ -172,6 +175,7 @@ function onBreadcrumbResourceNameClick() {
   selectedNamespace.value = drillFrom.value.namespace;
   nameFilter.value = drillFrom.value.name;
   nodeFilter.value = "all";
+  podIpFilter.value = "";
   labelSelector.value = "";
   kindDropdownOpen.value = false;
   loadList();
@@ -187,6 +191,7 @@ function onBreadcrumbKindClick() {
   labelSelector.value = "";
   nameFilter.value = "";
   nodeFilter.value = "all";
+  podIpFilter.value = "";
   kindDropdownOpen.value = false;
   loadList();
 }
@@ -242,6 +247,8 @@ const kindFilter = ref("");
 const nameFilter = ref("");
 /** 按 Node 筛选：仅在 Pods 视图生效，默认 all（不过滤） */
 const nodeFilter = ref("all");
+/** 按 Pod IP 筛选：仅在 Pods 视图生效，支持包含匹配 */
+const podIpFilter = ref("");
 /** 按 label 筛选：传给 K8s API，格式如 app=nginx 或 env in (prod,staging) */
 const labelSelector = ref("");
 /** Watch 实时更新：开启后通过 Tauri 事件接收增量，仅部分 kind 支持 */
@@ -404,6 +411,25 @@ function selectNamespace(ns: string | null) {
   if (ns) touchRecentNamespace(ns);
 }
 
+async function refreshNamespaceOptions() {
+  const id = currentId.value;
+  if (!id) return;
+  try {
+    namespaceOptions.value = await kubeListNamespaces(id, null);
+  } catch {
+    // 保持现有列表，避免因瞬时错误清空下拉选项。
+  }
+}
+
+function toggleNamespaceDropdown() {
+  nsDropdownOpen.value = !nsDropdownOpen.value;
+  if (nsDropdownOpen.value) {
+    nsFilter.value = "";
+    kindDropdownOpen.value = false;
+    if (!namespaceOptions.value.length) void refreshNamespaceOptions();
+  }
+}
+
 function openKindSelector() {
   kindDropdownOpen.value = true;
   kindFilter.value = "";
@@ -442,6 +468,31 @@ const detailDrawerVisible = ref(false);
 const detailDrawerInitialTab = ref<string | null>(null);
 const changeImageModalVisible = ref(false);
 const deleteConfirmVisible = ref(false);
+const syncOrchestratorDialogVisible = ref(false);
+const syncOrchestratorMode = ref<"existing" | "new">("existing");
+const syncOrchestratorExistingComponent = ref("");
+const syncOrchestratorNewComponent = ref("");
+type SyncRelatedKind = "ConfigMap" | "Secret" | "Service";
+type SyncRelatedRef = { kind: SyncRelatedKind; name: string; namespace: string | null };
+const syncOrchestratorRelatedRefs = ref<SyncRelatedRef[]>([]);
+const syncOrchestratorSelectedRefKeys = ref<string[]>([]);
+const syncOrchestratorLoadingRelated = ref(false);
+const syncOrchestratorRelatedError = ref<string | null>(null);
+
+const orchestratorComponentsForCurrentEnv = computed(() => {
+  const envId = currentId.value;
+  if (!envId) return [];
+  const names = new Set<string>();
+  for (const m of manifests.value) {
+    if (m.env_id === envId) names.add(m.component);
+  }
+  return Array.from(names).sort((a, b) => a.localeCompare(b));
+});
+const syncSelectedRelatedCount = computed(() => syncOrchestratorSelectedRefKeys.value.length);
+const syncRelatedTotalCount = computed(() => syncOrchestratorRelatedRefs.value.length);
+const syncAllRelatedSelected = computed(
+  () => syncOrchestratorRelatedRefs.value.length > 0 && syncOrchestratorSelectedRefKeys.value.length === syncOrchestratorRelatedRefs.value.length
+);
 const deleteConfirmResources = ref<{ kind: string; name: string; namespace: string | null }[]>([]);
 const deleteConfirmDeleting = ref(false);
 const deleteConfirmError = ref<string | null>(null);
@@ -464,10 +515,11 @@ function selectResourceFromRow(row: Record<string, unknown>) {
   const kindLabel = RESOURCE_KINDS.find((k) => k.id === selectedKind.value)?.label ?? "";
   if (!kindLabel) return null;
   const isCluster = CLUSTER_SCOPED_KINDS.has(selectedKind.value);
+  const envDefaultNs = currentEnv.value ? defaultNamespace(currentEnv.value) : null;
   return {
     kind: kindLabel,
     name,
-    namespace: isCluster ? null : ((row.ns as string) ?? effectiveNamespace.value ?? null),
+    namespace: isCluster ? null : ((row.ns as string) ?? envDefaultNs ?? "default"),
   };
 }
 
@@ -476,7 +528,8 @@ function getRowKey(row: Record<string, unknown>): string {
   const name = row.name as string | undefined;
   if (!name) return "";
   const isCluster = CLUSTER_SCOPED_KINDS.has(selectedKind.value);
-  return isCluster ? name : `${(row.ns as string) ?? effectiveNamespace.value ?? "default"}/${name}`;
+  const envDefaultNs = currentEnv.value ? defaultNamespace(currentEnv.value) : null;
+  return isCluster ? name : `${(row.ns as string) ?? envDefaultNs ?? "default"}/${name}`;
 }
 
 function onRowContextMenu(row: Record<string, unknown>, e: MouseEvent) {
@@ -573,6 +626,67 @@ function handleDeleteAction() {
   openDeleteConfirm();
 }
 
+function relatedRefKey(ref: SyncRelatedRef): string {
+  return `${ref.kind}|${ref.namespace ?? ""}|${ref.name}`;
+}
+
+function toggleAllSyncRelatedRefs(checked: boolean) {
+  if (!checked) {
+    syncOrchestratorSelectedRefKeys.value = [];
+    return;
+  }
+  syncOrchestratorSelectedRefKeys.value = syncOrchestratorRelatedRefs.value.map((r) => relatedRefKey(r));
+}
+
+async function loadSyncRelatedRefs(envId: string, resource: { kind: string; name: string; namespace: string | null }) {
+  syncOrchestratorLoadingRelated.value = true;
+  syncOrchestratorRelatedError.value = null;
+  syncOrchestratorRelatedRefs.value = [];
+  syncOrchestratorSelectedRefKeys.value = [];
+  try {
+    const yaml = await kubeGetResource(envId, resource.kind, resource.name, resource.namespace);
+    const refs = await collectAssociatedRefsFromWorkloadYaml(envId, yaml, resource.namespace ?? "default");
+    syncOrchestratorRelatedRefs.value = refs;
+    syncOrchestratorSelectedRefKeys.value = refs.map((r) => relatedRefKey(r));
+  } catch (e) {
+    syncOrchestratorRelatedError.value = `关联资源解析失败：${extractErrorMessage(e)}`;
+  } finally {
+    syncOrchestratorLoadingRelated.value = false;
+  }
+}
+
+async function openSyncToOrchestratorDialog() {
+  const envId = currentId.value;
+  const r = selectedResource.value;
+  if (!envId || !r) return;
+  const components = orchestratorComponentsForCurrentEnv.value;
+  syncOrchestratorMode.value = "new";
+  syncOrchestratorExistingComponent.value = components[0] ?? "";
+  syncOrchestratorNewComponent.value = r.name;
+  syncOrchestratorDialogVisible.value = true;
+  closeActionMenu();
+  await loadSyncRelatedRefs(envId, r);
+}
+
+function closeSyncToOrchestratorDialog() {
+  syncOrchestratorDialogVisible.value = false;
+  syncOrchestratorLoadingRelated.value = false;
+  syncOrchestratorRelatedError.value = null;
+  syncOrchestratorRelatedRefs.value = [];
+  syncOrchestratorSelectedRefKeys.value = [];
+}
+
+function resolveSyncTargetComponent(): string {
+  if (syncOrchestratorMode.value === "existing") {
+    const name = syncOrchestratorExistingComponent.value.trim();
+    if (!name) throw new Error("请选择已有应用组件。");
+    return name;
+  }
+  const next = syncOrchestratorNewComponent.value.trim();
+  if (!next) throw new Error("请输入新应用组件名称。");
+  return next;
+}
+
 async function syncToOrchestrator() {
   const envId = currentId.value;
   const envName = currentEnv.value?.display_name;
@@ -580,9 +694,10 @@ async function syncToOrchestrator() {
   if (!envId || !envName || !r) return;
   try {
     const yaml = await kubeGetResource(envId, r.kind, r.name, r.namespace);
-    const componentName = r.name;
+    const componentName = resolveSyncTargetComponent();
     upsertFromWorkbenchSync(envId, envName, r, yaml, componentName);
-    const relatedRefs = collectConfigAndSecretRefsFromWorkloadYaml(yaml, r.namespace ?? "default");
+    const selectedKeys = new Set(syncOrchestratorSelectedRefKeys.value);
+    const relatedRefs = syncOrchestratorRelatedRefs.value.filter((ref) => selectedKeys.has(relatedRefKey(ref)));
     if (relatedRefs.length > 0) {
       const failed: string[] = [];
       for (const ref of relatedRefs) {
@@ -604,17 +719,17 @@ async function syncToOrchestrator() {
       }
     }
     requestSwitchToOrchestrator();
+    syncOrchestratorDialogVisible.value = false;
   } catch (e) {
     listError.value = extractErrorMessage(e);
-  } finally {
-    closeActionMenu();
   }
 }
 
-function collectConfigAndSecretRefsFromWorkloadYaml(
+async function collectAssociatedRefsFromWorkloadYaml(
+  envId: string,
   yaml: string,
   defaultNamespace: string
-): Array<{ kind: "ConfigMap" | "Secret"; name: string; namespace: string | null }> {
+): Promise<SyncRelatedRef[]> {
   let parsed: unknown;
   try {
     parsed = jsYaml.load(yaml);
@@ -624,17 +739,22 @@ function collectConfigAndSecretRefsFromWorkloadYaml(
   if (!parsed || typeof parsed !== "object") return [];
   const obj = parsed as Record<string, unknown>;
   const kind = typeof obj.kind === "string" ? obj.kind : "";
-  if (!["Deployment", "StatefulSet", "DaemonSet"].includes(kind)) return [];
+  if (!["Deployment", "StatefulSet", "DaemonSet", "Pod"].includes(kind)) return [];
 
+  const metadata = obj.metadata && typeof obj.metadata === "object" ? (obj.metadata as Record<string, unknown>) : null;
   const spec = obj.spec && typeof obj.spec === "object" ? (obj.spec as Record<string, unknown>) : null;
   const template =
     spec?.template && typeof spec.template === "object" ? (spec.template as Record<string, unknown>) : null;
   const podSpec =
-    template?.spec && typeof template.spec === "object" ? (template.spec as Record<string, unknown>) : null;
+    kind === "Pod"
+      ? spec
+      : template?.spec && typeof template.spec === "object"
+        ? (template.spec as Record<string, unknown>)
+        : null;
   if (!podSpec) return [];
 
-  const refs: Array<{ kind: "ConfigMap" | "Secret"; name: string; namespace: string | null }> = [];
-  const pushRef = (refKind: "ConfigMap" | "Secret", refName: string) => {
+  const refs: SyncRelatedRef[] = [];
+  const pushRef = (refKind: SyncRelatedKind, refName: string) => {
     const n = refName.trim();
     if (!n) return;
     refs.push({ kind: refKind, name: n, namespace: defaultNamespace || "default" });
@@ -691,7 +811,53 @@ function collectConfigAndSecretRefsFromWorkloadYaml(
     }
   }
 
-  const dedup = new Map<string, { kind: "ConfigMap" | "Secret"; name: string; namespace: string | null }>();
+  const podLabels =
+    kind === "Pod"
+      ? (metadata?.labels as Record<string, unknown> | undefined)
+      : template?.metadata && typeof template.metadata === "object"
+        ? ((template.metadata as Record<string, unknown>).labels as Record<string, unknown> | undefined)
+        : undefined;
+  const podLabelMap: Record<string, string> = {};
+  if (podLabels && typeof podLabels === "object") {
+    for (const [k, v] of Object.entries(podLabels)) {
+      if (typeof v === "string") podLabelMap[k] = v;
+    }
+  }
+  const labelKeys = Object.keys(podLabelMap);
+  if (labelKeys.length > 0) {
+    try {
+      const services = await kubeListServices(envId, defaultNamespace || "default", null);
+      for (const svc of services) {
+        try {
+          const serviceYaml = await kubeGetResource(envId, "Service", svc.name, svc.namespace || defaultNamespace || "default");
+          const serviceParsed = jsYaml.load(serviceYaml);
+          if (!serviceParsed || typeof serviceParsed !== "object") continue;
+          const serviceObj = serviceParsed as Record<string, unknown>;
+          const serviceSpec =
+            serviceObj.spec && typeof serviceObj.spec === "object"
+              ? (serviceObj.spec as Record<string, unknown>)
+              : null;
+          const selector =
+            serviceSpec?.selector && typeof serviceSpec.selector === "object"
+              ? (serviceSpec.selector as Record<string, unknown>)
+              : null;
+          if (!selector) continue;
+          const selectorEntries = Object.entries(selector).filter(([, value]) => typeof value === "string");
+          if (!selectorEntries.length) continue;
+          const matched = selectorEntries.every(([key, value]) => podLabelMap[key] === value);
+          if (matched) {
+            pushRef("Service", svc.name);
+          }
+        } catch {
+          continue;
+        }
+      }
+    } catch {
+      // 忽略 Service 扩展解析失败，不影响主流程。
+    }
+  }
+
+  const dedup = new Map<string, SyncRelatedRef>();
   for (const ref of refs) {
     dedup.set(`${ref.kind}|${ref.namespace ?? ""}|${ref.name}`, ref);
   }
@@ -811,7 +977,7 @@ function onRoleRefClick(row: Record<string, unknown>) {
   if (!kind || !name) return;
   if (kind === "Role") {
     selectedKind.value = "roles";
-    selectedNamespace.value = (row.ns as string) ?? effectiveNamespace.value;
+    selectedNamespace.value = (row.ns as string) ?? selectedNamespace.value;
     nameFilter.value = name;
   } else {
     selectedKind.value = "clusterroles";
@@ -844,7 +1010,7 @@ function onSubjectClick(row: Record<string, unknown>, subject: { kind: string; n
   if (subject.kind !== "ServiceAccount") return;
   const sourceKind = selectedKind.value === "clusterrolebindings" ? "ClusterRoleBinding" : "RoleBinding";
   selectedKind.value = "serviceaccounts";
-  selectedNamespace.value = subject.namespace ?? (row.ns as string) ?? effectiveNamespace.value;
+  selectedNamespace.value = subject.namespace ?? (row.ns as string) ?? selectedNamespace.value;
   nameFilter.value = subject.name;
   labelSelector.value = "";
   drillFrom.value = { kind: sourceKind, name: String(row.name), namespace: (row.ns as string) ?? null };
@@ -884,7 +1050,7 @@ function onReplicasClick(row: Record<string, unknown>) {
   const kindLabel = RESOURCE_KINDS.find((k) => k.id === selectedKind.value)?.label ?? "";
   if (!kindLabel) return;
   selectedKind.value = "pods";
-  selectedNamespace.value = (row.ns as string) ?? effectiveNamespace.value;
+  selectedNamespace.value = (row.ns as string) ?? selectedNamespace.value;
   labelSelector.value = ls;
   nameFilter.value = "";
   drillFrom.value = { kind: kindLabel, name: String(row.name), namespace: (row.ns as string) ?? null };
@@ -903,7 +1069,7 @@ function onNamespaceRowClick(name: string) {
 const effectiveNamespace = computed(() => {
   const ns = selectedNamespace.value;
   if (ns) return ns;
-  return (currentEnv.value && defaultNamespace(currentEnv.value)) ?? "default";
+  return "全部";
 });
 
 const rawTableRows = computed(() => {
@@ -923,6 +1089,7 @@ const rawTableRows = computed(() => {
         ns: p.namespace,
         phase: p.phase ?? "-",
         containerStatus: p.container_status ?? "-",
+        podIp: p.pod_ip ?? "-",
         node: p.node_name ?? "-",
         creationTime: p.creation_time ?? "-",
       }));
@@ -1169,13 +1336,17 @@ function onSortColumn(key: string) {
   }
 }
 
-/** 应用名称/Node 筛选与排序 */
+/** 应用名称/Node/Pod IP 筛选与排序 */
 const tableRows = computed(() => {
   let raw = rawTableRows.value as Record<string, unknown>[];
   const q = nameFilter.value.trim().toLowerCase();
   if (q) raw = raw.filter((r) => String(r.name ?? "").toLowerCase().includes(q));
   if (selectedKind.value === "pods" && nodeFilter.value !== "all") {
     raw = raw.filter((r) => String(r.node ?? "") === nodeFilter.value);
+  }
+  if (selectedKind.value === "pods") {
+    const ip = podIpFilter.value.trim().toLowerCase();
+    if (ip) raw = raw.filter((r) => String(r.podIp ?? "").toLowerCase().includes(ip));
   }
   const by = sortBy.value;
   const order = sortOrder.value;
@@ -1186,7 +1357,7 @@ const tableRows = computed(() => {
 });
 
 type ActiveFilterChip = {
-  id: "name" | "node" | "label";
+  id: "name" | "node" | "podIp" | "label";
   label: string;
   value: string;
 };
@@ -1199,6 +1370,10 @@ const activeFilterChips = computed<ActiveFilterChip[]>(() => {
   if (selectedKind.value === "pods" && nodeFilter.value !== "all") {
     chips.push({ id: "node", label: "Node", value: nodeFilter.value });
   }
+  if (selectedKind.value === "pods") {
+    const podIp = podIpFilter.value.trim();
+    if (podIp) chips.push({ id: "podIp", label: "Pod IP", value: podIp });
+  }
   if (label) chips.push({ id: "label", label: "Label", value: label });
   return chips;
 });
@@ -1206,6 +1381,7 @@ const activeFilterChips = computed<ActiveFilterChip[]>(() => {
 function clearFilterChip(id: ActiveFilterChip["id"]) {
   if (id === "name") nameFilter.value = "";
   else if (id === "node") nodeFilter.value = "all";
+  else if (id === "podIp") podIpFilter.value = "";
   else if (id === "label") labelSelector.value = "";
   if (watchEnabled.value && WATCH_SUPPORTED_KINDS.has(selectedKind.value)) applyWatch();
   else loadList();
@@ -1214,6 +1390,7 @@ function clearFilterChip(id: ActiveFilterChip["id"]) {
 function clearAllFilters() {
   nameFilter.value = "";
   nodeFilter.value = "all";
+  podIpFilter.value = "";
   labelSelector.value = "";
   if (watchEnabled.value && WATCH_SUPPORTED_KINDS.has(selectedKind.value)) applyWatch();
   else loadList();
@@ -1282,6 +1459,7 @@ const tableColumns = computed(() => {
         { key: "ns", label: "Namespace" },
         { key: "phase", label: "状态" },
         { key: "containerStatus", label: "容器启动" },
+        { key: "podIp", label: "Pod IP" },
         { key: "node", label: "Node" },
         { key: "creationTime", label: "创建时间" },
       ];
@@ -1521,7 +1699,7 @@ async function loadList() {
   listLoading.value = true;
   listError.value = null;
   if (getState(id) !== "connected") setConnecting(id);
-  const ns = selectedNamespace.value || (currentEnv.value && defaultNamespace(currentEnv.value)) || undefined;
+  const ns = selectedNamespace.value ?? ALL_NAMESPACES_SENTINEL;
   const labelSel = labelSelector.value.trim() || null;
   try {
     await touchEnv(id);
@@ -1704,6 +1882,7 @@ watch(selectedKind, () => {
   sortBy.value = "creationTime";
   sortOrder.value = "desc";
   nodeFilter.value = "all";
+  podIpFilter.value = "";
 });
 watch(currentId, (id) => {
   recentNamespaces.value = loadRecentNamespaces(id);
@@ -1748,12 +1927,13 @@ watch(
 function applyWatch() {
   const id = currentId.value;
   if (!id) return;
+  if (!namespaceOptions.value.length) void refreshNamespaceOptions();
   kubeStopWatch(id).catch(() => {});
   if (watchEnabled.value && WATCH_SUPPORTED_KINDS.has(selectedKind.value)) {
     const ns =
       selectedKind.value === "namespaces" || selectedKind.value === "nodes"
         ? null
-        : effectiveNamespace.value;
+        : (selectedNamespace.value ?? ALL_NAMESPACES_SENTINEL);
     kubeStartWatch(id, selectedKind.value, ns, labelSelector.value.trim() || null).catch(async (e) => {
       const msg = extractErrorMessage(e);
       const isAuthRequired = await sshAuth.checkAndHandle(msg, () => applyWatch());
@@ -1831,7 +2011,7 @@ onUnmounted(() => {
         <nav v-if="currentId" class="breadcrumb-bar" aria-label="导航">
           <template v-if="drillFrom">
             <button type="button" class="breadcrumb-seg" @click="selectedNamespace = drillFrom!.namespace; clearDrillAndReload()">
-              {{ drillFrom!.namespace || "default" }}
+              {{ drillFrom!.namespace || "全部" }}
             </button>
             <span class="breadcrumb-sep">›</span>
             <button type="button" class="breadcrumb-seg" @click="onBreadcrumbKindClick()">
@@ -1869,13 +2049,7 @@ onUnmounted(() => {
               :class="{ open: nsDropdownOpen, disabled: nsSelectionDisabled }"
               :disabled="nsSelectionDisabled"
               :title="nsSelectionDisabled ? '当前资源为集群级，命名空间不生效' : '命名空间：输入筛选后选择'"
-              @click="
-                nsDropdownOpen = !nsDropdownOpen;
-                if (nsDropdownOpen) {
-                  nsFilter = '';
-                  kindDropdownOpen = false;
-                }
-              "
+              @click="toggleNamespaceDropdown"
                 >
                   <span class="combobox-label">NS</span>
               <span class="combobox-value">{{ nsSelectionDisabled ? '集群级资源' : effectiveNamespace }}</span>
@@ -1890,7 +2064,7 @@ onUnmounted(() => {
                     autocomplete="off"
                   />
               <button type="button" class="combobox-item" :class="{ active: selectedNamespace === null }" @click="selectNamespace(null)">
-                    默认
+                    全部
                   </button>
               <template v-if="namespaceFavorites.length > 0">
                 <div class="combobox-group-label">收藏</div>
@@ -2063,6 +2237,15 @@ onUnmounted(() => {
                   Node: {{ node }}
                 </option>
               </select>
+              <input
+                v-if="selectedKind === 'pods'"
+                v-model="podIpFilter"
+                type="text"
+                class="filter-input"
+                placeholder="按 Pod IP 筛选…"
+                autocomplete="off"
+                title="按 Pod IP 包含匹配（前端过滤）"
+              />
               <input
                 v-model="labelSelector"
                 type="text"
@@ -2313,7 +2496,7 @@ onUnmounted(() => {
                 <span class="action-menu-sub">更新工作负载容器镜像版本</span>
               </span>
             </button>
-            <button type="button" class="action-menu-item" @click="syncToOrchestrator">
+            <button type="button" class="action-menu-item" @click="openSyncToOrchestratorDialog">
               <span class="action-menu-icon" aria-hidden="true">🧱</span>
               <span class="action-menu-text">
                 <span class="action-menu-main">资源编排</span>
@@ -2342,6 +2525,77 @@ onUnmounted(() => {
                   }}
                 </span>
               </span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <div v-if="syncOrchestratorDialogVisible" class="error-modal-overlay" @click.self="closeSyncToOrchestratorDialog">
+        <div class="sync-orchestrator-modal" role="dialog" aria-label="同步到资源编排">
+          <h3 class="sync-orchestrator-title">同步到资源编排</h3>
+          <p class="sync-orchestrator-desc">
+            选择将当前资源同步到哪个应用组件，可用于继续维护已有组件或新建组件。
+          </p>
+          <div class="sync-orchestrator-mode-row">
+            <label class="sync-radio">
+              <input v-model="syncOrchestratorMode" type="radio" value="new" />
+              新增应用组件
+            </label>
+            <label class="sync-radio">
+              <input v-model="syncOrchestratorMode" type="radio" value="existing" :disabled="orchestratorComponentsForCurrentEnv.length === 0" />
+              加入已有应用组件
+            </label>
+          </div>
+          <label v-if="syncOrchestratorMode === 'existing'" class="sync-field">
+            <span>已有组件</span>
+            <select v-model="syncOrchestratorExistingComponent" class="filter-input" :disabled="orchestratorComponentsForCurrentEnv.length === 0">
+              <option value="" disabled>选择组件</option>
+              <option v-for="name in orchestratorComponentsForCurrentEnv" :key="name" :value="name">
+                {{ name }}
+              </option>
+            </select>
+          </label>
+          <label v-else class="sync-field">
+            <span>新组件名称</span>
+            <input v-model="syncOrchestratorNewComponent" type="text" class="filter-input" placeholder="输入应用组件名称" />
+          </label>
+          <div class="sync-related-panel">
+            <div class="sync-related-head">
+              <span>关联资源</span>
+              <small v-if="syncRelatedTotalCount > 0">已选 {{ syncSelectedRelatedCount }} / {{ syncRelatedTotalCount }}</small>
+            </div>
+            <div v-if="syncOrchestratorLoadingRelated" class="sync-related-empty">正在解析关联资源…</div>
+            <div v-else-if="syncOrchestratorRelatedError" class="sync-related-error">{{ syncOrchestratorRelatedError }}</div>
+            <template v-else>
+              <label v-if="syncRelatedTotalCount > 0" class="sync-select-all">
+                <input
+                  type="checkbox"
+                  :checked="syncAllRelatedSelected"
+                  @change="toggleAllSyncRelatedRefs(($event.target as HTMLInputElement).checked)"
+                />
+                全选关联资源
+              </label>
+              <div v-if="syncRelatedTotalCount > 0" class="sync-related-list">
+                <label v-for="ref in syncOrchestratorRelatedRefs" :key="relatedRefKey(ref)" class="sync-related-item">
+                  <input v-model="syncOrchestratorSelectedRefKeys" type="checkbox" :value="relatedRefKey(ref)" />
+                  <span>{{ ref.kind }}/{{ ref.name }}</span>
+                  <small>{{ ref.namespace || "default" }}</small>
+                </label>
+              </div>
+              <div v-else class="sync-related-empty">当前资源未检测到可关联同步的 ConfigMap/Secret/Service。</div>
+            </template>
+          </div>
+          <div class="sync-orchestrator-actions">
+            <button type="button" class="btn-secondary-outline" @click="closeSyncToOrchestratorDialog">取消</button>
+            <button
+              type="button"
+              class="btn-primary"
+              :disabled="(syncOrchestratorMode === 'existing' && !syncOrchestratorExistingComponent) || syncOrchestratorLoadingRelated"
+              @click="syncToOrchestrator"
+            >
+              确认同步
             </button>
           </div>
         </div>
@@ -2934,6 +3188,108 @@ onUnmounted(() => {
 .error-modal-actions {
   display: flex;
   justify-content: flex-end;
+}
+.sync-orchestrator-modal {
+  width: min(92vw, 520px);
+  background: #fff;
+  border-radius: 12px;
+  border: 1px solid #cbd5e1;
+  padding: 1rem;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.15);
+}
+.sync-orchestrator-title {
+  margin: 0 0 0.35rem;
+  font-size: 1rem;
+  color: #1e293b;
+}
+.sync-orchestrator-desc {
+  margin: 0 0 0.75rem;
+  font-size: 0.82rem;
+  color: #64748b;
+}
+.sync-orchestrator-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin-bottom: 0.7rem;
+}
+.sync-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.82rem;
+  color: #334155;
+}
+.sync-field {
+  display: grid;
+  gap: 0.35rem;
+  margin-bottom: 0.85rem;
+  font-size: 0.8rem;
+  color: #334155;
+}
+.sync-related-panel {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 0.6rem;
+  margin-bottom: 0.85rem;
+}
+.sync-related-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.45rem;
+  font-size: 0.8rem;
+  color: #334155;
+}
+.sync-related-head small {
+  color: #64748b;
+}
+.sync-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.76rem;
+  color: #334155;
+  margin-bottom: 0.45rem;
+}
+.sync-related-list {
+  display: grid;
+  gap: 0.3rem;
+  max-height: 180px;
+  overflow: auto;
+}
+.sync-related-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #fff;
+  padding: 0.3rem 0.4rem;
+  font-size: 0.76rem;
+  color: #0f172a;
+}
+.sync-related-item small {
+  margin-left: auto;
+  color: #64748b;
+}
+.sync-related-empty {
+  font-size: 0.76rem;
+  color: #64748b;
+}
+.sync-related-error {
+  font-size: 0.76rem;
+  color: #b91c1c;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  padding: 0.35rem 0.45rem;
+}
+.sync-orchestrator-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
 }
 .loading-state {
   padding: 2rem 1.5rem;

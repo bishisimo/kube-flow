@@ -20,6 +20,7 @@ export interface PodItem {
   namespace: string;
   phase?: string | null;
   container_status?: string | null;
+  pod_ip?: string | null;
   node_name?: string | null;
   creation_time?: string | null;
 }

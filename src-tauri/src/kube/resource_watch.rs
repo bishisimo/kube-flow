@@ -31,6 +31,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::RwLock;
 
 const WATCH_EVENT: &str = "resource-watch-update";
+const ALL_NAMESPACES_SENTINEL: &str = "__all__";
 
 /// 按 env_id 存储当前活跃的 Watch 任务 AbortHandle
 pub struct WatchStore {
@@ -111,6 +112,7 @@ fn pod_to_item(p: Pod, ns: &str) -> PodItem {
         } else {
             None
         },
+        pod_ip: p.status.as_ref().and_then(|s| s.pod_ip.clone()),
         node_name: p.spec.and_then(|s| s.node_name),
         creation_time: format_creation_time(p.metadata.creation_timestamp.as_ref()),
     }
@@ -428,7 +430,8 @@ pub async fn start_watch(
     let ns = namespace
         .as_deref()
         .or_else(|| env.default_namespace())
-        .map(String::from);
+        .map(String::from)
+        .or_else(|| Some(ALL_NAMESPACES_SENTINEL.to_string()));
     let label_sel = label_selector.filter(|s| !s.trim().is_empty());
 
     let env_id_clone = env_id.clone();
@@ -448,7 +451,6 @@ async fn run_watch(
     ns: Option<String>,
     label_selector: Option<String>,
 ) {
-    let ns = ns.unwrap_or_else(|| "default".to_string());
     match kind.as_str() {
         "pods" => run_watch_pods(app, client, env_id, ns, label_selector).await,
         "deployments" => run_watch_deployments(app, client, env_id, ns, label_selector).await,
@@ -468,10 +470,16 @@ async fn run_watch_pods(
     app: AppHandle,
     client: Client,
     env_id: String,
-    ns: String,
+    ns: Option<String>,
     label_selector: Option<String>,
 ) {
-    let api: Api<Pod> = Api::namespaced(client.clone(), &ns);
+    let all_namespaces = ns.as_deref() == Some(ALL_NAMESPACES_SENTINEL);
+    let ns = ns.unwrap_or_else(|| "default".to_string());
+    let api: Api<Pod> = if all_namespaces {
+        Api::all(client.clone())
+    } else {
+        Api::namespaced(client.clone(), &ns)
+    };
     let mut config = WatcherConfig::default();
     if let Some(ref sel) = label_selector {
         config = config.labels(sel);
@@ -514,10 +522,16 @@ async fn run_watch_deployments(
     app: AppHandle,
     client: Client,
     env_id: String,
-    ns: String,
+    ns: Option<String>,
     label_selector: Option<String>,
 ) {
-    let api: Api<Deployment> = Api::namespaced(client.clone(), &ns);
+    let all_namespaces = ns.as_deref() == Some(ALL_NAMESPACES_SENTINEL);
+    let ns = ns.unwrap_or_else(|| "default".to_string());
+    let api: Api<Deployment> = if all_namespaces {
+        Api::all(client.clone())
+    } else {
+        Api::namespaced(client.clone(), &ns)
+    };
     let mut config = WatcherConfig::default();
     if let Some(ref sel) = label_selector {
         config = config.labels(sel);
@@ -560,10 +574,16 @@ async fn run_watch_services(
     app: AppHandle,
     client: Client,
     env_id: String,
-    ns: String,
+    ns: Option<String>,
     label_selector: Option<String>,
 ) {
-    let api: Api<Service> = Api::namespaced(client.clone(), &ns);
+    let all_namespaces = ns.as_deref() == Some(ALL_NAMESPACES_SENTINEL);
+    let ns = ns.unwrap_or_else(|| "default".to_string());
+    let api: Api<Service> = if all_namespaces {
+        Api::all(client.clone())
+    } else {
+        Api::namespaced(client.clone(), &ns)
+    };
     let mut config = WatcherConfig::default();
     if let Some(ref sel) = label_selector {
         config = config.labels(sel);
