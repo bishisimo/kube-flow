@@ -13,3 +13,10 @@ export function appSettingsSetSshTunnelMode(mode: TunnelMappingMode): Promise<vo
   return invoke("app_settings_set_ssh_tunnel_mode", { mode });
 }
 
+export function appSettingsGetAutoSnapshotEnabled(): Promise<boolean> {
+  return invoke("app_settings_get_auto_snapshot_enabled");
+}
+
+export function appSettingsSetAutoSnapshotEnabled(enabled: boolean): Promise<void> {
+  return invoke("app_settings_set_auto_snapshot_enabled", { enabled });
+}

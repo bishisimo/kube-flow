@@ -8,14 +8,23 @@ import PodLogPanel from "./PodLogPanel.vue";
 import ResourceTopologyPanel from "./ResourceTopologyPanel.vue";
 import WorkloadLogPanel from "./WorkloadLogPanel.vue";
 import SecretEditor from "./SecretEditor.vue";
+import ResourceSnapshotPanel from "./ResourceSnapshotPanel.vue";
+import ResourceSnapshotViewer from "./ResourceSnapshotViewer.vue";
 import {
   kubeApplyResource,
   kubeDescribeResource,
   kubeGetResource,
 } from "../api/kube";
 import { useYamlMonacoTheme } from "../stores/yamlTheme";
-import { useShellStore } from "../stores/shell";
-import { useEnvStore } from "../stores/env";
+import {
+  createResourceSnapshot,
+  deleteResourceSnapshot,
+  formatResourceSnapshotYaml,
+  listResourceSnapshotsByCategory,
+  summarizeResourceYaml,
+  type ResourceSnapshotItem,
+} from "../stores/resourceSnapshots";
+import { ensureAutoSnapshotSettingLoaded } from "../stores/appSettings";
 
 const DRAWER_WIDTH_KEY = "kube-flow:drawer-width";
 const DRAWER_MIN = 360;
@@ -45,49 +54,24 @@ const emit = defineEmits<{
   }): void;
 }>();
 
-type DetailTab = "yaml" | "describe" | "edit" | "editConfig" | "logs" | "topology";
+type DetailTab = "yaml" | "describe" | "edit" | "editConfig" | "logs" | "topology" | "snapshots";
 const activeTab = ref<DetailTab>("yaml");
 
 const rawYaml = ref("");
 const editYaml = ref("");
+const editConfigYaml = ref("");
 const describeMarkdown = ref("");
 const loading = ref(false);
 const describeLoading = ref(false);
 const error = ref<string | null>(null);
 const describeError = ref<string | null>(null);
 const editError = ref<string | null>(null);
+const editInfo = ref<string | null>(null);
 const editSaving = ref(false);
+const snapshotSaving = ref(false);
+const viewingSnapshot = ref<ResourceSnapshotItem | null>(null);
 const showManagedFields = ref(false);
 const { monacoTheme } = useYamlMonacoTheme();
-const { pendingOpen, requestSwitchToShell } = useShellStore();
-const { openedEnvs } = useEnvStore();
-
-const SHELL_WORKLOAD_KINDS = new Set(["Pod", "Deployment", "StatefulSet", "DaemonSet"]);
-
-function openPodShell() {
-  const r = props.resource;
-  if (!r || !SHELL_WORKLOAD_KINDS.has(r.kind) || !props.envId) return;
-  const env = openedEnvs.value.find((e) => e.id === props.envId);
-  if (!env) return;
-  const ns = r.namespace ?? "default";
-  if (r.kind === "Pod") {
-    pendingOpen.value = {
-      envId: props.envId,
-      envName: env.display_name,
-      namespace: ns,
-      podName: r.name,
-    };
-  } else {
-    pendingOpen.value = {
-      envId: props.envId,
-      envName: env.display_name,
-      namespace: ns,
-      workloadKind: r.kind,
-      workloadName: r.name,
-    };
-  }
-  requestSwitchToShell();
-}
 
 
 const monacoOptions = {
@@ -102,6 +86,27 @@ const monacoReadOnlyOptions = {
   ...monacoOptions,
   readOnly: true,
 };
+
+const snapshotResourceRef = computed(() =>
+  props.envId && props.resource
+    ? {
+        env_id: props.envId,
+        resource_kind: props.resource.kind,
+        resource_name: props.resource.name,
+        resource_namespace: props.resource.namespace ?? null,
+      }
+    : null
+);
+
+const genericSnapshots = computed(() => listResourceSnapshotsByCategory(snapshotResourceRef.value, "all"));
+const currentSnapshotSummary = computed(() => summarizeResourceYaml(resolveCurrentDraftYaml() || rawYaml.value));
+
+function resolveCurrentDraftYaml(): string {
+  if (props.resource?.kind === "ConfigMap" || props.resource?.kind === "Secret") {
+    return editConfigYaml.value || editYaml.value || rawYaml.value;
+  }
+  return editYaml.value || rawYaml.value;
+}
 
 function getInitialDrawerWidth(): number {
   try {
@@ -237,14 +242,70 @@ async function applyEdit(yamlOverride?: string) {
   if (!props.envId || !props.resource || !yaml.trim()) return;
   editSaving.value = true;
   editError.value = null;
+  editInfo.value = null;
   try {
+    const snapshotYaml =
+      activeTab.value === "editConfig"
+        ? (editConfigYaml.value || yaml).trim()
+        : yaml.trim();
+    const autoSnapshotEnabled = await ensureAutoSnapshotSettingLoaded();
+    if (autoSnapshotEnabled && snapshotYaml && snapshotResourceRef.value) {
+      createResourceSnapshot(snapshotResourceRef.value, {
+        yaml: snapshotYaml,
+        category: activeTab.value === "editConfig" ? "config" : "resource",
+        source: "before-apply",
+        title: activeTab.value === "editConfig" ? "应用前配置快照" : "应用前资源快照",
+      });
+    }
     await kubeApplyResource(props.envId, yaml);
     await fetchYaml();
+    editInfo.value = "已自动保存当前编辑草稿快照，可在“快照”栏目统一查看。";
     activeTab.value = "yaml";
   } catch (e) {
     editError.value = e instanceof Error ? e.message : String(e);
   } finally {
     editSaving.value = false;
+  }
+}
+
+function openSnapshotViewer(snapshot: ResourceSnapshotItem) {
+  viewingSnapshot.value = snapshot;
+}
+
+function removeSnapshot(snapshot: ResourceSnapshotItem) {
+  deleteResourceSnapshot(snapshot.id);
+  if (viewingSnapshot.value?.id === snapshot.id) {
+    viewingSnapshot.value = null;
+  }
+  editInfo.value = "快照已删除。";
+}
+
+function handleEditorError(message: string) {
+  editError.value = message;
+  editInfo.value = null;
+}
+
+function handleConfigYamlUpdate(yaml: string) {
+  editConfigYaml.value = yaml;
+}
+
+function saveManualSnapshot() {
+  if (!snapshotResourceRef.value) return;
+  const snapshotYaml = formatResourceSnapshotYaml(resolveCurrentDraftYaml().trim());
+  if (!snapshotYaml) return;
+  const category = activeTab.value === "editConfig" ? "config" : "resource";
+  snapshotSaving.value = true;
+  try {
+    createResourceSnapshot(snapshotResourceRef.value, {
+      yaml: snapshotYaml,
+      category,
+      source: "manual",
+      title: category === "config" ? "手动配置快照" : "手动资源快照",
+    });
+    editError.value = null;
+    editInfo.value = "当前资源已保存为快照。";
+  } finally {
+    snapshotSaving.value = false;
   }
 }
 
@@ -273,10 +334,13 @@ watch(
       rawYaml.value = "";
       yamlContent.value = "";
       editYaml.value = "";
+      editConfigYaml.value = "";
       describeMarkdown.value = "";
       error.value = null;
       describeError.value = null;
       editError.value = null;
+      editInfo.value = null;
+      viewingSnapshot.value = null;
     }
   },
   { immediate: true }
@@ -290,7 +354,9 @@ watch(
     }
     if ((tab === "edit" || tab === "editConfig") && yaml) {
       editYaml.value = stripManagedFields(yaml);
+      editConfigYaml.value = stripManagedFields(yaml);
       editError.value = null;
+      editInfo.value = null;
     }
   }
 );
@@ -313,76 +379,15 @@ watch(
           <button type="button" class="btn-close" aria-label="关闭" @click="emit('close')">×</button>
         </header>
         <div v-if="props.resource" class="drawer-toolbar">
-          <div class="toolbar-row">
-            <div class="tab-buttons">
-              <button
-                type="button"
-                class="tab-btn"
-                :class="{ active: activeTab === 'yaml' }"
-                @click="activeTab = 'yaml'"
-              >
-                YAML
-              </button>
-              <button
-                type="button"
-                class="tab-btn"
-                :class="{ active: activeTab === 'edit' }"
-                @click="activeTab = 'edit'"
-              >
-                Edit
-              </button>
-              <button
-                type="button"
-                class="tab-btn"
-                :class="{ active: activeTab === 'describe' }"
-                @click="activeTab = 'describe'"
-              >
-                Describe
-              </button>
-              <button
-                v-if="
-                  resource &&
-                  (resource.kind === 'Pod' ||
-                    resource.kind === 'Deployment' ||
-                    resource.kind === 'StatefulSet' ||
-                    resource.kind === 'DaemonSet')
-                "
-                type="button"
-                class="tab-btn"
-                :class="{ active: activeTab === 'logs' }"
-                @click="activeTab = 'logs'"
-              >
-                日志
-              </button>
-              <button
-                v-if="resource && SHELL_WORKLOAD_KINDS.has(resource.kind)"
-                type="button"
-                class="tab-btn tab-btn-shell"
-                title="在 Pod Shell 界面打开"
-                @click="openPodShell"
-              >
-                打开 Shell
-              </button>
-              <button
-                v-if="resource && (resource.kind === 'ConfigMap' || resource.kind === 'Secret')"
-                type="button"
-                class="tab-btn"
-                :class="{ active: activeTab === 'editConfig' }"
-                @click="activeTab = 'editConfig'"
-              >
-                修改配置
-              </button>
-              <button
-                type="button"
-                class="tab-btn"
-                :class="{ active: activeTab === 'topology' }"
-                @click="activeTab = 'topology'"
-              >
-                关联资源
-              </button>
+          <div class="toolbar-head">
+            <div class="toolbar-resource-meta">
+              <span class="toolbar-kind-pill">{{ resource?.kind || "资源" }}</span>
+              <span class="toolbar-resource-sub">
+                {{ resource?.namespace ? `${resource.namespace} / ${resource.name}` : resource?.name }}
+              </span>
             </div>
             <template v-if="activeTab === 'yaml' && rawYaml">
-              <label class="checkbox-label">
+              <label class="checkbox-label checkbox-label-ghost">
                 <input v-model="showManagedFields" type="checkbox" />
                 <span>显示 managedFields</span>
               </label>
@@ -397,6 +402,102 @@ watch(
                 {{ editSaving ? "保存中…" : "应用" }}
               </button>
             </template>
+          </div>
+          <div class="toolbar-row">
+            <div class="tab-grid">
+              <button
+                type="button"
+                class="tab-btn tab-card"
+                :class="{ active: activeTab === 'yaml' }"
+                @click="activeTab = 'yaml'"
+              >
+                <span class="tab-icon" aria-hidden="true">Y</span>
+                <span class="tab-copy">
+                  <span class="tab-title">YAML</span>
+                  <span class="tab-desc">查看资源原始定义</span>
+                </span>
+              </button>
+              <button
+                type="button"
+                class="tab-btn tab-card"
+                :class="{ active: activeTab === 'edit' }"
+                @click="activeTab = 'edit'"
+              >
+                <span class="tab-icon" aria-hidden="true">E</span>
+                <span class="tab-copy">
+                  <span class="tab-title">编辑 YAML</span>
+                  <span class="tab-desc">完整编辑并应用资源</span>
+                </span>
+              </button>
+              <button
+                type="button"
+                class="tab-btn tab-card"
+                :class="{ active: activeTab === 'describe' }"
+                @click="activeTab = 'describe'"
+              >
+                <span class="tab-icon" aria-hidden="true">D</span>
+                <span class="tab-copy">
+                  <span class="tab-title">Describe</span>
+                  <span class="tab-desc">查看解析后的说明信息</span>
+                </span>
+              </button>
+              <button
+                v-if="
+                  resource &&
+                  (resource.kind === 'Pod' ||
+                    resource.kind === 'Deployment' ||
+                    resource.kind === 'StatefulSet' ||
+                    resource.kind === 'DaemonSet')
+                "
+                type="button"
+                class="tab-btn tab-card"
+                :class="{ active: activeTab === 'logs' }"
+                @click="activeTab = 'logs'"
+              >
+                <span class="tab-icon" aria-hidden="true">L</span>
+                <span class="tab-copy">
+                  <span class="tab-title">日志</span>
+                  <span class="tab-desc">排查运行时输出</span>
+                </span>
+              </button>
+              <button
+                v-if="resource && (resource.kind === 'ConfigMap' || resource.kind === 'Secret')"
+                type="button"
+                class="tab-btn tab-card"
+                :class="{ active: activeTab === 'editConfig' }"
+                @click="activeTab = 'editConfig'"
+              >
+                <span class="tab-icon" aria-hidden="true">C</span>
+                <span class="tab-copy">
+                  <span class="tab-title">修改配置</span>
+                  <span class="tab-desc">结构化编辑键值内容</span>
+                </span>
+              </button>
+              <button
+                type="button"
+                class="tab-btn tab-card"
+                :class="{ active: activeTab === 'topology' }"
+                @click="activeTab = 'topology'"
+              >
+                <span class="tab-icon" aria-hidden="true">R</span>
+                <span class="tab-copy">
+                  <span class="tab-title">关联资源</span>
+                  <span class="tab-desc">查看引用与上下游关系</span>
+                </span>
+              </button>
+              <button
+                type="button"
+                class="tab-btn tab-card"
+                :class="{ active: activeTab === 'snapshots' }"
+                @click="activeTab = 'snapshots'"
+              >
+                <span class="tab-icon" aria-hidden="true">S</span>
+                <span class="tab-copy">
+                  <span class="tab-title">快照</span>
+                  <span class="tab-desc">统一管理历史草稿版本</span>
+                </span>
+              </button>
+            </div>
           </div>
         </div>
         <div class="drawer-body">
@@ -413,6 +514,20 @@ watch(
               :env-id="props.envId"
               :resource="resource"
               @navigate="(p) => emit('navigate', p)"
+            />
+          </div>
+          <div v-else-if="activeTab === 'snapshots'" class="snapshot-tab-wrap">
+            <ResourceSnapshotPanel
+              title="资源快照"
+              subtitle="统一查看和管理当前资源的历史快照；普通 YAML 编辑会保存完整 YAML（不含 managedFields）。"
+              create-label="生成快照"
+              :snapshots="genericSnapshots"
+              :creating="snapshotSaving"
+              :current-summary="currentSnapshotSummary"
+              empty-text="还没有资源快照。编辑 YAML 或配置后，可以随时在这里保存和管理快照。"
+              @create="saveManualSnapshot"
+              @view="openSnapshotViewer"
+              @delete="removeSnapshot"
             />
           </div>
           <div
@@ -442,12 +557,14 @@ watch(
           </div>
           <div v-else-if="activeTab === 'editConfig' && rawYaml && (resource?.kind === 'ConfigMap' || resource?.kind === 'Secret')" class="edit-panel">
             <div v-if="editError" class="edit-error">{{ editError }}</div>
+            <div v-else-if="editInfo" class="edit-info">{{ editInfo }}</div>
             <div v-if="resource?.kind === 'ConfigMap'" class="edit-scroll">
               <ConfigMapEditor
                 :raw-yaml="editYaml"
                 :saving="editSaving"
                 @save="(y) => applyEdit(y)"
-                @error="(m) => (editError = m)"
+                @error="handleEditorError"
+                @update:yaml="handleConfigYamlUpdate"
               />
             </div>
             <div v-else-if="resource?.kind === 'Secret'" class="edit-scroll">
@@ -455,7 +572,8 @@ watch(
                 :raw-yaml="editYaml"
                 :saving="editSaving"
                 @save="(y) => applyEdit(y)"
-                @error="(m) => (editError = m)"
+                @error="handleEditorError"
+                @update:yaml="handleConfigYamlUpdate"
               />
             </div>
           </div>
@@ -485,6 +603,11 @@ watch(
       </aside>
     </div>
   </Teleport>
+  <ResourceSnapshotViewer
+    :visible="!!viewingSnapshot"
+    :snapshot="viewingSnapshot"
+    @close="viewingSnapshot = null"
+  />
 </template>
 
 <style scoped>
@@ -546,43 +669,128 @@ watch(
   color: #334155;
 }
 .drawer-toolbar {
-  padding: 0.5rem 1rem;
+  padding: 0.75rem 1rem 0.9rem;
   border-bottom: 1px solid #e2e8f0;
-  background: #f8fafc;
+  background:
+    radial-gradient(circle at top left, rgba(59, 130, 246, 0.12), transparent 28%),
+    linear-gradient(180deg, #f8fbff 0%, #f8fafc 100%);
   flex-shrink: 0;
+}
+.toolbar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.toolbar-resource-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  min-width: 0;
+}
+.toolbar-kind-pill {
+  flex-shrink: 0;
+  padding: 0.28rem 0.6rem;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+.toolbar-resource-sub {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8125rem;
+  color: #475569;
 }
 .toolbar-row {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   gap: 1rem;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   flex: 1;
   min-width: 0;
 }
 .toolbar-apply {
-  margin-left: auto;
+  flex-shrink: 0;
 }
-.tab-buttons {
-  display: flex;
-  gap: 0.25rem;
+.tab-grid {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
+  gap: 0.55rem;
 }
 .tab-btn {
-  padding: 0.25rem 0.6rem;
-  border: 1px solid #e2e8f0;
-  border-radius: 4px;
+  border: 1px solid #dbe3ee;
+  border-radius: 14px;
   background: #fff;
-  font-size: 0.8125rem;
   cursor: pointer;
   color: #475569;
+  transition:
+    transform 0.16s ease,
+    border-color 0.16s ease,
+    box-shadow 0.16s ease,
+    background 0.16s ease;
 }
 .tab-btn:hover {
-  background: #f8fafc;
+  background: #fff;
+  border-color: #93c5fd;
+  box-shadow: 0 10px 22px rgba(148, 163, 184, 0.12);
+  transform: translateY(-1px);
+}
+.tab-card {
+  min-height: 68px;
+  padding: 0.75rem 0.85rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  text-align: left;
 }
 .tab-btn.active {
-  background: rgba(37, 99, 235, 0.1);
-  border-color: #2563eb;
+  background: linear-gradient(180deg, rgba(219, 234, 254, 0.88) 0%, rgba(239, 246, 255, 1) 100%);
+  border-color: #60a5fa;
+  color: #1d4ed8;
+  box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.22), 0 12px 26px rgba(59, 130, 246, 0.12);
+}
+.tab-icon {
+  width: 2rem;
+  height: 2rem;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: #eff6ff;
   color: #2563eb;
-  font-weight: 500;
+  font-size: 0.875rem;
+  font-weight: 800;
+}
+.tab-btn.active .tab-icon {
+  background: #2563eb;
+  color: #fff;
+}
+.tab-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.14rem;
+}
+.tab-title {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: #1e293b;
+}
+.tab-btn.active .tab-title {
+  color: #1d4ed8;
+}
+.tab-desc {
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: #64748b;
 }
 .checkbox-label {
   display: inline-flex;
@@ -594,6 +802,12 @@ watch(
 }
 .checkbox-label input {
   cursor: pointer;
+}
+.checkbox-label-ghost {
+  padding: 0.55rem 0.8rem;
+  border: 1px solid #dbe3ee;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.82);
 }
 .drawer-body {
   flex: 1;
@@ -689,6 +903,21 @@ watch(
   flex-direction: column;
   overflow: hidden;
 }
+.snapshot-tab-wrap {
+  flex: 1;
+  min-height: 0;
+  padding: 1rem;
+  overflow: hidden;
+}
+.snapshot-tab-wrap :deep(.snapshot-panel) {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  height: 100%;
+  border-left: none;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+}
 .logs-panel {
   flex: 1;
   min-height: 0;
@@ -710,6 +939,14 @@ watch(
   color: #dc2626;
   background: #fef2f2;
 }
+.edit-info {
+  flex-shrink: 0;
+  padding: 0.5rem 1rem;
+  font-size: 0.8125rem;
+  color: #0f766e;
+  background: #ecfeff;
+  border-bottom: 1px solid #cffafe;
+}
 .edit-scroll {
   flex: 1;
   min-height: 0;
@@ -726,12 +963,13 @@ watch(
   border-color: #2563eb;
 }
 .btn-primary {
-  padding: 0.35rem 0.75rem;
+  padding: 0.55rem 0.95rem;
   border: none;
-  border-radius: 6px;
+  border-radius: 12px;
   background: #2563eb;
   color: #fff;
   font-size: 0.8125rem;
+  font-weight: 600;
   cursor: pointer;
 }
 .btn-primary:hover:not(:disabled) {
@@ -751,5 +989,28 @@ watch(
 .yaml-monaco {
   flex: 1;
   min-height: 200px;
+}
+
+@media (max-width: 960px) {
+  .toolbar-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .toolbar-row {
+    flex-direction: column;
+  }
+  .tab-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .tab-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .toolbar-resource-meta {
+    flex-direction: column;
+    align-items: flex-start;
+  }
 }
 </style>

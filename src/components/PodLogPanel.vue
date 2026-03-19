@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, computed, onUnmounted } from "vue";
+import { ref, watch, computed, onUnmounted, onMounted } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { AnsiUp } from "ansi_up";
 import {
@@ -8,6 +8,8 @@ import {
   kubePodLogStreamStart,
   kubePodLogStreamStop,
 } from "../api/kube";
+import { logGetDisplaySettings, type LogDisplayOrder } from "../api/log";
+import { useLogStore } from "../stores/log";
 
 const props = withDefaults(
   defineProps<{
@@ -59,6 +61,8 @@ const streamId = ref<string | null>(null);
 const searchQuery = ref("");
 const currentMatchIndex = ref(0);
 const logContentRef = ref<HTMLElement | null>(null);
+const displayOrder = ref<LogDisplayOrder>("asc");
+const { logRefreshTrigger } = useLogStore();
 
 const LOG_BG_KEY = "kube-flow:log-bg-theme";
 type LogBgTheme = "light" | "dark";
@@ -93,7 +97,8 @@ const SINCE_OPTIONS = [
 const logLines = computed(() => {
   const s = rawContent.value;
   if (!s.trim()) return [];
-  return s.split("\n");
+  const lines = s.split("\n");
+  return displayOrder.value === "desc" ? [...lines].reverse() : lines;
 });
 
 const matchIndices = computed(() => {
@@ -157,6 +162,15 @@ async function loadContainers() {
     selectedContainer.value = "";
   } finally {
     containersLoading.value = false;
+  }
+}
+
+async function loadDisplaySettings() {
+  try {
+    const settings = await logGetDisplaySettings();
+    displayOrder.value = settings.order;
+  } catch {
+    displayOrder.value = "asc";
   }
 }
 
@@ -273,8 +287,16 @@ watch(searchQuery, () => {
   currentMatchIndex.value = 0;
 });
 
+watch(logRefreshTrigger, () => {
+  loadDisplaySettings();
+});
+
 onUnmounted(() => {
   stopFollow();
+});
+
+onMounted(() => {
+  loadDisplaySettings();
 });
 
 let unlistenChunk: (() => void) | null = null;

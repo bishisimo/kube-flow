@@ -16,6 +16,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "save", yaml: string): void;
   (e: "error", message: string): void;
+  (e: "update:yaml", yaml: string): void;
 }>();
 
 const rows = ref<KeyValueRow[]>([]);
@@ -60,6 +61,16 @@ watch(
   () => props.rawYaml,
   () => parseYaml(),
   { immediate: true }
+);
+
+watch(
+  [rows, binaryDataRows, metadata],
+  () => {
+    try {
+      emit("update:yaml", buildYaml());
+    } catch {}
+  },
+  { deep: true, immediate: true }
 );
 
 const hasEmptyRow = computed(() =>
@@ -120,28 +131,46 @@ function validateFormatBySuffix(rows: KeyValueRow[]): string[] {
   return invalid;
 }
 
+function dumpInlineScalar(value: string): string {
+  return jsYaml.dump(value, { lineWidth: -1 }).trim();
+}
+
+function renderStringEntry(key: string, value: string, indent = "  "): string[] {
+  const renderedKey = dumpInlineScalar(key);
+  if (!value.includes("\n")) {
+    return [`${indent}${renderedKey}: ${dumpInlineScalar(value)}`];
+  }
+  const lines = value.split("\n");
+  const hasTrailingNewline = value.endsWith("\n");
+  const header = `${indent}${renderedKey}: |${hasTrailingNewline ? "" : "-"}`;
+  return [header, ...lines.map((line) => `${indent}  ${line}`)];
+}
+
+function renderSection(name: string, entries: KeyValueRow[]): string[] {
+  const validEntries = entries.filter((r) => r.key.trim());
+  if (validEntries.length === 0) return [];
+  const lines = [`${name}:`];
+  for (const row of validEntries) {
+    lines.push(...renderStringEntry(row.key.trim(), row.value));
+  }
+  return lines;
+}
+
 function buildYaml(): string {
-  const data: Record<string, string> = {};
-  for (const r of rows.value) {
-    const k = r.key.trim();
-    if (k) data[k] = r.value;
-  }
-  const binaryData: Record<string, string> = {};
-  for (const r of binaryDataRows.value) {
-    const k = r.key.trim();
-    if (k) binaryData[k] = r.value;
-  }
   const meta = (metadata.value.metadata as Record<string, unknown>) || {};
-  const obj: Record<string, unknown> = {
-    apiVersion: "v1",
-    kind: "ConfigMap",
-    metadata: meta,
-    data,
-  };
-  if (Object.keys(binaryData).length > 0) {
-    obj.binaryData = binaryData;
+  const metadataYaml = jsYaml.dump(meta, { lineWidth: -1 }).trimEnd();
+  const lines = [
+    "apiVersion: v1",
+    "kind: ConfigMap",
+    "metadata:",
+    ...metadataYaml.split("\n").map((line) => `  ${line}`),
+    ...renderSection("data", rows.value),
+  ];
+  const binarySection = renderSection("binaryData", binaryDataRows.value);
+  if (binarySection.length > 0) {
+    lines.push(...binarySection);
   }
-  return jsYaml.dump(obj, { lineWidth: -1 });
+  return `${lines.join("\n")}\n`;
 }
 
 function doApply() {

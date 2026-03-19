@@ -14,6 +14,16 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+#[cfg(windows)]
+fn apply_no_window(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn apply_no_window(_: &mut Command) {}
+
 #[derive(Debug, thiserror::Error)]
 pub enum TunnelError {
     #[error("ssh config: {0}")]
@@ -445,6 +455,7 @@ fn run_tunnel_ssh(
 
     let mut cat_cmd_builder = Command::new("ssh");
     cat_cmd_builder.stdin(Stdio::null());
+    apply_no_window(&mut cat_cmd_builder);
     append_idle_protection_ssh_args(&mut cat_cmd_builder, idle_protection_enabled);
 
     if let Some(ref ap) = askpass_path {
@@ -573,6 +584,7 @@ fn run_tunnel_ssh(
 
     // 启动 ssh -L -N 端口转发子进程，同样注入 SSH_ASKPASS（如有）
     let mut tunnel_cmd = std::process::Command::new("ssh");
+    apply_no_window(&mut tunnel_cmd);
     append_idle_protection_ssh_args(&mut tunnel_cmd, idle_protection_enabled);
     tunnel_cmd
         .args([

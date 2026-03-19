@@ -1,7 +1,16 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import * as jsYaml from "js-yaml";
 import { kubeGetResource, kubePatchContainerImages } from "../api/kube";
+import ResourceSnapshotPanel from "./ResourceSnapshotPanel.vue";
+import ResourceSnapshotViewer from "./ResourceSnapshotViewer.vue";
+import {
+  createResourceSnapshot,
+  deleteResourceSnapshot,
+  listResourceSnapshotsByCategory,
+  type ResourceSnapshotItem,
+} from "../stores/resourceSnapshots";
+import { ensureAutoSnapshotSettingLoaded } from "../stores/appSettings";
 
 export interface ResourceRef {
   kind: string;
@@ -24,9 +33,27 @@ const loading = ref(false);
 const error = ref<string | null>(null);
 const imagePatchSaving = ref(false);
 const imagePatchError = ref<string | null>(null);
+const imagePatchInfo = ref<string | null>(null);
+const snapshotSaving = ref(false);
+const viewingSnapshot = ref<ResourceSnapshotItem | null>(null);
+const resourceYaml = ref("");
 const containers = ref<
   { name: string; currentImage: string; imageName: string; imageTag: string }[]
 >([]);
+
+const snapshotResourceRef = computed(() =>
+  props.envId && props.resource
+    ? {
+        env_id: props.envId,
+        resource_kind: props.resource.kind,
+        resource_name: props.resource.name,
+        resource_namespace: props.resource.namespace ?? null,
+      }
+    : null
+);
+
+const resourceSnapshots = computed(() => listResourceSnapshotsByCategory(snapshotResourceRef.value, "image"));
+const currentSnapshotSummary = computed(() => summarizeImages(containers.value));
 
 function parseImage(image: string): { name: string; tag: string } {
   const lastColon = image.lastIndexOf(":");
@@ -43,10 +70,51 @@ function buildFullImage(name: string, tag: string): string {
   return t ? `${n}:${t}` : n;
 }
 
+function buildImageSnapshotYaml(
+  items: { name: string; currentImage: string; imageName: string; imageTag: string }[],
+  useCurrentImage = false
+): string {
+  const containersYaml = items.map((item) => ({
+    name: item.name,
+    image: useCurrentImage ? item.currentImage : buildFullImage(item.imageName, item.imageTag),
+  }));
+  return jsYaml.dump({ containers: containersYaml }, { lineWidth: -1 });
+}
+
+function summarizeImages(items: { name: string; currentImage: string; imageName: string; imageTag: string }[]): string {
+  if (!items.length) return "镜像快照";
+  const preview = items
+    .slice(0, 2)
+    .map((item) => `${item.name}=${buildFullImage(item.imageName, item.imageTag) || item.currentImage || "-"}`)
+    .join(" · ");
+  return items.length > 2 ? `${items.length} 个容器 · ${preview} 等` : `${items.length} 个容器 · ${preview}`;
+}
+
+function parseContainersFromYaml(yaml: string) {
+  const obj = jsYaml.load(yaml) as Record<string, unknown>;
+  const template = (obj?.spec as Record<string, unknown>)?.["template"] as Record<string, unknown>;
+  const spec = template?.spec as Record<string, unknown>;
+  const arr = spec?.containers as { name?: string; image?: string }[] | undefined;
+  if (!Array.isArray(arr) || arr.length === 0) {
+    throw new Error("无法解析容器信息");
+  }
+  return arr.map((c) => {
+    const img = c.image ?? "";
+    const { name, tag } = parseImage(img);
+    return {
+      name: c.name ?? "",
+      currentImage: img,
+      imageName: name,
+      imageTag: tag,
+    };
+  });
+}
+
 async function fetchAndParse() {
   if (!props.envId || !props.resource) return;
   loading.value = true;
   error.value = null;
+  imagePatchInfo.value = null;
   containers.value = [];
   try {
     const yaml = await kubeGetResource(
@@ -55,24 +123,8 @@ async function fetchAndParse() {
       props.resource.name,
       props.resource.namespace
     );
-    const obj = jsYaml.load(yaml) as Record<string, unknown>;
-    const template = (obj?.spec as Record<string, unknown>)?.["template"] as Record<string, unknown>;
-    const spec = template?.spec as Record<string, unknown>;
-    const arr = spec?.containers as { name?: string; image?: string }[] | undefined;
-    if (!Array.isArray(arr) || arr.length === 0) {
-      error.value = "无法解析容器信息";
-      return;
-    }
-    containers.value = arr.map((c) => {
-      const img = c.image ?? "";
-      const { name, tag } = parseImage(img);
-      return {
-        name: c.name ?? "",
-        currentImage: img,
-        imageName: name,
-        imageTag: tag,
-      };
-    });
+    resourceYaml.value = yaml;
+    containers.value = parseContainersFromYaml(yaml);
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -97,7 +149,18 @@ async function applyPatch() {
   }
   imagePatchSaving.value = true;
   imagePatchError.value = null;
+  imagePatchInfo.value = null;
   try {
+    const autoSnapshotEnabled = await ensureAutoSnapshotSettingLoaded();
+    if (autoSnapshotEnabled && resourceYaml.value && snapshotResourceRef.value) {
+      createResourceSnapshot(snapshotResourceRef.value, {
+        yaml: buildImageSnapshotYaml(containers.value),
+        category: "image",
+        source: "before-image-patch",
+        title: "镜像变更前快照",
+        summary: summarizeImages(containers.value),
+      });
+    }
     await kubePatchContainerImages(
       props.envId,
       props.resource.kind,
@@ -105,6 +168,7 @@ async function applyPatch() {
       props.resource.namespace,
       patches
     );
+    imagePatchInfo.value = "已自动保存变更前镜像快照。";
     emit("success");
     emit("close");
   } catch (e) {
@@ -112,6 +176,36 @@ async function applyPatch() {
   } finally {
     imagePatchSaving.value = false;
   }
+}
+
+function saveManualSnapshot() {
+  if (!snapshotResourceRef.value || !containers.value.length) return;
+  snapshotSaving.value = true;
+  try {
+    createResourceSnapshot(snapshotResourceRef.value, {
+      yaml: buildImageSnapshotYaml(containers.value),
+      category: "image",
+      source: "manual",
+      title: "手动镜像快照",
+      summary: summarizeImages(containers.value),
+    });
+    imagePatchError.value = null;
+    imagePatchInfo.value = "当前镜像状态已保存为快照。";
+  } finally {
+    snapshotSaving.value = false;
+  }
+}
+
+function openSnapshotViewer(snapshot: ResourceSnapshotItem) {
+  viewingSnapshot.value = snapshot;
+}
+
+function removeSnapshot(snapshot: ResourceSnapshotItem) {
+  deleteResourceSnapshot(snapshot.id);
+  if (viewingSnapshot.value?.id === snapshot.id) {
+    viewingSnapshot.value = null;
+  }
+  imagePatchInfo.value = "快照已删除。";
 }
 
 watch(
@@ -123,6 +217,9 @@ watch(
       containers.value = [];
       error.value = null;
       imagePatchError.value = null;
+      imagePatchInfo.value = null;
+      resourceYaml.value = "";
+      viewingSnapshot.value = null;
     }
   },
   { immediate: true }
@@ -142,33 +239,50 @@ watch(
         <div v-if="loading" class="modal-loading">加载中…</div>
         <div v-else-if="error" class="modal-error">{{ error }}</div>
         <div v-else class="modal-body">
-          <div v-if="imagePatchError" class="modal-error">{{ imagePatchError }}</div>
-          <div v-for="c in containers" :key="c.name" class="container-card">
-            <div class="container-name">{{ c.name }}</div>
-            <div class="container-current">
-              <span class="current-label">当前镜像</span>
-              <code class="current-value" :title="c.currentImage">{{ c.currentImage || "—" }}</code>
-            </div>
-            <div class="container-edit">
-              <div class="edit-row">
-                <label class="edit-label">镜像</label>
-                <input
-                  v-model="c.imageName"
-                  type="text"
-                  class="image-input"
-                  placeholder="nginx 或 registry.io/ns/nginx"
-                />
+          <div v-if="imagePatchError" class="modal-error-inline">{{ imagePatchError }}</div>
+          <div v-else-if="imagePatchInfo" class="modal-info">{{ imagePatchInfo }}</div>
+          <div class="modal-layout">
+            <div class="modal-edit-area">
+              <div v-for="c in containers" :key="c.name" class="container-card">
+                <div class="container-name">{{ c.name }}</div>
+                <div class="container-current">
+                  <span class="current-label">当前镜像</span>
+                  <code class="current-value" :title="c.currentImage">{{ c.currentImage || "—" }}</code>
+                </div>
+                <div class="container-edit">
+                  <div class="edit-row">
+                    <label class="edit-label">镜像</label>
+                    <input
+                      v-model="c.imageName"
+                      type="text"
+                      class="image-input"
+                      placeholder="nginx 或 registry.io/ns/nginx"
+                    />
+                  </div>
+                  <div class="edit-row">
+                    <label class="edit-label">Tag</label>
+                    <input
+                      v-model="c.imageTag"
+                      type="text"
+                      class="image-input image-tag-input"
+                      placeholder="1.21"
+                    />
+                  </div>
+                </div>
               </div>
-              <div class="edit-row">
-                <label class="edit-label">Tag</label>
-                <input
-                  v-model="c.imageTag"
-                  type="text"
-                  class="image-input image-tag-input"
-                  placeholder="1.21"
-                />
-              </div>
             </div>
+            <ResourceSnapshotPanel
+              title="镜像快照"
+              subtitle="保留每次变更前状态，仅用于查看历史镜像内容。"
+              create-label="保存当前镜像"
+              :snapshots="resourceSnapshots"
+              :creating="snapshotSaving"
+              :current-summary="currentSnapshotSummary"
+              empty-text="还没有镜像快照。首次应用前会自动保存，也可以先手动保存当前镜像状态。"
+              @create="saveManualSnapshot"
+              @view="openSnapshotViewer"
+              @delete="removeSnapshot"
+            />
           </div>
         </div>
         <div class="modal-actions">
@@ -185,6 +299,11 @@ watch(
       </div>
     </div>
   </Teleport>
+  <ResourceSnapshotViewer
+    :visible="!!viewingSnapshot"
+    :snapshot="viewingSnapshot"
+    @close="viewingSnapshot = null"
+  />
 </template>
 
 <style scoped>
@@ -251,6 +370,31 @@ watch(
   overflow: auto;
   flex: 1;
   min-height: 0;
+}
+.modal-layout {
+  display: flex;
+  min-height: 0;
+  gap: 0;
+}
+.modal-edit-area {
+  flex: 1;
+  min-width: 0;
+  padding-right: 1rem;
+}
+.modal-error-inline,
+.modal-info {
+  margin-bottom: 0.9rem;
+  padding: 0.75rem 0.9rem;
+  border-radius: 10px;
+  font-size: 0.8125rem;
+}
+.modal-error-inline {
+  color: #dc2626;
+  background: #fef2f2;
+}
+.modal-info {
+  color: #0f766e;
+  background: #ecfeff;
 }
 .container-card {
   padding: 1rem 1.25rem;
@@ -356,5 +500,18 @@ watch(
 .btn-primary:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+@media (max-width: 960px) {
+  .modal-content {
+    min-width: 0;
+    width: min(96vw, 720px);
+  }
+  .modal-layout {
+    flex-direction: column;
+  }
+  .modal-edit-area {
+    padding-right: 0;
+  }
 }
 </style>

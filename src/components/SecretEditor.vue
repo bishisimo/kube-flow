@@ -17,6 +17,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "save", yaml: string): void;
   (e: "error", message: string): void;
+  (e: "update:yaml", yaml: string): void;
 }>();
 
 const rows = ref<SecretRow[]>([]);
@@ -93,6 +94,16 @@ watch(
   { immediate: true }
 );
 
+watch(
+  [rows, metadata, secretType],
+  () => {
+    try {
+      emit("update:yaml", buildYaml());
+    } catch {}
+  },
+  { deep: true, immediate: true }
+);
+
 const hasEmptyRow = computed(() =>
   rows.value.some((r) => !r.key.trim())
 );
@@ -155,21 +166,43 @@ function validateFormatBySuffix(rows: SecretRow[]): string[] {
   return invalid;
 }
 
-function buildYaml(): string {
-  const stringData: Record<string, string> = {};
-  for (const r of rows.value) {
-    const k = r.key.trim();
-    if (k) stringData[k] = r.value;
+function dumpInlineScalar(value: string): string {
+  return jsYaml.dump(value, { lineWidth: -1 }).trim();
+}
+
+function renderStringEntry(key: string, value: string, indent = "  "): string[] {
+  const renderedKey = dumpInlineScalar(key);
+  if (!value.includes("\n")) {
+    return [`${indent}${renderedKey}: ${dumpInlineScalar(value)}`];
   }
+  const lines = value.split("\n");
+  const hasTrailingNewline = value.endsWith("\n");
+  const header = `${indent}${renderedKey}: |${hasTrailingNewline ? "" : "-"}`;
+  return [header, ...lines.map((line) => `${indent}  ${line}`)];
+}
+
+function renderSection(name: string, entries: SecretRow[]): string[] {
+  const validEntries = entries.filter((r) => r.key.trim());
+  if (validEntries.length === 0) return [];
+  const lines = [`${name}:`];
+  for (const row of validEntries) {
+    lines.push(...renderStringEntry(row.key.trim(), row.value));
+  }
+  return lines;
+}
+
+function buildYaml(): string {
   const meta = (metadata.value.metadata as Record<string, unknown>) || {};
-  const obj: Record<string, unknown> = {
-    apiVersion: "v1",
-    kind: "Secret",
-    metadata: meta,
-    type: secretType.value,
-    stringData,
-  };
-  return jsYaml.dump(obj, { lineWidth: -1 });
+  const metadataYaml = jsYaml.dump(meta, { lineWidth: -1 }).trimEnd();
+  const lines = [
+    "apiVersion: v1",
+    "kind: Secret",
+    "metadata:",
+    ...metadataYaml.split("\n").map((line) => `  ${line}`),
+    `type: ${dumpInlineScalar(secretType.value)}`,
+    ...renderSection("stringData", rows.value),
+  ];
+  return `${lines.join("\n")}\n`;
 }
 
 function doApply() {

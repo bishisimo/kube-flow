@@ -92,9 +92,16 @@ pub struct AppSettingsConfig {
     /// 默认 SSH 隧道映射方式：ssh 或 builtin，供新建隧道或未显式配置的隧道使用。
     #[serde(default)]
     pub default_ssh_tunnel_mode: String,
+    /// 是否启用自动快照；默认开启。
+    #[serde(default = "default_auto_snapshot_enabled")]
+    pub auto_snapshot_enabled: bool,
     /// 凭证存储与安全设置。
     #[serde(default)]
     pub security: SecurityConfig,
+}
+
+fn default_auto_snapshot_enabled() -> bool {
+    true
 }
 
 impl AppSettingsConfig {
@@ -139,6 +146,14 @@ impl AppSettingsConfig {
         } else {
             "ssh".to_string()
         };
+    }
+
+    pub fn auto_snapshot_enabled(&self) -> bool {
+        self.auto_snapshot_enabled
+    }
+
+    pub fn set_auto_snapshot_enabled(&mut self, enabled: bool) {
+        self.auto_snapshot_enabled = enabled;
     }
 
 }
@@ -203,6 +218,8 @@ struct AppSettingsFile {
     log_display_format: String,
     #[serde(default)]
     default_ssh_tunnel_mode: String,
+    #[serde(default = "default_auto_snapshot_enabled")]
+    auto_snapshot_enabled: bool,
     #[serde(default)]
     security: SecurityConfig,
 }
@@ -238,6 +255,7 @@ impl AppSettingsConfig {
             } else {
                 file.default_ssh_tunnel_mode
             },
+            auto_snapshot_enabled: file.auto_snapshot_enabled,
             security: file.security,
         })
     }
@@ -251,6 +269,7 @@ impl AppSettingsConfig {
             log_display_order: self.log_display_order.clone(),
             log_display_format: self.log_display_format.clone(),
             default_ssh_tunnel_mode: self.default_ssh_tunnel_mode.clone(),
+            auto_snapshot_enabled: self.auto_snapshot_enabled,
             security: self.security.clone(),
         };
         let content = toml::to_string_pretty(&file).map_err(ConfigError::TomlSer)?;

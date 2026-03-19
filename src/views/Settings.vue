@@ -16,10 +16,13 @@ import {
 import { useLogStore } from "../stores/log";
 import { useYamlTheme, useYamlMonacoTheme, YAML_THEMES } from "../stores/yamlTheme";
 import {
+  appSettingsGetAutoSnapshotEnabled,
   appSettingsGetSshTunnelMode,
+  appSettingsSetAutoSnapshotEnabled,
   appSettingsSetSshTunnelMode,
   type TunnelMappingMode,
 } from "../api/config";
+import { useAppSettingsStore } from "../stores/appSettings";
 import {
   securityGetSettings,
   securitySetCredentialStore,
@@ -37,10 +40,11 @@ import {
   type CredentialStoreKind,
 } from "../api/credential";
 
-type CategoryId = "appearance" | "debug" | "ssh" | "security";
+type CategoryId = "appearance" | "workspace" | "debug" | "ssh" | "security";
 
 const CATEGORIES: { id: CategoryId; label: string; icon: string }[] = [
   { id: "appearance", label: "外观", icon: "🎨" },
+  { id: "workspace", label: "工作流", icon: "🧭" },
   { id: "debug", label: "调试", icon: "🔧" },
   { id: "ssh", label: "SSH 隧道", icon: "📡" },
   { id: "security", label: "安全与凭证", icon: "🔒" },
@@ -49,11 +53,13 @@ const CATEGORIES: { id: CategoryId; label: string; icon: string }[] = [
 const { themeId } = useYamlTheme();
 const { monacoTheme } = useYamlMonacoTheme();
 const { triggerLogRefresh } = useLogStore();
+const { autoSnapshotEnabled } = useAppSettingsStore();
 const activeCategory = ref<CategoryId>("appearance");
 const currentLevel = ref<string>("off");
 const currentOrder = ref<LogDisplayOrder>("asc");
 const currentFormat = ref<LogDisplayFormat>("json");
 const currentSshTunnelMode = ref<TunnelMappingMode>("ssh");
+const currentAutoSnapshotEnabled = ref(true);
 const saving = ref(false);
 const message = ref<string | null>(null);
 const yamlThemePreview = `apiVersion: apps/v1
@@ -110,15 +116,18 @@ const tempStrongholdPath = ref("");
 
 async function load() {
   try {
-    const [level, settings, sshMode] = await Promise.all([
+    const [level, settings, sshMode, autoSnapshot] = await Promise.all([
       logGetLevel(),
       logGetDisplaySettings(),
       appSettingsGetSshTunnelMode(),
+      appSettingsGetAutoSnapshotEnabled(),
     ]);
     currentLevel.value = level;
     currentOrder.value = settings.order;
     currentFormat.value = settings.format;
     currentSshTunnelMode.value = sshMode;
+    currentAutoSnapshotEnabled.value = autoSnapshot;
+    autoSnapshotEnabled.value = autoSnapshot;
   } catch {
     currentLevel.value = "off";
   }
@@ -258,6 +267,22 @@ async function saveSshTunnelMode(mode: TunnelMappingMode) {
   }
 }
 
+async function saveAutoSnapshotEnabled(enabled: boolean) {
+  saving.value = true;
+  message.value = null;
+  try {
+    await appSettingsSetAutoSnapshotEnabled(enabled);
+    currentAutoSnapshotEnabled.value = enabled;
+    autoSnapshotEnabled.value = enabled;
+    message.value = "已保存";
+    setTimeout(() => (message.value = null), 2000);
+  } catch (e) {
+    message.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    saving.value = false;
+  }
+}
+
 async function saveLevel(level: LogLevel) {
   saving.value = true;
   message.value = null;
@@ -320,6 +345,40 @@ onMounted(() => {
           {{ CATEGORIES.find((c) => c.id === activeCategory)?.label ?? "设置" }}
         </h1>
       </header>
+
+      <!-- 调试 -->
+      <template v-if="activeCategory === 'workspace'">
+        <section class="card">
+          <h2 class="card-title">快照工作流</h2>
+          <p class="card-desc">
+            自动快照会在应用配置、编辑 YAML、修改镜像前自动生成历史快照。关闭后不再自动生成，但仍可在快照中心手动生成。
+          </p>
+          <div class="level-options">
+            <button
+              type="button"
+              class="level-btn"
+              :class="{ active: currentAutoSnapshotEnabled }"
+              :disabled="saving"
+              @click="saveAutoSnapshotEnabled(true)"
+            >
+              开启自动快照
+            </button>
+            <button
+              type="button"
+              class="level-btn"
+              :class="{ active: !currentAutoSnapshotEnabled }"
+              :disabled="saving"
+              @click="saveAutoSnapshotEnabled(false)"
+            >
+              关闭自动快照
+            </button>
+          </div>
+          <p v-if="message" class="message" :class="{ error: message !== '已保存' }">
+            <span v-if="message === '已保存'" class="message-icon">✓</span>
+            {{ message }}
+          </p>
+        </section>
+      </template>
 
       <!-- 调试 -->
       <template v-if="activeCategory === 'debug'">
