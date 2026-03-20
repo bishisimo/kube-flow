@@ -50,6 +50,7 @@ const { environments, currentId } = useEnvStore();
 const {
   manifests,
   packages,
+  orchestratorFocusTarget,
   createManifestDraft,
   saveManifestYaml,
   setManifestIdentity,
@@ -214,6 +215,38 @@ function onSelectManifest(manifestId: string) {
   }
 }
 
+function applyPendingOrchestratorFocus() {
+  const target = orchestratorFocusTarget.value;
+  if (!target) return false;
+
+  selectedEnvId.value = target.env_id;
+
+  const envManifests = manifests.value.filter((m) => m.env_id === target.env_id);
+  const componentManifests = envManifests.filter((m) => m.component === target.component);
+  if (!componentManifests.length) return false;
+
+  selectedComponent.value = target.component;
+
+  const matchedManifest =
+    (target.manifest_id
+      ? componentManifests.find((m) => m.id === target.manifest_id)
+      : undefined) ??
+    componentManifests.find(
+      (m) =>
+        (!target.resource_kind || m.resource_kind === target.resource_kind) &&
+        (!target.resource_name || m.resource_name === target.resource_name) &&
+        (m.resource_namespace ?? null) === (target.resource_namespace ?? null)
+    ) ??
+    componentManifests[0];
+
+  if (!matchedManifest) return false;
+
+  selectedManifestId.value = matchedManifest.id;
+  selectedManifestByComponent.value[target.component] = matchedManifest.id;
+  orchestratorFocusTarget.value = null;
+  return true;
+}
+
 function openDeleteResourceDialog(manifest: OrchestratorManifest) {
   onSelectManifest(manifest.id);
   selectedComponent.value = manifest.component;
@@ -334,6 +367,14 @@ watch(
         ? currentId.value
         : environments.value[0].id;
     }
+  },
+  { immediate: true }
+);
+
+watch(
+  () => [orchestratorFocusTarget.value?.env_id ?? "", orchestratorFocusTarget.value?.manifest_id ?? "", manifests.value.length] as const,
+  () => {
+    applyPendingOrchestratorFocus();
   },
   { immediate: true }
 );
@@ -1215,7 +1256,7 @@ async function onConfirmPackageAction() {
 <template>
   <div class="orchestrator-layout">
     <header class="toolbar">
-      <span class="title">资源编排台</span>
+      <span class="title">编排中心</span>
       <div class="view-switch">
         <button
           type="button"

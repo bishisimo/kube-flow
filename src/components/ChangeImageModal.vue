@@ -2,13 +2,8 @@
 import { computed, ref, watch } from "vue";
 import * as jsYaml from "js-yaml";
 import { kubeGetResource, kubePatchContainerImages } from "../api/kube";
-import ResourceSnapshotPanel from "./ResourceSnapshotPanel.vue";
-import ResourceSnapshotViewer from "./ResourceSnapshotViewer.vue";
 import {
   createResourceSnapshot,
-  deleteResourceSnapshot,
-  listResourceSnapshotsByCategory,
-  type ResourceSnapshotItem,
 } from "../stores/resourceSnapshots";
 import { ensureAutoSnapshotSettingLoaded } from "../stores/appSettings";
 
@@ -34,8 +29,6 @@ const error = ref<string | null>(null);
 const imagePatchSaving = ref(false);
 const imagePatchError = ref<string | null>(null);
 const imagePatchInfo = ref<string | null>(null);
-const snapshotSaving = ref(false);
-const viewingSnapshot = ref<ResourceSnapshotItem | null>(null);
 const resourceYaml = ref("");
 const containers = ref<
   { name: string; currentImage: string; imageName: string; imageTag: string }[]
@@ -51,9 +44,6 @@ const snapshotResourceRef = computed(() =>
       }
     : null
 );
-
-const resourceSnapshots = computed(() => listResourceSnapshotsByCategory(snapshotResourceRef.value, "image"));
-const currentSnapshotSummary = computed(() => summarizeImages(containers.value));
 
 function parseImage(image: string): { name: string; tag: string } {
   const lastColon = image.lastIndexOf(":");
@@ -168,7 +158,7 @@ async function applyPatch() {
       props.resource.namespace,
       patches
     );
-    imagePatchInfo.value = "已自动保存变更前镜像快照。";
+    imagePatchInfo.value = "已自动保存变更前镜像快照，可在快照中心统一查看。";
     emit("success");
     emit("close");
   } catch (e) {
@@ -176,36 +166,6 @@ async function applyPatch() {
   } finally {
     imagePatchSaving.value = false;
   }
-}
-
-function saveManualSnapshot() {
-  if (!snapshotResourceRef.value || !containers.value.length) return;
-  snapshotSaving.value = true;
-  try {
-    createResourceSnapshot(snapshotResourceRef.value, {
-      yaml: buildImageSnapshotYaml(containers.value),
-      category: "image",
-      source: "manual",
-      title: "手动镜像快照",
-      summary: summarizeImages(containers.value),
-    });
-    imagePatchError.value = null;
-    imagePatchInfo.value = "当前镜像状态已保存为快照。";
-  } finally {
-    snapshotSaving.value = false;
-  }
-}
-
-function openSnapshotViewer(snapshot: ResourceSnapshotItem) {
-  viewingSnapshot.value = snapshot;
-}
-
-function removeSnapshot(snapshot: ResourceSnapshotItem) {
-  deleteResourceSnapshot(snapshot.id);
-  if (viewingSnapshot.value?.id === snapshot.id) {
-    viewingSnapshot.value = null;
-  }
-  imagePatchInfo.value = "快照已删除。";
 }
 
 watch(
@@ -219,7 +179,6 @@ watch(
       imagePatchError.value = null;
       imagePatchInfo.value = null;
       resourceYaml.value = "";
-      viewingSnapshot.value = null;
     }
   },
   { immediate: true }
@@ -241,48 +200,34 @@ watch(
         <div v-else class="modal-body">
           <div v-if="imagePatchError" class="modal-error-inline">{{ imagePatchError }}</div>
           <div v-else-if="imagePatchInfo" class="modal-info">{{ imagePatchInfo }}</div>
-          <div class="modal-layout">
-            <div class="modal-edit-area">
-              <div v-for="c in containers" :key="c.name" class="container-card">
-                <div class="container-name">{{ c.name }}</div>
-                <div class="container-current">
-                  <span class="current-label">当前镜像</span>
-                  <code class="current-value" :title="c.currentImage">{{ c.currentImage || "—" }}</code>
+          <div class="modal-edit-area">
+            <div v-for="c in containers" :key="c.name" class="container-card">
+              <div class="container-name">{{ c.name }}</div>
+              <div class="container-current">
+                <span class="current-label">当前镜像</span>
+                <code class="current-value" :title="c.currentImage">{{ c.currentImage || "—" }}</code>
+              </div>
+              <div class="container-edit">
+                <div class="edit-row">
+                  <label class="edit-label">镜像</label>
+                  <input
+                    v-model="c.imageName"
+                    type="text"
+                    class="image-input"
+                    placeholder="nginx 或 registry.io/ns/nginx"
+                  />
                 </div>
-                <div class="container-edit">
-                  <div class="edit-row">
-                    <label class="edit-label">镜像</label>
-                    <input
-                      v-model="c.imageName"
-                      type="text"
-                      class="image-input"
-                      placeholder="nginx 或 registry.io/ns/nginx"
-                    />
-                  </div>
-                  <div class="edit-row">
-                    <label class="edit-label">Tag</label>
-                    <input
-                      v-model="c.imageTag"
-                      type="text"
-                      class="image-input image-tag-input"
-                      placeholder="1.21"
-                    />
-                  </div>
+                <div class="edit-row">
+                  <label class="edit-label">Tag</label>
+                  <input
+                    v-model="c.imageTag"
+                    type="text"
+                    class="image-input image-tag-input"
+                    placeholder="1.21"
+                  />
                 </div>
               </div>
             </div>
-            <ResourceSnapshotPanel
-              title="镜像快照"
-              subtitle="保留每次变更前状态，仅用于查看历史镜像内容。"
-              create-label="保存当前镜像"
-              :snapshots="resourceSnapshots"
-              :creating="snapshotSaving"
-              :current-summary="currentSnapshotSummary"
-              empty-text="还没有镜像快照。首次应用前会自动保存，也可以先手动保存当前镜像状态。"
-              @create="saveManualSnapshot"
-              @view="openSnapshotViewer"
-              @delete="removeSnapshot"
-            />
           </div>
         </div>
         <div class="modal-actions">
@@ -299,11 +244,6 @@ watch(
       </div>
     </div>
   </Teleport>
-  <ResourceSnapshotViewer
-    :visible="!!viewingSnapshot"
-    :snapshot="viewingSnapshot"
-    @close="viewingSnapshot = null"
-  />
 </template>
 
 <style scoped>
@@ -371,15 +311,8 @@ watch(
   flex: 1;
   min-height: 0;
 }
-.modal-layout {
-  display: flex;
-  min-height: 0;
-  gap: 0;
-}
 .modal-edit-area {
-  flex: 1;
   min-width: 0;
-  padding-right: 1rem;
 }
 .modal-error-inline,
 .modal-info {

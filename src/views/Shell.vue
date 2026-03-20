@@ -68,11 +68,11 @@ onMounted(async () => {
         type="button"
         class="tab"
         :class="{ active: currentTab === 'orchestrator', disabled: !canAccessOrchestrator }"
-        :title="canAccessOrchestrator ? '资源编排台' : '请先创建至少一个环境'"
+        :title="canAccessOrchestrator ? '编排中心' : '请先创建至少一个环境'"
         :disabled="!canAccessOrchestrator"
         @click="setTab('orchestrator')"
       >
-        资源编排台
+        编排中心
       </button>
       <button
         type="button"

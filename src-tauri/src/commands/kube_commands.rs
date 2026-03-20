@@ -882,6 +882,7 @@ pub async fn kube_start_watch(
     kind: String,
     namespace: Option<String>,
     label_selector: Option<String>,
+    watch_token: Option<String>,
 ) -> Result<(), String> {
     start_watch(
         app,
@@ -891,6 +892,7 @@ pub async fn kube_start_watch(
         kind,
         namespace,
         label_selector,
+        watch_token,
     )
     .await
 }

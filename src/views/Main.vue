@@ -205,6 +205,8 @@ function saveEnvViewState(envId: string) {
 
 const listLoading = ref(false);
 const listError = ref<string | null>(null);
+const envSwitching = ref(false);
+const envSwitchingName = ref("");
 const namespaceOptions = ref<NamespaceItem[]>([]);
 const pods = ref<PodItem[]>([]);
 const deployments = ref<DeploymentItem[]>([]);
@@ -256,6 +258,83 @@ const watchEnabled = ref(true);
 /** 排序：默认按创建时间倒序 */
 const sortBy = ref<string>("creationTime");
 const sortOrder = ref<"asc" | "desc">("desc");
+const viewSessionId = ref(0);
+const latestListRequestId = ref(0);
+const activeWatchToken = ref("");
+
+function nextToken(prefix: string): string {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function clearResourceCollections() {
+  namespaceOptions.value = [];
+  pods.value = [];
+  deployments.value = [];
+  replicaSets.value = [];
+  jobs.value = [];
+  cronJobs.value = [];
+  services.value = [];
+  statefulSets.value = [];
+  configMaps.value = [];
+  secrets.value = [];
+  serviceAccounts.value = [];
+  roles.value = [];
+  roleBindings.value = [];
+  clusterRoles.value = [];
+  clusterRoleBindings.value = [];
+  daemonSets.value = [];
+  nodes.value = [];
+  persistentVolumeClaims.value = [];
+  persistentVolumes.value = [];
+  storageClasses.value = [];
+  endpoints.value = [];
+  endpointSlices.value = [];
+  ingresses.value = [];
+  ingressClasses.value = [];
+  networkPolicies.value = [];
+  resourceQuotas.value = [];
+  limitRanges.value = [];
+  priorityClasses.value = [];
+  horizontalPodAutoscalers.value = [];
+  podDisruptionBudgets.value = [];
+}
+
+function resetTransientWorkbenchState() {
+  selectedResource.value = null;
+  detailDrawerVisible.value = false;
+  detailDrawerInitialTab.value = null;
+  changeImageModalVisible.value = false;
+  closeActionMenu();
+  deleteConfirmVisible.value = false;
+  deleteConfirmResources.value = [];
+  deleteConfirmError.value = null;
+  syncOrchestratorDialogVisible.value = false;
+  syncOrchestratorRelatedRefs.value = [];
+  syncOrchestratorSelectedRefKeys.value = [];
+  syncOrchestratorRelatedError.value = null;
+  selectedRowKeys.value = new Set();
+  batchDeleteMode.value = false;
+}
+
+function beginEnvSwitch(nextEnvId: string | null) {
+  viewSessionId.value += 1;
+  activeWatchToken.value = "";
+  resetTransientWorkbenchState();
+  clearResourceCollections();
+  listError.value = null;
+  listLoading.value = !!nextEnvId;
+  envSwitching.value = !!nextEnvId;
+  envSwitchingName.value = nextEnvId
+    ? (openedEnvs.value.find((env) => env.id === nextEnvId)?.display_name ?? "新环境")
+    : "";
+}
+
+function isStaleView(envId: string, sessionId: number, requestId?: number): boolean {
+  if (currentId.value !== envId) return true;
+  if (viewSessionId.value !== sessionId) return true;
+  if (typeof requestId === "number" && latestListRequestId.value !== requestId) return true;
+  return false;
+}
 
 /** 当前支持 Watch 的资源类型 */
 const WATCH_SUPPORTED_KINDS: Set<ResourceKind> = new Set([
@@ -695,7 +774,7 @@ async function syncToOrchestrator() {
   try {
     const yaml = await kubeGetResource(envId, r.kind, r.name, r.namespace);
     const componentName = resolveSyncTargetComponent();
-    upsertFromWorkbenchSync(envId, envName, r, yaml, componentName);
+    const primaryManifest = upsertFromWorkbenchSync(envId, envName, r, yaml, componentName);
     const selectedKeys = new Set(syncOrchestratorSelectedRefKeys.value);
     const relatedRefs = syncOrchestratorRelatedRefs.value.filter((ref) => selectedKeys.has(relatedRefKey(ref)));
     if (relatedRefs.length > 0) {
@@ -718,7 +797,14 @@ async function syncToOrchestrator() {
         listError.value = `主资源已同步，部分关联资源同步失败：${failed.join("；")}`;
       }
     }
-    requestSwitchToOrchestrator();
+    requestSwitchToOrchestrator({
+      env_id: envId,
+      component: primaryManifest.component,
+      manifest_id: primaryManifest.id,
+      resource_kind: primaryManifest.resource_kind,
+      resource_name: primaryManifest.resource_name,
+      resource_namespace: primaryManifest.resource_namespace,
+    });
     syncOrchestratorDialogVisible.value = false;
   } catch (e) {
     listError.value = extractErrorMessage(e);
@@ -1664,38 +1750,11 @@ const tableColumns = computed(() => {
 async function loadList() {
   const id = currentId.value;
   if (!id) {
-    namespaceOptions.value = [];
-    pods.value = [];
-    deployments.value = [];
-    replicaSets.value = [];
-    jobs.value = [];
-    cronJobs.value = [];
-    services.value = [];
-    statefulSets.value = [];
-    configMaps.value = [];
-    secrets.value = [];
-    serviceAccounts.value = [];
-    roles.value = [];
-    roleBindings.value = [];
-    clusterRoles.value = [];
-    clusterRoleBindings.value = [];
-    daemonSets.value = [];
-    nodes.value = [];
-    persistentVolumeClaims.value = [];
-    persistentVolumes.value = [];
-    storageClasses.value = [];
-    endpoints.value = [];
-    endpointSlices.value = [];
-    ingresses.value = [];
-    ingressClasses.value = [];
-    networkPolicies.value = [];
-    resourceQuotas.value = [];
-    limitRanges.value = [];
-    priorityClasses.value = [];
-    horizontalPodAutoscalers.value = [];
-    podDisruptionBudgets.value = [];
+    clearResourceCollections();
     return;
   }
+  const requestId = ++latestListRequestId.value;
+  const sessionId = viewSessionId.value;
   listLoading.value = true;
   listError.value = null;
   if (getState(id) !== "connected") setConnecting(id);
@@ -1703,101 +1762,257 @@ async function loadList() {
   const labelSel = labelSelector.value.trim() || null;
   try {
     await touchEnv(id);
+    if (isStaleView(id, sessionId, requestId)) return;
     await loadEnvironments();
-    namespaceOptions.value = await kubeListNamespaces(id, labelSel);
+    if (isStaleView(id, sessionId, requestId)) return;
+    const nextNamespaces = await kubeListNamespaces(id, labelSel);
+    if (isStaleView(id, sessionId, requestId)) return;
+    const applyResult = () => {
+      clearResourceCollections();
+      namespaceOptions.value = nextNamespaces;
+      envSwitching.value = false;
+    };
     switch (selectedKind.value) {
       case "namespaces":
+        applyResult();
         break;
       case "nodes":
-        nodes.value = await kubeListNodes(id, labelSel);
+        {
+          const items = await kubeListNodes(id, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          nodes.value = items;
+        }
         break;
       case "pods":
-        pods.value = await kubeListPods(id, ns ?? null, labelSel);
+        {
+          const items = await kubeListPods(id, ns ?? null, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          pods.value = items;
+        }
         break;
       case "deployments":
-        deployments.value = await kubeListDeployments(id, ns ?? null, labelSel);
+        {
+          const items = await kubeListDeployments(id, ns ?? null, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          deployments.value = items;
+        }
         break;
       case "services":
-        services.value = await kubeListServices(id, ns ?? null, labelSel);
+        {
+          const items = await kubeListServices(id, ns ?? null, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          services.value = items;
+        }
         break;
       case "statefulsets":
-        statefulSets.value = await kubeListStatefulSets(id, ns ?? null, labelSel);
+        {
+          const items = await kubeListStatefulSets(id, ns ?? null, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          statefulSets.value = items;
+        }
         break;
       case "configmaps":
-        configMaps.value = await kubeListConfigMaps(id, ns ?? null, labelSel);
+        {
+          const items = await kubeListConfigMaps(id, ns ?? null, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          configMaps.value = items;
+        }
         break;
       case "secrets":
-        secrets.value = await kubeListSecrets(id, ns ?? null, labelSel);
+        {
+          const items = await kubeListSecrets(id, ns ?? null, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          secrets.value = items;
+        }
         break;
       case "serviceaccounts":
-        serviceAccounts.value = await kubeListServiceAccounts(id, ns ?? null, labelSel);
+        {
+          const items = await kubeListServiceAccounts(id, ns ?? null, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          serviceAccounts.value = items;
+        }
         break;
       case "roles":
-        roles.value = await kubeListRoles(id, ns ?? null, labelSel);
+        {
+          const items = await kubeListRoles(id, ns ?? null, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          roles.value = items;
+        }
         break;
       case "rolebindings":
-        roleBindings.value = await kubeListRoleBindings(id, ns ?? null, labelSel);
+        {
+          const items = await kubeListRoleBindings(id, ns ?? null, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          roleBindings.value = items;
+        }
         break;
       case "clusterroles":
-        clusterRoles.value = await kubeListClusterRoles(id, labelSel);
+        {
+          const items = await kubeListClusterRoles(id, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          clusterRoles.value = items;
+        }
         break;
       case "clusterrolebindings":
-        clusterRoleBindings.value = await kubeListClusterRoleBindings(id, labelSel);
+        {
+          const items = await kubeListClusterRoleBindings(id, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          clusterRoleBindings.value = items;
+        }
         break;
       case "daemonsets":
-        daemonSets.value = await kubeListDaemonSets(id, ns ?? null, labelSel);
+        {
+          const items = await kubeListDaemonSets(id, ns ?? null, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          daemonSets.value = items;
+        }
         break;
       case "persistentvolumeclaims":
-        persistentVolumeClaims.value = await kubeListPersistentVolumeClaims(id, ns ?? null, labelSel);
+        {
+          const items = await kubeListPersistentVolumeClaims(id, ns ?? null, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          persistentVolumeClaims.value = items;
+        }
         break;
       case "persistentvolumes":
-        persistentVolumes.value = await kubeListPersistentVolumes(id, labelSel);
+        {
+          const items = await kubeListPersistentVolumes(id, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          persistentVolumes.value = items;
+        }
         break;
       case "storageclasses":
-        storageClasses.value = await kubeListStorageClasses(id, labelSel);
+        {
+          const items = await kubeListStorageClasses(id, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          storageClasses.value = items;
+        }
         break;
       case "endpoints":
-        endpoints.value = await kubeListEndpoints(id, ns ?? null, labelSel);
+        {
+          const items = await kubeListEndpoints(id, ns ?? null, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          endpoints.value = items;
+        }
         break;
       case "endpointslices":
-        endpointSlices.value = await kubeListEndpointSlices(id, ns ?? null, labelSel);
+        {
+          const items = await kubeListEndpointSlices(id, ns ?? null, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          endpointSlices.value = items;
+        }
         break;
       case "replicasets":
-        replicaSets.value = await kubeListReplicaSets(id, ns ?? null, labelSel);
+        {
+          const items = await kubeListReplicaSets(id, ns ?? null, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          replicaSets.value = items;
+        }
         break;
       case "jobs":
-        jobs.value = await kubeListJobs(id, ns ?? null, labelSel);
+        {
+          const items = await kubeListJobs(id, ns ?? null, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          jobs.value = items;
+        }
         break;
       case "cronjobs":
-        cronJobs.value = await kubeListCronJobs(id, ns ?? null, labelSel);
+        {
+          const items = await kubeListCronJobs(id, ns ?? null, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          cronJobs.value = items;
+        }
         break;
       case "ingresses":
-        ingresses.value = await kubeListIngresses(id, ns ?? null, labelSel);
+        {
+          const items = await kubeListIngresses(id, ns ?? null, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          ingresses.value = items;
+        }
         break;
       case "ingressclasses":
-        ingressClasses.value = await kubeListIngressClasses(id, labelSel);
+        {
+          const items = await kubeListIngressClasses(id, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          ingressClasses.value = items;
+        }
         break;
       case "networkpolicies":
-        networkPolicies.value = await kubeListNetworkPolicies(id, ns ?? null, labelSel);
+        {
+          const items = await kubeListNetworkPolicies(id, ns ?? null, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          networkPolicies.value = items;
+        }
         break;
       case "resourcequotas":
-        resourceQuotas.value = await kubeListResourceQuotas(id, ns ?? null, labelSel);
+        {
+          const items = await kubeListResourceQuotas(id, ns ?? null, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          resourceQuotas.value = items;
+        }
         break;
       case "limitranges":
-        limitRanges.value = await kubeListLimitRanges(id, ns ?? null, labelSel);
+        {
+          const items = await kubeListLimitRanges(id, ns ?? null, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          limitRanges.value = items;
+        }
         break;
       case "priorityclasses":
-        priorityClasses.value = await kubeListPriorityClasses(id, labelSel);
+        {
+          const items = await kubeListPriorityClasses(id, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          priorityClasses.value = items;
+        }
         break;
       case "horizontalpodautoscalers":
-        horizontalPodAutoscalers.value = await kubeListHorizontalPodAutoscalers(id, ns ?? null, labelSel);
+        {
+          const items = await kubeListHorizontalPodAutoscalers(id, ns ?? null, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          horizontalPodAutoscalers.value = items;
+        }
         break;
       case "poddisruptionbudgets":
-        podDisruptionBudgets.value = await kubeListPodDisruptionBudgets(id, ns ?? null, labelSel);
+        {
+          const items = await kubeListPodDisruptionBudgets(id, ns ?? null, labelSel);
+          if (isStaleView(id, sessionId, requestId)) return;
+          applyResult();
+          podDisruptionBudgets.value = items;
+        }
         break;
     }
+    if (isStaleView(id, sessionId, requestId)) return;
     setConnected(id);
   } catch (e: unknown) {
+    if (isStaleView(id, sessionId, requestId)) return;
     const msg = extractErrorMessage(e);
     // SSH 认证错误：弹出密码输入框，用户输入后可重试
     const isAuthRequired = await sshAuth.checkAndHandle(msg, () => {
@@ -1811,37 +2026,10 @@ async function loadList() {
     if (id && isConnectionError(msg)) {
       setDisconnected(id, msg);
     }
-    namespaceOptions.value = [];
-    pods.value = [];
-    deployments.value = [];
-    replicaSets.value = [];
-    jobs.value = [];
-    cronJobs.value = [];
-    services.value = [];
-    statefulSets.value = [];
-    configMaps.value = [];
-    secrets.value = [];
-    serviceAccounts.value = [];
-    roles.value = [];
-    roleBindings.value = [];
-    clusterRoles.value = [];
-    clusterRoleBindings.value = [];
-    daemonSets.value = [];
-    nodes.value = [];
-    persistentVolumeClaims.value = [];
-    persistentVolumes.value = [];
-    storageClasses.value = [];
-    endpoints.value = [];
-    endpointSlices.value = [];
-    ingresses.value = [];
-    ingressClasses.value = [];
-    networkPolicies.value = [];
-    resourceQuotas.value = [];
-    limitRanges.value = [];
-    priorityClasses.value = [];
-    horizontalPodAutoscalers.value = [];
-    podDisruptionBudgets.value = [];
+    clearResourceCollections();
+    envSwitching.value = false;
   } finally {
+    if (isStaleView(id, sessionId, requestId)) return;
     listLoading.value = false;
   }
 }
@@ -1872,7 +2060,6 @@ onMounted(() => {
   recentNamespaces.value = loadRecentNamespaces(currentId.value);
   const id = currentId.value;
   if (id) restoreEnvViewState(id);
-  loadList();
   document.addEventListener("click", onDocClick);
 });
 onUnmounted(() => {
@@ -1885,6 +2072,7 @@ watch(selectedKind, () => {
   podIpFilter.value = "";
 });
 watch(currentId, (id) => {
+  beginEnvSwitch(id);
   recentNamespaces.value = loadRecentNamespaces(id);
   if (id) restoreEnvViewState(id);
 });
@@ -1927,6 +2115,12 @@ watch(
 function applyWatch() {
   const id = currentId.value;
   if (!id) return;
+  const sessionId = viewSessionId.value;
+  const watchToken = nextToken("watch");
+  activeWatchToken.value = watchToken;
+  listLoading.value = true;
+  listError.value = null;
+  envSwitching.value = false;
   if (!namespaceOptions.value.length) void refreshNamespaceOptions();
   kubeStopWatch(id).catch(() => {});
   if (watchEnabled.value && WATCH_SUPPORTED_KINDS.has(selectedKind.value)) {
@@ -1934,7 +2128,8 @@ function applyWatch() {
       selectedKind.value === "namespaces" || selectedKind.value === "nodes"
         ? null
         : (selectedNamespace.value ?? ALL_NAMESPACES_SENTINEL);
-    kubeStartWatch(id, selectedKind.value, ns, labelSelector.value.trim() || null).catch(async (e) => {
+    kubeStartWatch(id, selectedKind.value, ns, labelSelector.value.trim() || null, watchToken).catch(async (e) => {
+      if (isStaleView(id, sessionId)) return;
       const msg = extractErrorMessage(e);
       const isAuthRequired = await sshAuth.checkAndHandle(msg, () => applyWatch());
       if (isAuthRequired) {
@@ -1962,17 +2157,17 @@ watch(watchEnabled, () => {
   }
 });
 
-
 let unlistenWatch: (() => void) | null = null;
 let unlistenConnection: (() => void) | null = null;
 onMounted(async () => {
-  loadList();
-  document.addEventListener("click", onDocClick);
   unlistenConnection = await setupConnectionProgressListener();
-  unlistenWatch = await listen<{ kind?: string; items?: unknown[]; error?: string }>(
+  unlistenWatch = await listen<{ envId?: string; watchToken?: string; kind?: string; items?: unknown[]; error?: string }>(
     "resource-watch-update",
     (ev) => {
       const payload = ev.payload;
+      if (!payload) return;
+      if (payload.envId !== currentId.value) return;
+      if (payload.watchToken !== activeWatchToken.value) return;
       if (payload?.error) {
         listError.value = payload.error;
         const id = currentId.value;
@@ -1981,6 +2176,8 @@ onMounted(async () => {
       }
       listError.value = null;
       listLoading.value = false;
+      envSwitching.value = false;
+      clearResourceCollections();
       const kind = payload?.kind;
       const items = payload?.items ?? [];
       if (kind === "namespaces") namespaceOptions.value = items as NamespaceItem[];
@@ -2301,7 +2498,14 @@ onUnmounted(() => {
           </button>
           <button type="button" class="error-dismiss" @click="dismissError">关闭</button>
         </div>
-        <div v-else-if="listLoading" class="loading-state">加载中…</div>
+        <div v-else-if="listLoading" class="loading-state">
+          <div class="loading-state-title">
+            {{ envSwitching ? `正在切换到 ${envSwitchingName || "目标环境"}` : "加载中…" }}
+          </div>
+          <div class="loading-state-detail">
+            {{ envSwitching ? "旧环境数据已清空，正在拉取新环境资源。" : "正在同步当前环境下的资源列表。" }}
+          </div>
+        </div>
         <div v-else class="table-wrap">
           <table class="resource-table">
             <thead>
@@ -2499,8 +2703,8 @@ onUnmounted(() => {
             <button type="button" class="action-menu-item" @click="openSyncToOrchestratorDialog">
               <span class="action-menu-icon" aria-hidden="true">🧱</span>
               <span class="action-menu-text">
-                <span class="action-menu-main">资源编排</span>
-                <span class="action-menu-sub">同步到编排台并统一维护 YAML</span>
+                <span class="action-menu-main">编排中心</span>
+                <span class="action-menu-sub">同步到编排中心并统一维护 YAML</span>
               </span>
             </button>
           </div>
@@ -2532,9 +2736,9 @@ onUnmounted(() => {
     </Teleport>
 
     <Teleport to="body">
-      <div v-if="syncOrchestratorDialogVisible" class="error-modal-overlay" @click.self="closeSyncToOrchestratorDialog">
-        <div class="sync-orchestrator-modal" role="dialog" aria-label="同步到资源编排">
-          <h3 class="sync-orchestrator-title">同步到资源编排</h3>
+        <div v-if="syncOrchestratorDialogVisible" class="error-modal-overlay" @click.self="closeSyncToOrchestratorDialog">
+        <div class="sync-orchestrator-modal" role="dialog" aria-label="同步到编排中心">
+          <h3 class="sync-orchestrator-title">同步到编排中心</h3>
           <p class="sync-orchestrator-desc">
             选择将当前资源同步到哪个应用组件，可用于继续维护已有组件或新建组件。
           </p>
@@ -3297,6 +3501,16 @@ onUnmounted(() => {
   color: #64748b;
   font-size: 0.875rem;
   background: #fff;
+}
+.loading-state-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #334155;
+}
+.loading-state-detail {
+  margin-top: 0.45rem;
+  font-size: 0.8125rem;
+  color: #64748b;
 }
 .table-wrap {
   flex: 1;

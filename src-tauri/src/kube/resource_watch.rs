@@ -416,6 +416,7 @@ pub async fn start_watch(
     kind: String,
     namespace: Option<String>,
     label_selector: Option<String>,
+    watch_token: Option<String>,
 ) -> Result<(), String> {
     let env = EnvService::list()
         .map_err(|e| e.to_string())?
@@ -433,10 +434,11 @@ pub async fn start_watch(
         .map(String::from)
         .or_else(|| Some(ALL_NAMESPACES_SENTINEL.to_string()));
     let label_sel = label_selector.filter(|s| !s.trim().is_empty());
+    let watch_token = watch_token.unwrap_or_default();
 
     let env_id_clone = env_id.clone();
     let handle = tokio::spawn(async move {
-        run_watch(app, client, env_id_clone, kind, ns, label_sel).await;
+        run_watch(app, client, env_id_clone, kind, ns, label_sel, watch_token).await;
     });
 
     watch_store.insert(env_id, handle.abort_handle()).await;
@@ -450,17 +452,22 @@ async fn run_watch(
     kind: String,
     ns: Option<String>,
     label_selector: Option<String>,
+    watch_token: String,
 ) {
     match kind.as_str() {
-        "pods" => run_watch_pods(app, client, env_id, ns, label_selector).await,
-        "deployments" => run_watch_deployments(app, client, env_id, ns, label_selector).await,
-        "services" => run_watch_services(app, client, env_id, ns, label_selector).await,
-        "namespaces" => run_watch_namespaces(app, client, env_id, label_selector).await,
-        "nodes" => run_watch_nodes(app, client, env_id, label_selector).await,
+        "pods" => run_watch_pods(app, client, env_id, ns, label_selector, watch_token).await,
+        "deployments" => run_watch_deployments(app, client, env_id, ns, label_selector, watch_token).await,
+        "services" => run_watch_services(app, client, env_id, ns, label_selector, watch_token).await,
+        "namespaces" => run_watch_namespaces(app, client, env_id, label_selector, watch_token).await,
+        "nodes" => run_watch_nodes(app, client, env_id, label_selector, watch_token).await,
         _ => {
             let _ = app.emit(
                 WATCH_EVENT,
-                serde_json::json!({ "error": format!("unsupported watch kind: {}", kind) }),
+                serde_json::json!({
+                    "envId": env_id,
+                    "watchToken": watch_token,
+                    "error": format!("unsupported watch kind: {}", kind)
+                }),
             );
         }
     }
@@ -472,6 +479,7 @@ async fn run_watch_pods(
     env_id: String,
     ns: Option<String>,
     label_selector: Option<String>,
+    watch_token: String,
 ) {
     let all_namespaces = ns.as_deref() == Some(ALL_NAMESPACES_SENTINEL);
     let ns = ns.unwrap_or_else(|| "default".to_string());
@@ -506,12 +514,21 @@ async fn run_watch_pods(
             Err(e) => {
                 let msg = e.to_string();
                 debug_log::log_list_err("pods/watch", Some(&env_id), &msg, LogLevel::Error);
-                let _ = app.emit(WATCH_EVENT, serde_json::json!({ "error": msg }));
+                let _ = app.emit(WATCH_EVENT, serde_json::json!({
+                    "envId": env_id,
+                    "watchToken": watch_token,
+                    "error": msg
+                }));
                 break;
             }
         }
         let list: Vec<PodItem> = items.values().cloned().collect();
-        let payload = serde_json::to_value(WatchPayload::pods(list)).unwrap_or_default();
+        let payload = serde_json::json!({
+            "envId": env_id,
+            "watchToken": watch_token,
+            "kind": "pods",
+            "items": list
+        });
         if app.emit(WATCH_EVENT, payload).is_err() {
             break;
         }
@@ -524,6 +541,7 @@ async fn run_watch_deployments(
     env_id: String,
     ns: Option<String>,
     label_selector: Option<String>,
+    watch_token: String,
 ) {
     let all_namespaces = ns.as_deref() == Some(ALL_NAMESPACES_SENTINEL);
     let ns = ns.unwrap_or_else(|| "default".to_string());
@@ -558,12 +576,21 @@ async fn run_watch_deployments(
             Err(e) => {
                 let msg = e.to_string();
                 debug_log::log_list_err("deployments/watch", Some(&env_id), &msg, LogLevel::Error);
-                let _ = app.emit(WATCH_EVENT, serde_json::json!({ "error": msg }));
+                let _ = app.emit(WATCH_EVENT, serde_json::json!({
+                    "envId": env_id,
+                    "watchToken": watch_token,
+                    "error": msg
+                }));
                 break;
             }
         }
         let list: Vec<DeploymentItem> = items.values().cloned().collect();
-        let payload = serde_json::to_value(WatchPayload::deployments(list)).unwrap_or_default();
+        let payload = serde_json::json!({
+            "envId": env_id,
+            "watchToken": watch_token,
+            "kind": "deployments",
+            "items": list
+        });
         if app.emit(WATCH_EVENT, payload).is_err() {
             break;
         }
@@ -576,6 +603,7 @@ async fn run_watch_services(
     env_id: String,
     ns: Option<String>,
     label_selector: Option<String>,
+    watch_token: String,
 ) {
     let all_namespaces = ns.as_deref() == Some(ALL_NAMESPACES_SENTINEL);
     let ns = ns.unwrap_or_else(|| "default".to_string());
@@ -610,12 +638,21 @@ async fn run_watch_services(
             Err(e) => {
                 let msg = e.to_string();
                 debug_log::log_list_err("services/watch", Some(&env_id), &msg, LogLevel::Error);
-                let _ = app.emit(WATCH_EVENT, serde_json::json!({ "error": msg }));
+                let _ = app.emit(WATCH_EVENT, serde_json::json!({
+                    "envId": env_id,
+                    "watchToken": watch_token,
+                    "error": msg
+                }));
                 break;
             }
         }
         let list: Vec<ServiceItem> = items.values().cloned().collect();
-        let payload = serde_json::to_value(WatchPayload::services(list)).unwrap_or_default();
+        let payload = serde_json::json!({
+            "envId": env_id,
+            "watchToken": watch_token,
+            "kind": "services",
+            "items": list
+        });
         if app.emit(WATCH_EVENT, payload).is_err() {
             break;
         }
@@ -627,6 +664,7 @@ async fn run_watch_namespaces(
     client: Client,
     env_id: String,
     label_selector: Option<String>,
+    watch_token: String,
 ) {
     let api: Api<Namespace> = Api::all(client.clone());
     let mut config = WatcherConfig::default();
@@ -655,12 +693,21 @@ async fn run_watch_namespaces(
             Err(e) => {
                 let msg = e.to_string();
                 debug_log::log_list_err("namespaces/watch", Some(&env_id), &msg, LogLevel::Error);
-                let _ = app.emit(WATCH_EVENT, serde_json::json!({ "error": msg }));
+                let _ = app.emit(WATCH_EVENT, serde_json::json!({
+                    "envId": env_id,
+                    "watchToken": watch_token,
+                    "error": msg
+                }));
                 break;
             }
         }
         let list: Vec<NamespaceItem> = items.values().cloned().collect();
-        let payload = serde_json::to_value(WatchPayload::namespaces(list)).unwrap_or_default();
+        let payload = serde_json::json!({
+            "envId": env_id,
+            "watchToken": watch_token,
+            "kind": "namespaces",
+            "items": list
+        });
         if app.emit(WATCH_EVENT, payload).is_err() {
             break;
         }
@@ -672,6 +719,7 @@ async fn run_watch_nodes(
     client: Client,
     env_id: String,
     label_selector: Option<String>,
+    watch_token: String,
 ) {
     let api: Api<Node> = Api::all(client.clone());
     let mut config = WatcherConfig::default();
@@ -700,12 +748,21 @@ async fn run_watch_nodes(
             Err(e) => {
                 let msg = e.to_string();
                 debug_log::log_list_err("nodes/watch", Some(&env_id), &msg, LogLevel::Error);
-                let _ = app.emit(WATCH_EVENT, serde_json::json!({ "error": msg }));
+                let _ = app.emit(WATCH_EVENT, serde_json::json!({
+                    "envId": env_id,
+                    "watchToken": watch_token,
+                    "error": msg
+                }));
                 break;
             }
         }
         let list: Vec<NodeItem> = items.values().cloned().collect();
-        let payload = serde_json::to_value(WatchPayload::nodes(list)).unwrap_or_default();
+        let payload = serde_json::json!({
+            "envId": env_id,
+            "watchToken": watch_token,
+            "kind": "nodes",
+            "items": list
+        });
         if app.emit(WATCH_EVENT, payload).is_err() {
             break;
         }

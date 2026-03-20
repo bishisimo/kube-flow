@@ -820,13 +820,15 @@ export function kubeStartWatch(
   envId: string,
   kind: string,
   namespace?: string | null,
-  labelSelector?: string | null
+  labelSelector?: string | null,
+  watchToken?: string
 ): Promise<void> {
   return invoke("kube_start_watch", {
     envId,
     kind,
     namespace: namespace ?? null,
     labelSelector: labelSelector ?? null,
+    watchToken: watchToken ?? null,
   });
 }
 

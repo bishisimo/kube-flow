@@ -1,5 +1,5 @@
 /**
- * 资源编排台状态：维护 YAML 资产、组件归类、历史快照与页面切换请求。
+ * 编排中心状态：维护 YAML 资产、组件归类、历史快照与页面切换请求。
  */
 import { ref } from "vue";
 import * as jsYaml from "js-yaml";
@@ -78,12 +78,22 @@ export interface OrchestratorPackage {
   deployments: OrchestratorPackageDeploymentRecord[];
 }
 
+export interface OrchestratorFocusTarget {
+  env_id: string;
+  component: string;
+  manifest_id?: string | null;
+  resource_kind?: string | null;
+  resource_name?: string | null;
+  resource_namespace?: string | null;
+}
+
 const STORAGE_KEY = "kube-flow:orchestrator:manifests";
 const STORAGE_KEY_PACKAGES = "kube-flow:orchestrator:packages";
 
 const manifests = ref<OrchestratorManifest[]>(loadManifests());
 const packages = ref<OrchestratorPackage[]>(loadPackages());
 const switchToOrchestratorRequested = ref(0);
+const orchestratorFocusTarget = ref<OrchestratorFocusTarget | null>(null);
 
 function loadManifests(): OrchestratorManifest[] {
   try {
@@ -577,7 +587,8 @@ function copyComponentToEnv(
   return { copied, updated, skipped };
 }
 
-function requestSwitchToOrchestrator() {
+function requestSwitchToOrchestrator(target?: OrchestratorFocusTarget | null) {
+  orchestratorFocusTarget.value = target ?? null;
   switchToOrchestratorRequested.value += 1;
 }
 
@@ -586,6 +597,7 @@ export function useOrchestratorStore() {
     manifests,
     packages,
     switchToOrchestratorRequested,
+    orchestratorFocusTarget,
     requestSwitchToOrchestrator,
     upsertFromWorkbenchSync,
     saveManifestYaml,
