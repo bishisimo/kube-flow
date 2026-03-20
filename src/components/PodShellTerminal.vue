@@ -4,10 +4,12 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { listen } from "@tauri-apps/api/event";
 import { kubePodExecStdin, kubePodExecResize } from "../api/kube";
+import { hostShellResize, hostShellStdin } from "../api/terminal";
 import "@xterm/xterm/css/xterm.css";
 
 const props = defineProps<{
   streamId: string | null;
+  mode?: "pod" | "host";
 }>();
 
 const emit = defineEmits<{
@@ -63,9 +65,10 @@ function flushInputBuffer() {
   }
   const batch = pendingInputBytes;
   pendingInputBytes = [];
+  const writeStdin = props.mode === "host" ? hostShellStdin : kubePodExecStdin;
   stdinWriteQueue = stdinWriteQueue
     .catch(() => {})
-    .then(() => kubePodExecStdin(streamId, batch))
+    .then(() => writeStdin(streamId, batch))
     .catch(() => {});
 }
 
@@ -121,7 +124,8 @@ function trySendResize() {
   if (dims.cols === lastResizeCols && dims.rows === lastResizeRows) return;
   lastResizeCols = dims.cols;
   lastResizeRows = dims.rows;
-  kubePodExecResize(props.streamId, dims.cols, dims.rows).catch(() => {});
+  const resizeTerminal = props.mode === "host" ? hostShellResize : kubePodExecResize;
+  resizeTerminal(props.streamId, dims.cols, dims.rows).catch(() => {});
 }
 
 async function setupListeners() {
@@ -131,11 +135,14 @@ async function setupListeners() {
   unlistenEnd = null;
   if (!props.streamId) return;
 
+  const chunkEvent = props.mode === "host" ? "host-shell-chunk" : "pod-exec-chunk";
+  const endEvent = props.mode === "host" ? "host-shell-end" : "pod-exec-end";
+
   unlistenChunk = await listen<{
     stream_id: string;
     chunk_bytes: number[];
   }>(
-    "pod-exec-chunk",
+    chunkEvent,
     (ev) => {
       if (ev.payload?.stream_id !== props.streamId || !terminal) return;
       terminal.write(new Uint8Array(ev.payload.chunk_bytes));
@@ -143,7 +150,7 @@ async function setupListeners() {
   );
 
   unlistenEnd = await listen<{ stream_id: string; error?: string }>(
-    "pod-exec-end",
+    endEvent,
     (ev) => {
       if (ev.payload?.stream_id === props.streamId) {
         emit("end", {

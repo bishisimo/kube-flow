@@ -654,6 +654,7 @@ function openPodShell() {
   const ns = r.namespace ?? "default";
   if (r.kind === "Pod") {
     pendingOpen.value = {
+      kind: "pod",
       envId: currentId.value,
       envName: currentEnv.value.display_name,
       namespace: ns,
@@ -661,6 +662,7 @@ function openPodShell() {
     };
   } else {
     pendingOpen.value = {
+      kind: "pod",
       envId: currentId.value,
       envName: currentEnv.value.display_name,
       namespace: ns,
@@ -670,6 +672,20 @@ function openPodShell() {
   }
   requestSwitchToShell();
   closeActionMenu();
+}
+
+function openEnvironmentTerminal(envId?: string | null) {
+  const targetEnvId = envId ?? currentId.value;
+  if (!targetEnvId) return;
+  const env = openedEnvs.value.find((item) => item.id === targetEnvId);
+  if (!env) return;
+  pendingOpen.value = {
+    kind: "host",
+    envId: env.id,
+    envName: env.display_name,
+    hostLabel: `${env.display_name} 主机`,
+  };
+  requestSwitchToShell();
 }
 
 function openEditConfig() {
@@ -2202,6 +2218,7 @@ onUnmounted(() => {
       <EnvBar
         :collapsed="envBarCollapsed"
         :on-reconnect="handleReconnect"
+        :on-open-terminal="openEnvironmentTerminal"
         @toggle="setEnvBarCollapsed(!envBarCollapsed)"
       />
       <div class="content">
@@ -2388,6 +2405,14 @@ onUnmounted(() => {
                 </button>
                 <button type="button" class="btn-refresh" :disabled="listLoading" @click="loadList">
                   {{ listLoading ? "刷新中…" : "刷新" }}
+                </button>
+                <button
+                  v-if="currentId"
+                  type="button"
+                  class="btn-secondary-outline"
+                  @click="openEnvironmentTerminal(currentId)"
+                >
+                  当前环境终端
                 </button>
                 <template v-if="currentId">
                   <button

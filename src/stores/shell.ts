@@ -1,18 +1,21 @@
 /**
- * Pod Shell 会话状态：维护已打开的 Pod Shell 连接列表，与工作台的已打开环境平级。
+ * 终端中心会话状态：统一维护 Pod / 主机会话。
  */
 import { ref, computed } from "vue";
 
 export interface ShellSession {
   id: string;
+  kind: "pod" | "host";
   envId: string;
   envName: string;
-  namespace: string;
-  podName: string;
-  container: string;
+  namespace?: string;
+  podName?: string;
+  container?: string;
   streamId: string | null;
   status: "connecting" | "connected" | "reconnecting" | "disconnected" | "error" | "closed";
   error?: string;
+  hostLabel?: string;
+  bootstrapCommands?: string[];
   /** 从 Workload 打开时，用于 Pod 切换器 */
   workloadKind?: string;
   workloadName?: string;
@@ -21,11 +24,14 @@ export interface ShellSession {
 const sessions = ref<ShellSession[]>([]);
 const currentSessionId = ref<string | null>(null);
 
-/** 从工作台跳转时待打开的信息，Shell 界面读取后清空。支持 Pod 直连或 Workload（Deploy/STS） */
+/** 从工作台跳转时待打开的信息，终端中心读取后清空。 */
 export const pendingOpen = ref<{
+  kind: "pod" | "host";
   envId: string;
   envName: string;
-  namespace: string;
+  namespace?: string;
+  hostLabel?: string;
+  bootstrapCommands?: string[];
   /** 直连 Pod 时必填 */
   podName?: string;
   container?: string;
@@ -58,7 +64,9 @@ export function useShellStore() {
 
   function updateSession(
     id: string,
-    patch: Partial<Pick<ShellSession, "streamId" | "status" | "error" | "podName" | "container">>
+    patch: Partial<
+      Pick<ShellSession, "streamId" | "status" | "error" | "podName" | "container" | "hostLabel">
+    >
   ) {
     const s = sessions.value.find((x) => x.id === id);
     if (s) Object.assign(s, patch);

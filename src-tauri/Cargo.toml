@@ -27,7 +27,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 dirs = "5"
 kube = { version = "0.91", features = ["client", "config", "runtime", "rustls-tls", "ws"], default-features = false }
 k8s-openapi = { version = "0.22", features = ["v1_28"], default-features = false }
-tokio = { version = "1", features = ["fs", "sync", "rt-multi-thread"] }
+tokio = { version = "1", features = ["fs", "sync", "rt-multi-thread", "process", "io-util", "time"] }
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 thiserror = "1"
@@ -40,4 +40,3 @@ aes-gcm = "0.10"
 argon2 = "0.5"
 rand = "0.8"
 base64 = "0.22"
-

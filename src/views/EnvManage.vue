@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from "vue";
 import type { Environment, KubeContextInfo, SshTunnel } from "../api/env";
 import { useEnvStore } from "../stores/env";
+import { useShellStore } from "../stores/shell";
 import {
   envList,
   envUpdate,
@@ -19,6 +20,7 @@ import { credentialExists, credentialSave, credentialDelete } from "../api/crede
 
 const emit = defineEmits<{ (e: "use-env"): void }>();
 const { openEnv, removeEnv: storeRemoveEnv } = useEnvStore();
+const { pendingOpen, requestSwitchToShell } = useShellStore();
 const environments = ref<Environment[]>([]);
 const sshTunnels = ref<SshTunnel[]>([]);
 const listLoading = ref(false);
@@ -408,6 +410,16 @@ function useEnvAndGoMain(env: Environment) {
   emit("use-env");
 }
 
+function openEnvTerminal(env: Environment) {
+  pendingOpen.value = {
+    kind: "host",
+    envId: env.id,
+    envName: env.display_name,
+    hostLabel: `${env.display_name} 主机`,
+  };
+  requestSwitchToShell();
+}
+
 const currentContextLabel = (env: Environment) => {
   const name = effectiveContext(env);
   if (!name) return "—";
@@ -469,17 +481,20 @@ onMounted(() => {
             <span class="badge" :class="env.source">{{ env.source === "local_kubeconfig" ? "本地" : "SSH" }}</span>
             <h3 class="card-title">{{ env.display_name }}</h3>
           </div>
-          <div v-if="(env.tags ?? []).length" class="card-tags">
+          <div class="card-tags" :class="{ empty: !(env.tags ?? []).length }">
             <span v-for="t in env.tags" :key="t" class="tag-chip">{{ t }}</span>
           </div>
-          <p v-if="env.source === 'local_kubeconfig'" class="card-meta current-ctx">{{ currentContextLabel(env) }}</p>
-          <p v-if="env.source === 'local_kubeconfig'" class="card-meta count">{{ env.contexts.length }} 个 context</p>
-          <template v-if="env.source === 'ssh_tunnel'">
-            <p class="card-meta">Host: {{ getTunnelForEnv(env)?.ssh_host ?? '—' }}</p>
-            <p class="card-meta">远程 kubeconfig: {{ getTunnelForEnv(env)?.remote_kubeconfig_path ?? '—' }}</p>
-          </template>
+          <div class="card-meta-group">
+            <p v-if="env.source === 'local_kubeconfig'" class="card-meta current-ctx">{{ currentContextLabel(env) }}</p>
+            <p v-if="env.source === 'local_kubeconfig'" class="card-meta count">{{ env.contexts.length }} 个 context</p>
+            <template v-if="env.source === 'ssh_tunnel'">
+              <p class="card-meta">Host: {{ getTunnelForEnv(env)?.ssh_host ?? '—' }}</p>
+              <p class="card-meta">远程 kubeconfig: {{ getTunnelForEnv(env)?.remote_kubeconfig_path ?? '—' }}</p>
+            </template>
+          </div>
           <div class="card-actions" @click.stop>
             <button type="button" class="btn-use" @click="useEnvAndGoMain(env)">使用</button>
+            <button type="button" class="btn-terminal" @click="openEnvTerminal(env)">终端</button>
           </div>
         </article>
       </div>
@@ -764,8 +779,13 @@ onMounted(() => {
 .card-tags {
   display: flex;
   flex-wrap: wrap;
+  align-content: flex-start;
   gap: 0.35rem;
   margin-bottom: 0.5rem;
+  min-height: 1.65rem;
+}
+.card-tags.empty {
+  visibility: hidden;
 }
 .tag-chip {
   font-size: 0.7rem;
@@ -916,9 +936,11 @@ onMounted(() => {
   color: #dc2626;
 }
 .card-actions {
-  margin-top: 1rem;
+  margin-top: auto;
   padding-top: 1rem;
   border-top: 1px solid #f1f5f9;
+  display: flex;
+  gap: 0.6rem;
 }
 .btn-use {
   padding: 0.4rem 0.9rem;
@@ -933,6 +955,22 @@ onMounted(() => {
 }
 .btn-use:hover {
   background: #1d4ed8;
+}
+.btn-terminal {
+  padding: 0.4rem 0.9rem;
+  background: #eef4ff;
+  color: #1d4ed8;
+  border: 1px solid #c7d7fe;
+  border-radius: 8px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.btn-terminal:hover {
+  background: #dbeafe;
+  border-color: #93c5fd;
+  color: #1e40af;
 }
 .btn-primary {
   display: inline-flex;
@@ -1004,6 +1042,8 @@ onMounted(() => {
   gap: 1.25rem;
 }
 .env-card {
+  display: flex;
+  flex-direction: column;
   border: 1px solid #e2e8f0;
   border-radius: 12px;
   padding: 1.25rem;
@@ -1018,9 +1058,10 @@ onMounted(() => {
 }
 .card-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.5rem;
   margin-bottom: 0.75rem;
+  min-height: 2.8rem;
 }
 .badge {
   font-size: 0.7rem;
@@ -1044,11 +1085,20 @@ onMounted(() => {
   font-weight: 600;
   color: #1e293b;
   letter-spacing: -0.01em;
+  line-height: 1.4;
+}
+.card-meta-group {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 0.25rem;
+  min-height: 3.35rem;
 }
 .card-meta {
-  margin: 0 0 0.25rem 0;
+  margin: 0;
   font-size: 0.8125rem;
   color: #64748b;
+  line-height: 1.45;
 }
 .card-meta.count {
   font-size: 0.75rem;

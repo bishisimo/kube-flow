@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, onMounted, computed, watch } from "vue";
 import { CodeEditor } from "monaco-editor-vue3";
 import {
   logGetLevel,
@@ -23,6 +23,13 @@ import {
   type TunnelMappingMode,
 } from "../api/config";
 import { useAppSettingsStore } from "../stores/appSettings";
+import { useEnvStore } from "../stores/env";
+import {
+  buildNodeTerminalCommand,
+  getNodeTerminalStrategy,
+  setNodeTerminalStrategy,
+  type NodeTerminalStrategy,
+} from "../stores/nodeTerminalStrategy";
 import {
   securityGetSettings,
   securitySetCredentialStore,
@@ -54,6 +61,7 @@ const { themeId } = useYamlTheme();
 const { monacoTheme } = useYamlMonacoTheme();
 const { triggerLogRefresh } = useLogStore();
 const { autoSnapshotEnabled } = useAppSettingsStore();
+const { environments, loadEnvironments } = useEnvStore();
 const activeCategory = ref<CategoryId>("appearance");
 const currentLevel = ref<string>("off");
 const currentOrder = ref<LogDisplayOrder>("asc");
@@ -113,6 +121,18 @@ const securityMsgIsError = ref(false);
 const securityLoading = ref(false);
 const editingStrongholdPath = ref(false);
 const tempStrongholdPath = ref("");
+const selectedNodeStrategyEnvId = ref("");
+const nodeStrategyForm = ref<NodeTerminalStrategy>({
+  envId: "",
+  enabled: false,
+  nodeAddressTemplate: "{node}",
+  switchUser: "root",
+  switchPassword: "",
+  commandTemplate: "ssh {user}@{host}",
+});
+const nodeStrategyPreview = computed(() =>
+  buildNodeTerminalCommand(nodeStrategyForm.value.envId ? nodeStrategyForm.value : null, "node-01")
+);
 
 async function load() {
   try {
@@ -131,6 +151,7 @@ async function load() {
   } catch {
     currentLevel.value = "off";
   }
+  await loadEnvironments().catch(() => {});
 }
 
 async function loadSecurity() {
@@ -283,6 +304,32 @@ async function saveAutoSnapshotEnabled(enabled: boolean) {
   }
 }
 
+function syncNodeStrategyForm(envId: string) {
+  const strategy = getNodeTerminalStrategy(envId);
+  nodeStrategyForm.value = strategy
+    ? { ...strategy }
+    : {
+        envId,
+        enabled: false,
+        nodeAddressTemplate: "{node}",
+        switchUser: "root",
+        switchPassword: "",
+        commandTemplate: "ssh {user}@{host}",
+      };
+}
+
+function saveNodeStrategyField<K extends keyof NodeTerminalStrategy>(key: K, value: NodeTerminalStrategy[K]) {
+  const envId = selectedNodeStrategyEnvId.value;
+  if (!envId) return;
+  const next = {
+    ...nodeStrategyForm.value,
+    envId,
+    [key]: value,
+  };
+  nodeStrategyForm.value = next;
+  setNodeTerminalStrategy(envId, next);
+}
+
 async function saveLevel(level: LogLevel) {
   saving.value = true;
   message.value = null;
@@ -319,6 +366,24 @@ async function saveDisplaySettings(order: LogDisplayOrder, format: LogDisplayFor
 onMounted(() => {
   load();
   loadSecurity();
+});
+
+watch(
+  () => environments.value.map((env) => env.id).join(","),
+  () => {
+    if (!selectedNodeStrategyEnvId.value || !environments.value.some((env) => env.id === selectedNodeStrategyEnvId.value)) {
+      selectedNodeStrategyEnvId.value = environments.value[0]?.id ?? "";
+    }
+    if (selectedNodeStrategyEnvId.value) {
+      syncNodeStrategyForm(selectedNodeStrategyEnvId.value);
+    }
+  },
+  { immediate: true }
+);
+
+watch(selectedNodeStrategyEnvId, (envId) => {
+  if (!envId) return;
+  syncNodeStrategyForm(envId);
 });
 </script>
 
@@ -471,6 +536,80 @@ onMounted(() => {
             <span v-if="message === '已保存'" class="message-icon">✓</span>
             {{ message }}
           </p>
+        </section>
+
+        <section class="card">
+          <h2 class="card-title">节点终端切换策略</h2>
+          <p class="card-desc">
+            为每个环境配置节点切换模板。点击节点详情里的终端按钮后，会先打开该环境主机 Shell，再执行这里配置的命令模板。
+          </p>
+          <div class="node-strategy-grid">
+            <label class="sync-field">
+              <span>目标环境</span>
+              <select v-model="selectedNodeStrategyEnvId" class="filter-input">
+                <option value="" disabled>选择环境</option>
+                <option v-for="env in environments" :key="env.id" :value="env.id">
+                  {{ env.display_name }}
+                </option>
+              </select>
+            </label>
+            <label class="checkbox-row checkbox-card">
+              <input
+                :checked="nodeStrategyForm.enabled"
+                type="checkbox"
+                @change="saveNodeStrategyField('enabled', ($event.target as HTMLInputElement).checked)"
+              />
+              启用节点切换策略
+            </label>
+            <label class="sync-field">
+              <span>节点地址模板</span>
+              <input
+                :value="nodeStrategyForm.nodeAddressTemplate"
+                class="filter-input"
+                placeholder="{node}"
+                @input="saveNodeStrategyField('nodeAddressTemplate', ($event.target as HTMLInputElement).value)"
+              />
+            </label>
+            <label class="sync-field">
+              <span>切换用户</span>
+              <input
+                :value="nodeStrategyForm.switchUser"
+                class="filter-input"
+                placeholder="root"
+                @input="saveNodeStrategyField('switchUser', ($event.target as HTMLInputElement).value)"
+              />
+            </label>
+            <label class="sync-field">
+              <span>切换密码</span>
+              <input
+                :value="nodeStrategyForm.switchPassword"
+                type="password"
+                class="filter-input"
+                placeholder="可选，模板里用 {password} 引用"
+                @input="saveNodeStrategyField('switchPassword', ($event.target as HTMLInputElement).value)"
+              />
+            </label>
+            <label class="sync-field sync-field-wide">
+              <span>命令模板</span>
+              <textarea
+                :value="nodeStrategyForm.commandTemplate"
+                class="path-input strategy-textarea"
+                rows="4"
+                placeholder="ssh {user}@{host}"
+                @input="saveNodeStrategyField('commandTemplate', ($event.target as HTMLTextAreaElement).value)"
+              />
+            </label>
+          </div>
+          <div class="strategy-tip">
+            可用占位符：`{node}`、`{host}`、`{user}`、`{password}`。
+          </div>
+          <div v-if="nodeStrategyPreview" class="strategy-preview">
+            <div>预览地址：{{ nodeStrategyPreview.host }}</div>
+            <div>预览命令：{{ nodeStrategyPreview.command }}</div>
+          </div>
+          <div v-else class="strategy-preview strategy-preview-empty">
+            当前策略未启用，或模板无法生成有效命令。
+          </div>
         </section>
       </template>
 
@@ -1005,6 +1144,65 @@ onMounted(() => {
   color: #64748b;
   cursor: pointer;
 }
+.checkbox-card {
+  padding: 0.85rem 0.95rem;
+  border: 1px solid #dbe3ee;
+  border-radius: 12px;
+  background: #fff;
+}
+.node-strategy-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+.sync-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  font-size: 0.8125rem;
+  color: #475569;
+}
+.sync-field-wide {
+  grid-column: 1 / -1;
+}
+.filter-input {
+  width: 100%;
+  min-width: 0;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  background: #fff;
+  font-size: 0.8125rem;
+  color: #0f172a;
+  outline: none;
+}
+.filter-input:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+.strategy-textarea {
+  width: 100%;
+  resize: vertical;
+  line-height: 1.55;
+}
+.strategy-tip {
+  margin-top: 0.7rem;
+  font-size: 0.75rem;
+  color: #64748b;
+}
+.strategy-preview {
+  margin-top: 0.8rem;
+  padding: 0.85rem 0.95rem;
+  border-radius: 12px;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  word-break: break-word;
+}
+.strategy-preview-empty {
+  color: #64748b;
+}
 .btn-action {
   padding: 0.5rem 1.25rem;
   border: none;
@@ -1023,6 +1221,11 @@ onMounted(() => {
 .btn-action:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+@media (max-width: 900px) {
+  .node-strategy-grid {
+    grid-template-columns: 1fr;
+  }
 }
 .btn-secondary-action {
   background: #f1f5f9;

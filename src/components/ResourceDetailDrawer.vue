@@ -25,6 +25,9 @@ import {
   type ResourceSnapshotItem,
 } from "../stores/resourceSnapshots";
 import { ensureAutoSnapshotSettingLoaded } from "../stores/appSettings";
+import { useEnvStore } from "../stores/env";
+import { useShellStore } from "../stores/shell";
+import { buildNodeTerminalCommand, getNodeTerminalStrategy } from "../stores/nodeTerminalStrategy";
 
 const DRAWER_WIDTH_KEY = "kube-flow:drawer-width";
 const DRAWER_MIN = 360;
@@ -72,6 +75,8 @@ const snapshotSaving = ref(false);
 const viewingSnapshot = ref<ResourceSnapshotItem | null>(null);
 const showManagedFields = ref(false);
 const { monacoTheme } = useYamlMonacoTheme();
+const { environments } = useEnvStore();
+const { pendingOpen, requestSwitchToShell } = useShellStore();
 
 
 const monacoOptions = {
@@ -100,6 +105,10 @@ const snapshotResourceRef = computed(() =>
 
 const genericSnapshots = computed(() => listResourceSnapshotsByCategory(snapshotResourceRef.value, "all"));
 const currentSnapshotSummary = computed(() => summarizeResourceYaml(resolveCurrentDraftYaml() || rawYaml.value));
+const currentEnv = computed(() => environments.value.find((env) => env.id === props.envId) ?? null);
+const canOpenNodeTerminal = computed(
+  () => Boolean(props.envId && props.resource?.kind === "Node" && getNodeTerminalStrategy(props.envId)?.enabled)
+);
 
 function resolveCurrentDraftYaml(): string {
   if (props.resource?.kind === "ConfigMap" || props.resource?.kind === "Secret") {
@@ -117,6 +126,30 @@ function getInitialDrawerWidth(): number {
     }
   } catch {}
   return DRAWER_DEFAULT;
+}
+
+function openNodeTerminal() {
+  if (!props.envId || !props.resource || props.resource.kind !== "Node") return;
+  const env = currentEnv.value;
+  if (!env) {
+    editError.value = "未找到当前环境，无法打开节点终端。";
+    return;
+  }
+  const strategy = getNodeTerminalStrategy(props.envId);
+  const target = buildNodeTerminalCommand(strategy, props.resource.name);
+  if (!target) {
+    editError.value = "请先在设置的 SSH 隧道页配置当前环境的节点终端切换策略。";
+    return;
+  }
+  pendingOpen.value = {
+    kind: "host",
+    envId: props.envId,
+    envName: env.display_name,
+    hostLabel: `${env.display_name} / ${props.resource.name}`,
+    bootstrapCommands: [target.command],
+  };
+  requestSwitchToShell();
+  emit("close");
 }
 const drawerWidth = ref(getInitialDrawerWidth());
 
@@ -376,22 +409,25 @@ watch(
           <h2 id="drawer-title" class="drawer-title">
             {{ resource ? `${resource.kind} / ${resource.name}` : "资源详情" }}
           </h2>
-          <button type="button" class="btn-close" aria-label="关闭" @click="emit('close')">×</button>
+          <div class="drawer-header-actions">
+            <label v-if="activeTab === 'yaml' && rawYaml" class="checkbox-label checkbox-label-inline drawer-header-toggle">
+              <input v-model="showManagedFields" type="checkbox" />
+              <span>managedFields</span>
+            </label>
+            <button type="button" class="btn-close" aria-label="关闭" @click="emit('close')">×</button>
+          </div>
         </header>
         <div v-if="props.resource" class="drawer-toolbar">
           <div class="toolbar-head">
-            <div class="toolbar-resource-meta">
-              <span class="toolbar-kind-pill">{{ resource?.kind || "资源" }}</span>
-              <span class="toolbar-resource-sub">
-                {{ resource?.namespace ? `${resource.namespace} / ${resource.name}` : resource?.name }}
-              </span>
-            </div>
-            <template v-if="activeTab === 'yaml' && rawYaml">
-              <label class="checkbox-label checkbox-label-ghost">
-                <input v-model="showManagedFields" type="checkbox" />
-                <span>显示 managedFields</span>
-              </label>
-            </template>
+            <button
+              v-if="resource?.kind === 'Node'"
+              type="button"
+              class="btn-secondary-inline"
+              :disabled="!canOpenNodeTerminal"
+              @click="openNodeTerminal"
+            >
+              打开节点终端
+            </button>
             <template v-else-if="activeTab === 'edit' && rawYaml">
               <button
                 type="button"
@@ -407,39 +443,30 @@ watch(
             <div class="tab-grid">
               <button
                 type="button"
-                class="tab-btn tab-card"
+                class="tab-btn tab-compact"
                 :class="{ active: activeTab === 'yaml' }"
                 @click="activeTab = 'yaml'"
               >
                 <span class="tab-icon" aria-hidden="true">Y</span>
-                <span class="tab-copy">
-                  <span class="tab-title">YAML</span>
-                  <span class="tab-desc">查看资源原始定义</span>
-                </span>
+                <span class="tab-title">YAML</span>
               </button>
               <button
                 type="button"
-                class="tab-btn tab-card"
+                class="tab-btn tab-compact"
                 :class="{ active: activeTab === 'edit' }"
                 @click="activeTab = 'edit'"
               >
                 <span class="tab-icon" aria-hidden="true">E</span>
-                <span class="tab-copy">
-                  <span class="tab-title">编辑 YAML</span>
-                  <span class="tab-desc">完整编辑并应用资源</span>
-                </span>
+                <span class="tab-title">编辑</span>
               </button>
               <button
                 type="button"
-                class="tab-btn tab-card"
+                class="tab-btn tab-compact"
                 :class="{ active: activeTab === 'describe' }"
                 @click="activeTab = 'describe'"
               >
                 <span class="tab-icon" aria-hidden="true">D</span>
-                <span class="tab-copy">
-                  <span class="tab-title">Describe</span>
-                  <span class="tab-desc">查看解析后的说明信息</span>
-                </span>
+                <span class="tab-title">详情</span>
               </button>
               <button
                 v-if="
@@ -450,52 +477,40 @@ watch(
                     resource.kind === 'DaemonSet')
                 "
                 type="button"
-                class="tab-btn tab-card"
+                class="tab-btn tab-compact"
                 :class="{ active: activeTab === 'logs' }"
                 @click="activeTab = 'logs'"
               >
                 <span class="tab-icon" aria-hidden="true">L</span>
-                <span class="tab-copy">
-                  <span class="tab-title">日志</span>
-                  <span class="tab-desc">排查运行时输出</span>
-                </span>
+                <span class="tab-title">日志</span>
               </button>
               <button
                 v-if="resource && (resource.kind === 'ConfigMap' || resource.kind === 'Secret')"
                 type="button"
-                class="tab-btn tab-card"
+                class="tab-btn tab-compact"
                 :class="{ active: activeTab === 'editConfig' }"
                 @click="activeTab = 'editConfig'"
               >
                 <span class="tab-icon" aria-hidden="true">C</span>
-                <span class="tab-copy">
-                  <span class="tab-title">修改配置</span>
-                  <span class="tab-desc">结构化编辑键值内容</span>
-                </span>
+                <span class="tab-title">配置</span>
               </button>
               <button
                 type="button"
-                class="tab-btn tab-card"
+                class="tab-btn tab-compact"
                 :class="{ active: activeTab === 'topology' }"
                 @click="activeTab = 'topology'"
               >
                 <span class="tab-icon" aria-hidden="true">R</span>
-                <span class="tab-copy">
-                  <span class="tab-title">关联资源</span>
-                  <span class="tab-desc">查看引用与上下游关系</span>
-                </span>
+                <span class="tab-title">关联</span>
               </button>
               <button
                 type="button"
-                class="tab-btn tab-card"
+                class="tab-btn tab-compact"
                 :class="{ active: activeTab === 'snapshots' }"
                 @click="activeTab = 'snapshots'"
               >
                 <span class="tab-icon" aria-hidden="true">S</span>
-                <span class="tab-copy">
-                  <span class="tab-title">快照</span>
-                  <span class="tab-desc">统一管理历史草稿版本</span>
-                </span>
+                <span class="tab-title">快照</span>
               </button>
             </div>
           </div>
@@ -643,6 +658,7 @@ watch(
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 0.75rem;
   padding: 0.75rem 1rem;
   border-bottom: 1px solid #e2e8f0;
   flex-shrink: 0;
@@ -652,6 +668,13 @@ watch(
   font-size: 0.9375rem;
   font-weight: 600;
   color: #1e293b;
+  min-width: 0;
+}
+.drawer-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-shrink: 0;
 }
 .btn-close {
   width: 2rem;
@@ -679,59 +702,37 @@ watch(
 .toolbar-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 0.75rem;
   margin-bottom: 0.75rem;
-}
-.toolbar-resource-meta {
-  display: flex;
-  align-items: center;
-  gap: 0.65rem;
-  min-width: 0;
-}
-.toolbar-kind-pill {
-  flex-shrink: 0;
-  padding: 0.28rem 0.6rem;
-  border-radius: 999px;
-  background: #dbeafe;
-  color: #1d4ed8;
-  font-size: 0.75rem;
-  font-weight: 700;
-}
-.toolbar-resource-sub {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 0.8125rem;
-  color: #475569;
 }
 .toolbar-row {
   display: flex;
   align-items: stretch;
-  gap: 1rem;
-  flex-wrap: nowrap;
-  flex: 1;
+  gap: 0.75rem;
   min-width: 0;
 }
 .toolbar-apply {
   flex-shrink: 0;
 }
 .tab-grid {
-  flex: 1;
-  min-width: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
+  display: flex;
+  align-items: center;
   gap: 0.55rem;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 0.1rem;
+  scrollbar-width: thin;
 }
 .tab-btn {
+  flex-shrink: 0;
   border: 1px solid #dbe3ee;
-  border-radius: 14px;
+  border-radius: 999px;
   background: #fff;
   cursor: pointer;
   color: #475569;
   transition:
-    transform 0.16s ease,
     border-color 0.16s ease,
     box-shadow 0.16s ease,
     background 0.16s ease;
@@ -739,58 +740,47 @@ watch(
 .tab-btn:hover {
   background: #fff;
   border-color: #93c5fd;
-  box-shadow: 0 10px 22px rgba(148, 163, 184, 0.12);
-  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(148, 163, 184, 0.12);
 }
-.tab-card {
-  min-height: 68px;
-  padding: 0.75rem 0.85rem;
+.tab-compact {
+  min-height: 0;
+  padding: 0.5rem 0.8rem;
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  text-align: left;
+  gap: 0.45rem;
+  white-space: nowrap;
 }
 .tab-btn.active {
   background: linear-gradient(180deg, rgba(219, 234, 254, 0.88) 0%, rgba(239, 246, 255, 1) 100%);
   border-color: #60a5fa;
   color: #1d4ed8;
-  box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.22), 0 12px 26px rgba(59, 130, 246, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.22), 0 8px 18px rgba(59, 130, 246, 0.12);
 }
 .tab-icon {
-  width: 2rem;
-  height: 2rem;
+  width: 1.35rem;
+  height: 1.35rem;
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 10px;
+  border-radius: 999px;
   background: #eff6ff;
   color: #2563eb;
-  font-size: 0.875rem;
+  font-size: 0.68rem;
   font-weight: 800;
 }
 .tab-btn.active .tab-icon {
   background: #2563eb;
   color: #fff;
 }
-.tab-copy {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.14rem;
-}
 .tab-title {
-  font-size: 0.8125rem;
+  font-size: 0.78rem;
   font-weight: 700;
+  line-height: 1;
   color: #1e293b;
 }
 .tab-btn.active .tab-title {
   color: #1d4ed8;
-}
-.tab-desc {
-  font-size: 0.72rem;
-  line-height: 1.35;
-  color: #64748b;
 }
 .checkbox-label {
   display: inline-flex;
@@ -808,6 +798,19 @@ watch(
   border: 1px solid #dbe3ee;
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.82);
+}
+.checkbox-label-inline {
+  flex-shrink: 0;
+  align-self: center;
+  padding: 0.42rem 0.72rem;
+  border: 1px solid #dbe3ee;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.88);
+  white-space: nowrap;
+}
+.drawer-header-toggle {
+  max-width: min(34vw, 180px);
+  overflow: hidden;
 }
 .drawer-body {
   flex: 1;
@@ -977,6 +980,24 @@ watch(
 }
 .btn-primary:disabled {
   opacity: 0.6;
+  cursor: not-allowed;
+}
+.btn-secondary-inline {
+  padding: 0.55rem 0.95rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #334155;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn-secondary-inline:hover:not(:disabled) {
+  border-color: #93c5fd;
+  color: #1d4ed8;
+}
+.btn-secondary-inline:disabled {
+  opacity: 0.55;
   cursor: not-allowed;
 }
 .yaml-scroll {

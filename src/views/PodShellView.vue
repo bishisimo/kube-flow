@@ -1,15 +1,16 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useShellStore } from "../stores/shell";
 import { useEnvStore } from "../stores/env";
 import {
+  kubeGetPodContainers,
+  kubeListPodsForWorkload,
   kubePodExecStart,
   kubePodExecStop,
   kubeRemoveClient,
-  kubeGetPodContainers,
-  kubeListPodsForWorkload,
   type PodItem,
 } from "../api/kube";
+import { hostShellStart, hostShellStdin, hostShellStop } from "../api/terminal";
 import PodShellTerminal from "../components/PodShellTerminal.vue";
 
 const {
@@ -23,13 +24,13 @@ const {
   pendingOpen,
   clearPendingOpen,
 } = useShellStore();
+const { environments } = useEnvStore();
 
-useEnvStore();
-
-const sessionListCollapsed = ref(false);
+const sessionRailCollapsed = ref(false);
 const podOptions = ref<PodItem[]>([]);
 const containerOptions = ref<string[]>([]);
 const switcherLoading = ref(false);
+const hostEntryEnvId = ref("");
 const reconnectAttemptMap = ref<Record<string, number>>({});
 const reconnectTimerMap = new Map<string, ReturnType<typeof setTimeout>>();
 const reconnectingSessionIds = new Set<string>();
@@ -37,6 +38,47 @@ const suppressEndStreamIds = new Set<string>();
 
 const RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000, 15000];
 const MAX_RECONNECT_ATTEMPTS = RECONNECT_DELAYS_MS.length;
+
+const groupedSessions = computed(() => {
+  const groups = new Map<string, { envId: string; envName: string; items: typeof sessions.value }>();
+  for (const session of sessions.value) {
+    const group =
+      groups.get(session.envId) ??
+      { envId: session.envId, envName: session.envName, items: [] as typeof sessions.value };
+    group.items.push(session);
+    groups.set(session.envId, group);
+  }
+  return Array.from(groups.values()).sort((a, b) => a.envName.localeCompare(b.envName));
+});
+
+const hostEntryOptions = computed(() =>
+  [...environments.value].sort((a, b) => a.display_name.localeCompare(b.display_name))
+);
+
+const currentSessionSubtitle = computed(() => {
+  const session = currentSession.value;
+  if (!session) return "集中管理 Pod Shell 与主机 Shell。";
+  if (session.kind === "host") return "";
+  const ns = session.namespace || "default";
+  const container = session.container ? ` / ${session.container}` : "";
+  return `${session.envName} / ${ns}${container}`;
+});
+
+const currentSessionContextName = computed(() => {
+  const session = currentSession.value;
+  if (!session) return "";
+  if (session.kind === "host") return session.hostLabel || `${session.envName} 主机`;
+  return session.podName || "Pod";
+});
+
+function sessionBadge(session: (typeof sessions.value)[number]): string {
+  return session.kind === "host" ? "主机" : "Pod";
+}
+
+function sessionLabel(session: (typeof sessions.value)[number]): string {
+  if (session.kind === "host") return session.hostLabel || `${session.envName} 主机`;
+  return `${session.podName || "-"}${session.container ? ` (${session.container})` : ""}`;
+}
 
 function extractErrorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -76,20 +118,47 @@ function markStreamSuppressEnd(streamId: string | null) {
   if (streamId) suppressEndStreamIds.add(streamId);
 }
 
+async function startHostSessionStream(sessionId: string): Promise<boolean> {
+  const session = sessions.value.find((item) => item.id === sessionId);
+  if (!session) return false;
+  try {
+    const streamId = await hostShellStart(session.envId);
+    updateSession(sessionId, {
+      streamId,
+      status: "connected",
+      error: undefined,
+      hostLabel: session.hostLabel || `${session.envName} 主机`,
+    });
+    scheduleHostBootstrap(streamId, session.bootstrapCommands);
+    clearReconnectState(sessionId);
+    return true;
+  } catch (e) {
+    updateSession(sessionId, {
+      streamId: null,
+      status: "reconnecting",
+      error: extractErrorMessage(e),
+    });
+    return false;
+  }
+}
+
 async function tryReconnectSession(sessionId: string, resetClient: boolean): Promise<boolean> {
   if (reconnectingSessionIds.has(sessionId)) return false;
-  const s = sessions.value.find((x) => x.id === sessionId);
-  if (!s) return false;
+  const session = sessions.value.find((item) => item.id === sessionId);
+  if (!session) return false;
   reconnectingSessionIds.add(sessionId);
   try {
+    if (session.kind === "host") {
+      return await startHostSessionStream(sessionId);
+    }
     if (resetClient) {
-      await kubeRemoveClient(s.envId).catch(() => {});
+      await kubeRemoveClient(session.envId).catch(() => {});
     }
     const streamId = await kubePodExecStart(
-      s.envId,
-      s.namespace,
-      s.podName,
-      s.container || null
+      session.envId,
+      session.namespace || "default",
+      session.podName || "",
+      session.container || null
     );
     updateSession(sessionId, {
       streamId,
@@ -111,8 +180,8 @@ async function tryReconnectSession(sessionId: string, resetClient: boolean): Pro
 }
 
 function scheduleReconnect(sessionId: string, reason?: string) {
-  const s = sessions.value.find((x) => x.id === sessionId);
-  if (!s || reconnectTimerMap.has(sessionId)) return;
+  const session = sessions.value.find((item) => item.id === sessionId);
+  if (!session || reconnectTimerMap.has(sessionId)) return;
   const attempt = (reconnectAttemptMap.value[sessionId] ?? 0) + 1;
   reconnectAttemptMap.value = { ...reconnectAttemptMap.value, [sessionId]: attempt };
   if (attempt > MAX_RECONNECT_ATTEMPTS) {
@@ -129,21 +198,24 @@ function scheduleReconnect(sessionId: string, reason?: string) {
   updateSession(sessionId, {
     streamId: null,
     status: "reconnecting",
-    error: `连接中断，${Math.round(delay / 1000)} 秒后进行第 ${attempt} 次重连`,
+    error:
+      session.kind === "host"
+        ? `主机连接中断，${Math.round(delay / 1000)} 秒后进行第 ${attempt} 次重连`
+        : `连接中断，${Math.round(delay / 1000)} 秒后进行第 ${attempt} 次重连`,
   });
   const timer = setTimeout(async () => {
     reconnectTimerMap.delete(sessionId);
     const resetClient = isLikelyConnectionError(reason);
     const ok = await tryReconnectSession(sessionId, resetClient);
     if (!ok) {
-      const latest = sessions.value.find((x) => x.id === sessionId);
+      const latest = sessions.value.find((item) => item.id === sessionId);
       scheduleReconnect(sessionId, latest?.error ?? reason);
     }
   }, delay);
   reconnectTimerMap.set(sessionId, timer);
 }
 
-async function openConnection(
+async function openPodConnection(
   envId: string,
   envName: string,
   namespace: string,
@@ -153,6 +225,7 @@ async function openConnection(
   workloadName?: string
 ) {
   const id = addSession({
+    kind: "pod",
     envId,
     envName,
     namespace,
@@ -162,45 +235,81 @@ async function openConnection(
     workloadName,
   });
   try {
-    const streamId = await kubePodExecStart(
-      envId,
-      namespace,
-      podName,
-      container || null
-    );
+    const streamId = await kubePodExecStart(envId, namespace, podName, container || null);
     updateSession(id, { streamId, status: "connected", error: undefined });
     clearReconnectState(id);
   } catch (e) {
-    updateSession(id, {
-      status: "error",
-      error: extractErrorMessage(e),
-    });
+    updateSession(id, { status: "error", error: extractErrorMessage(e) });
+  }
+}
+
+function scheduleHostBootstrap(streamId: string, commands?: string[]) {
+  const normalized = (commands ?? []).map((item) => item.trim()).filter(Boolean);
+  if (!normalized.length) return;
+  window.setTimeout(() => {
+    const text = `${normalized.join("\n")}\n`;
+    const bytes = Array.from(new TextEncoder().encode(text));
+    hostShellStdin(streamId, bytes).catch(() => {});
+  }, 320);
+}
+
+async function openHostConnectionWithBootstrap(
+  envId: string,
+  envName: string,
+  hostLabel?: string,
+  bootstrapCommands?: string[]
+) {
+  const id = addSession({
+    kind: "host",
+    envId,
+    envName,
+    hostLabel: hostLabel || `${envName} 主机`,
+    bootstrapCommands,
+  });
+  try {
+    const streamId = await hostShellStart(envId);
+    updateSession(id, { streamId, status: "connected", error: undefined });
+    scheduleHostBootstrap(streamId, bootstrapCommands);
+    clearReconnectState(id);
+  } catch (e) {
+    updateSession(id, { status: "error", error: extractErrorMessage(e) });
   }
 }
 
 async function handlePendingOpen() {
-  const p = pendingOpen.value;
-  if (!p) return;
+  const pending = pendingOpen.value;
+  if (!pending) return;
   clearPendingOpen();
 
-  let podName = p.podName;
-  let workloadKind = p.workloadKind;
-  let workloadName = p.workloadName;
+  if (pending.kind === "host") {
+    await openHostConnectionWithBootstrap(
+      pending.envId,
+      pending.envName,
+      pending.hostLabel,
+      pending.bootstrapCommands
+    );
+    return;
+  }
+
+  let podName = pending.podName;
+  let workloadKind = pending.workloadKind;
+  let workloadName = pending.workloadName;
 
   if (workloadKind && workloadName) {
     try {
       const pods = await kubeListPodsForWorkload(
-        p.envId,
+        pending.envId,
         workloadKind,
         workloadName,
-        p.namespace
+        pending.namespace || "default"
       );
-      const ready = pods.find((x) => x.phase === "Running") ?? pods[0];
+      const ready = pods.find((item) => item.phase === "Running") ?? pods[0];
       if (!ready) {
         const id = addSession({
-          envId: p.envId,
-          envName: p.envName,
-          namespace: p.namespace,
+          kind: "pod",
+          envId: pending.envId,
+          envName: pending.envName,
+          namespace: pending.namespace || "default",
           podName: workloadName,
           container: "",
           workloadKind,
@@ -212,45 +321,43 @@ async function handlePendingOpen() {
       podName = ready.name;
     } catch (e) {
       const id = addSession({
-        envId: p.envId,
-        envName: p.envName,
-        namespace: p.namespace,
+        kind: "pod",
+        envId: pending.envId,
+        envName: pending.envName,
+        namespace: pending.namespace || "default",
         podName: workloadName,
         container: "",
         workloadKind,
         workloadName,
       });
-      updateSession(id, {
-        status: "error",
-        error: e instanceof Error ? e.message : String(e),
-      });
+      updateSession(id, { status: "error", error: extractErrorMessage(e) });
       return;
     }
   } else if (!podName) {
     return;
   }
 
-  await openConnection(
-    p.envId,
-    p.envName,
-    p.namespace,
+  await openPodConnection(
+    pending.envId,
+    pending.envName,
+    pending.namespace || "default",
     podName,
-    p.container ?? "",
+    pending.container ?? "",
     workloadKind,
     workloadName
   );
 }
 
 async function loadPodOptions() {
-  const s = currentSession.value;
-  if (!s?.workloadKind || !s?.workloadName || !s.envId) return;
+  const session = currentSession.value;
+  if (!session || session.kind !== "pod" || !session.workloadKind || !session.workloadName) return;
   switcherLoading.value = true;
   try {
     podOptions.value = await kubeListPodsForWorkload(
-      s.envId,
-      s.workloadKind,
-      s.workloadName,
-      s.namespace
+      session.envId,
+      session.workloadKind,
+      session.workloadName,
+      session.namespace || "default"
     );
   } catch {
     podOptions.value = [];
@@ -260,13 +367,13 @@ async function loadPodOptions() {
 }
 
 async function loadContainerOptions() {
-  const s = currentSession.value;
-  if (!s?.envId || !s?.namespace || !s?.podName) return;
+  const session = currentSession.value;
+  if (!session || session.kind !== "pod" || !session.namespace || !session.podName) return;
   try {
     containerOptions.value = await kubeGetPodContainers(
-      s.envId,
-      s.namespace,
-      s.podName
+      session.envId,
+      session.namespace,
+      session.podName
     );
   } catch {
     containerOptions.value = [];
@@ -274,64 +381,62 @@ async function loadContainerOptions() {
 }
 
 async function switchPod(newPodName: string) {
-  const s = currentSession.value;
-  if (!s || s.podName === newPodName) return;
-  if (s.streamId) {
-    markStreamSuppressEnd(s.streamId);
-    await kubePodExecStop(s.streamId);
+  const session = currentSession.value;
+  if (!session || session.kind !== "pod" || session.podName === newPodName || !session.namespace) return;
+  if (session.streamId) {
+    markStreamSuppressEnd(session.streamId);
+    await kubePodExecStop(session.streamId);
   }
-  clearReconnectState(s.id);
-  updateSession(s.id, { streamId: null, status: "connecting", podName: newPodName });
+  clearReconnectState(session.id);
+  updateSession(session.id, { streamId: null, status: "connecting", podName: newPodName });
   try {
-    const containers = await kubeGetPodContainers(s.envId, s.namespace, newPodName);
+    const containers = await kubeGetPodContainers(session.envId, session.namespace, newPodName);
     const container = containers[0] ?? "";
-    updateSession(s.id, { container });
+    updateSession(session.id, { container });
     const streamId = await kubePodExecStart(
-      s.envId,
-      s.namespace,
+      session.envId,
+      session.namespace,
       newPodName,
       container || null
     );
-    updateSession(s.id, { streamId, status: "connected", error: undefined });
+    updateSession(session.id, { streamId, status: "connected", error: undefined });
     containerOptions.value = containers;
   } catch (e) {
-    updateSession(s.id, {
-      status: "error",
-      error: extractErrorMessage(e),
-    });
+    updateSession(session.id, { status: "error", error: extractErrorMessage(e) });
   }
 }
 
 async function switchContainer(newContainer: string) {
-  const s = currentSession.value;
-  if (!s || s.container === newContainer) return;
-  if (s.streamId) {
-    markStreamSuppressEnd(s.streamId);
-    await kubePodExecStop(s.streamId);
+  const session = currentSession.value;
+  if (!session || session.kind !== "pod" || session.container === newContainer || !session.namespace || !session.podName) return;
+  if (session.streamId) {
+    markStreamSuppressEnd(session.streamId);
+    await kubePodExecStop(session.streamId);
   }
-  clearReconnectState(s.id);
-  updateSession(s.id, { streamId: null, status: "connecting", container: newContainer });
+  clearReconnectState(session.id);
+  updateSession(session.id, { streamId: null, status: "connecting", container: newContainer });
   try {
     const streamId = await kubePodExecStart(
-      s.envId,
-      s.namespace,
-      s.podName,
+      session.envId,
+      session.namespace,
+      session.podName,
       newContainer || null
     );
-    updateSession(s.id, { streamId, status: "connected", error: undefined });
+    updateSession(session.id, { streamId, status: "connected", error: undefined });
   } catch (e) {
-    updateSession(s.id, {
-      status: "error",
-      error: extractErrorMessage(e),
-    });
+    updateSession(session.id, { status: "error", error: extractErrorMessage(e) });
   }
 }
 
 function closeSession(id: string) {
-  const s = sessions.value.find((x) => x.id === id);
-  if (s?.streamId) {
-    markStreamSuppressEnd(s.streamId);
-    kubePodExecStop(s.streamId).catch(() => {});
+  const session = sessions.value.find((item) => item.id === id);
+  if (session?.streamId) {
+    markStreamSuppressEnd(session.streamId);
+    if (session.kind === "host") {
+      hostShellStop(session.streamId).catch(() => {});
+    } else {
+      kubePodExecStop(session.streamId).catch(() => {});
+    }
   }
   clearReconnectState(id);
   removeSession(id);
@@ -342,49 +447,51 @@ function onTerminalEnd(sessionId: string, payload: { streamId: string; error?: s
     suppressEndStreamIds.delete(payload.streamId);
     return;
   }
-  const s = sessions.value.find((x) => x.id === sessionId);
-  if (!s) return;
-  if (s.streamId && s.streamId !== payload.streamId) return;
+  const session = sessions.value.find((item) => item.id === sessionId);
+  if (!session) return;
+  if (session.streamId && session.streamId !== payload.streamId) return;
   updateSession(sessionId, {
     streamId: null,
     status: "reconnecting",
-    error: payload.error ?? "Shell 连接已断开",
+    error: payload.error ?? (session.kind === "host" ? "主机 Shell 连接已断开" : "Shell 连接已断开"),
   });
   scheduleReconnect(sessionId, payload.error);
 }
 
 async function reconnectSessionNow(sessionId: string) {
   clearReconnectState(sessionId);
-  updateSession(sessionId, {
-    streamId: null,
-    status: "reconnecting",
-    error: "正在重连…",
-  });
+  updateSession(sessionId, { streamId: null, status: "reconnecting", error: "正在重连…" });
   const ok = await tryReconnectSession(sessionId, true);
   if (!ok) {
-    const latest = sessions.value.find((x) => x.id === sessionId);
+    const latest = sessions.value.find((item) => item.id === sessionId);
     scheduleReconnect(sessionId, latest?.error ?? "重连失败");
   }
 }
 
-watch(pendingOpen, (p) => {
-  if (p) handlePendingOpen();
+async function openHostShellForEnv(envId: string) {
+  const env = environments.value.find((item) => item.id === envId);
+  if (!env) return;
+  await openHostConnectionWithBootstrap(env.id, env.display_name, `${env.display_name} 主机`);
+}
+
+watch(pendingOpen, (pending) => {
+  if (pending) void handlePendingOpen();
 });
 
 watch(
   () => currentSession.value,
-  async (s) => {
-    if (!s) {
+  async (session) => {
+    if (!session) {
       podOptions.value = [];
       containerOptions.value = [];
       return;
     }
-    if (s.workloadKind && s.workloadName) {
+    if (session.kind === "pod" && session.workloadKind && session.workloadName) {
       await loadPodOptions();
     } else {
       podOptions.value = [];
     }
-    if (s.podName) {
+    if (session.kind === "pod" && session.podName) {
       await loadContainerOptions();
     } else {
       containerOptions.value = [];
@@ -393,8 +500,18 @@ watch(
   { immediate: true }
 );
 
+watch(
+  () => hostEntryOptions.value.map((item) => item.id).join(","),
+  () => {
+    if (!hostEntryEnvId.value || !hostEntryOptions.value.some((item) => item.id === hostEntryEnvId.value)) {
+      hostEntryEnvId.value = hostEntryOptions.value[0]?.id ?? "";
+    }
+  },
+  { immediate: true }
+);
+
 onMounted(() => {
-  if (pendingOpen.value) handlePendingOpen();
+  if (pendingOpen.value) void handlePendingOpen();
 });
 
 onUnmounted(() => {
@@ -406,70 +523,86 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="pod-shell-view">
-    <aside class="session-bar" :class="{ collapsed: sessionListCollapsed }">
-      <div class="header" @click="sessionListCollapsed = !sessionListCollapsed">
-        <span class="icon" aria-hidden="true">
-          {{ sessionListCollapsed ? "»" : "«" }}
-        </span>
-        <span v-if="!sessionListCollapsed" class="title">Shell 连接</span>
+  <div class="terminal-center">
+    <aside class="session-rail" :class="{ collapsed: sessionRailCollapsed }">
+      <button type="button" class="rail-toggle" @click="sessionRailCollapsed = !sessionRailCollapsed">
+        <span>{{ sessionRailCollapsed ? "»" : "«" }}</span>
+        <span v-if="!sessionRailCollapsed">会话</span>
+      </button>
+      <div v-if="!sessionRailCollapsed" class="session-rail-body">
+        <div class="quick-open-card">
+          <div class="quick-open-title">打开指定环境终端</div>
+          <div class="quick-open-desc">终端中心不依赖已打开环境，直接选择目标环境即可进入主机终端。</div>
+          <div class="quick-open-actions">
+            <select v-model="hostEntryEnvId" class="quick-open-select">
+              <option value="" disabled>选择环境</option>
+              <option v-for="env in hostEntryOptions" :key="env.id" :value="env.id">
+                {{ env.display_name }}
+              </option>
+            </select>
+            <button type="button" class="quick-open-btn" :disabled="!hostEntryEnvId" @click="openHostShellForEnv(hostEntryEnvId)">
+              打开终端
+            </button>
+          </div>
+        </div>
+
+        <div v-if="groupedSessions.length" class="session-groups">
+          <section v-for="group in groupedSessions" :key="group.envId" class="session-group">
+            <div class="session-group-title">{{ group.envName }}</div>
+            <div
+              v-for="session in group.items"
+              :key="session.id"
+              class="session-item"
+              :class="{ active: currentSessionId === session.id }"
+            >
+              <button type="button" class="session-item-main-button" @click="setCurrent(session.id)">
+                <span class="session-item-badge" :class="session.kind">{{ sessionBadge(session) }}</span>
+                <span class="session-item-main">
+                  <span class="session-item-name" :title="sessionLabel(session)">{{ sessionLabel(session) }}</span>
+                  <span class="session-item-meta">
+                    {{
+                      session.status === "reconnecting"
+                        ? "重连中"
+                        : session.status === "connecting"
+                          ? "连接中"
+                          : session.status === "connected"
+                            ? "已连接"
+                            : session.status === "error"
+                              ? "错误"
+                              : "已断开"
+                    }}
+                  </span>
+                </span>
+              </button>
+              <button type="button" class="session-item-close" @click.stop="closeSession(session.id)">×</button>
+            </div>
+          </section>
+        </div>
+        <div v-else class="session-empty">
+          还没有会话。你可以从工作台打开 Pod，也可以直接在这里打开指定环境终端。
+        </div>
       </div>
-      <ul v-if="!sessionListCollapsed" class="list">
-        <li
-          v-for="s in sessions"
-          :key="s.id"
-          class="item"
-          :class="{ active: currentSessionId === s.id }"
-          @click="setCurrent(s.id)"
-        >
-          <span class="label" :title="`${s.envName} / ${s.namespace} / ${s.podName} / ${s.container}`">
-            {{ s.podName }}{{ s.container ? ` (${s.container})` : "" }}
-          </span>
-          <span
-            v-if="s.status === 'connecting' || s.status === 'reconnecting'"
-            class="status-badge connecting"
-          >
-            {{ s.status === "reconnecting" ? "重连中" : "连接中" }}
-          </span>
-          <span
-            v-else-if="s.status === 'disconnected'"
-            class="status-badge error"
-            :title="s.error"
-          >
-            已断开
-          </span>
-          <span
-            v-else-if="s.status === 'error'"
-            class="status-badge error"
-            :title="s.error"
-          >
-            错误
-          </span>
-          <button
-            type="button"
-            class="close"
-            title="关闭"
-            @click.stop="closeSession(s.id)"
-          >
-            ×
-          </button>
-        </li>
-      </ul>
-      <p v-if="!sessionListCollapsed && !sessions.length" class="empty">
-        从工作台选择 Pod 或 Deployment/StatefulSet 打开 Shell
-      </p>
     </aside>
 
-    <main class="shell-main">
-      <div
-        v-if="
-          currentSession &&
-          (currentSession.streamId || currentSession.status === 'connecting' || currentSession.status === 'reconnecting')
-        "
-        class="shell-terminal-wrap"
+    <main class="terminal-main">
+      <header class="terminal-header">
+        <div v-if="currentSessionSubtitle" class="terminal-header-main">
+          <p class="terminal-subtitle">{{ currentSessionSubtitle }}</p>
+        </div>
+      </header>
+
+      <section
+        v-if="currentSession && (currentSession.streamId || currentSession.status === 'connecting' || currentSession.status === 'reconnecting')"
+        class="terminal-stage"
       >
-        <div class="switcher-bar">
-          <div v-if="currentSession.workloadKind && podOptions.length > 1" class="switcher-row">
+        <div class="terminal-context-bar">
+          <div class="context-pill" :class="currentSession.kind">
+            {{ currentSession.kind === "host" ? "主机 Shell" : "Pod Shell" }}
+          </div>
+          <div v-if="currentSessionContextName" class="context-name-pill" :class="currentSession.kind">
+            {{ currentSessionContextName }}
+          </div>
+          <div v-if="currentSession.kind === 'pod' && currentSession.workloadKind && podOptions.length > 1" class="switcher-row">
             <label class="switcher-label">Pod</label>
             <select
               :value="currentSession.podName"
@@ -477,12 +610,12 @@ onUnmounted(() => {
               :disabled="switcherLoading || currentSession.status === 'connecting' || currentSession.status === 'reconnecting'"
               @change="switchPod(($event.target as HTMLSelectElement).value)"
             >
-              <option v-for="po in podOptions" :key="po.name" :value="po.name">
-                {{ po.name }}
+              <option v-for="pod in podOptions" :key="pod.name" :value="pod.name">
+                {{ pod.name }}
               </option>
             </select>
           </div>
-          <div v-if="containerOptions.length > 1" class="switcher-row">
+          <div v-if="currentSession.kind === 'pod' && containerOptions.length > 1" class="switcher-row">
             <label class="switcher-label">容器</label>
             <select
               :value="currentSession.container"
@@ -490,242 +623,584 @@ onUnmounted(() => {
               :disabled="currentSession.status === 'connecting' || currentSession.status === 'reconnecting'"
               @change="switchContainer(($event.target as HTMLSelectElement).value)"
             >
-              <option v-for="c in containerOptions" :key="c" :value="c">
-                {{ c }}
+              <option v-for="container in containerOptions" :key="container" :value="container">
+                {{ container }}
               </option>
             </select>
           </div>
+          <div class="context-bar-spacer"></div>
+          <button
+            type="button"
+            class="context-action"
+            @click="reconnectSessionNow(currentSession.id)"
+          >
+            重新连接
+          </button>
         </div>
+
         <PodShellTerminal
           v-if="currentSession.streamId"
           :stream-id="currentSession.streamId"
+          :mode="currentSession.kind"
           @end="onTerminalEnd(currentSession.id, $event)"
         />
-        <div v-else class="empty-state connecting">
-          <p v-if="currentSession.status === 'reconnecting'">
-            正在重连 {{ currentSession.podName }}…
+
+        <div v-else class="terminal-loading">
+          <p>
+            {{ currentSession.status === "reconnecting" ? "正在恢复终端连接…" : "正在建立终端连接…" }}
           </p>
-          <p v-else>
-            正在连接 {{ currentSession.podName }}…
-          </p>
-          <p v-if="currentSession.error" class="reconnect-hint">{{ currentSession.error }}</p>
+          <p v-if="currentSession.error" class="terminal-loading-hint">{{ currentSession.error }}</p>
         </div>
-      </div>
-      <template v-else-if="currentSession && (currentSession.status === 'connecting' || currentSession.status === 'reconnecting')">
-        <div class="empty-state">
-          <p v-if="currentSession.status === 'reconnecting'">正在重连 {{ currentSession.podName }}…</p>
-          <p v-else>正在连接 {{ currentSession.podName }}…</p>
-          <p v-if="currentSession.error" class="reconnect-hint">{{ currentSession.error }}</p>
+      </section>
+
+      <section
+        v-else-if="currentSession && (currentSession.status === 'error' || currentSession.status === 'disconnected')"
+        class="terminal-empty error"
+      >
+        <div class="empty-title">当前会话暂不可用</div>
+        <div class="empty-desc">{{ currentSession.error }}</div>
+        <div class="empty-actions">
+          <button type="button" class="header-action" @click="reconnectSessionNow(currentSession.id)">立即重连</button>
+          <button type="button" class="header-action secondary" @click="closeSession(currentSession.id)">关闭会话</button>
         </div>
-      </template>
-      <template v-else-if="currentSession && (currentSession.status === 'error' || currentSession.status === 'disconnected')">
-        <div class="empty-state error">
-          <p>连接失败：{{ currentSession.error }}</p>
-          <div class="error-actions">
-            <button type="button" class="btn-reconnect" @click="reconnectSessionNow(currentSession.id)">
-              立即重连
-            </button>
-            <button type="button" class="btn-reconnect" @click="closeSession(currentSession.id)">
-              关闭
-            </button>
+      </section>
+
+      <section v-else class="terminal-empty">
+        <div class="empty-hero">
+          <div class="empty-kicker">终端工作区</div>
+          <h3>同时管理 Pod 与主机会话</h3>
+          <p>从工作台、资源详情，或者直接在这里选择环境打开终端，会话都会统一收纳在这里。</p>
+        </div>
+        <div class="empty-grid">
+          <button
+            v-if="hostEntryEnvId"
+            type="button"
+            class="empty-card"
+            @click="openHostShellForEnv(hostEntryEnvId)"
+          >
+            <span class="empty-card-title">打开指定环境终端</span>
+            <span class="empty-card-desc">
+              {{ hostEntryOptions.find((env) => env.id === hostEntryEnvId)?.display_name || "选择环境" }}
+            </span>
+          </button>
+          <div class="empty-card info">
+            <span class="empty-card-title">从工作台进入 Pod</span>
+            <span class="empty-card-desc">右键 Pod / Deployment / StatefulSet / DaemonSet 即可打开。</span>
           </div>
         </div>
-      </template>
-      <template v-else>
-        <div class="empty-state">
-          <p>从工作台选择 Pod 或 Deployment/StatefulSet 打开 Shell</p>
-        </div>
-      </template>
+      </section>
     </main>
-
   </div>
 </template>
 
 <style scoped>
-.pod-shell-view {
+.terminal-center {
   display: flex;
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  background:
+    radial-gradient(circle at top left, rgba(37, 99, 235, 0.12), transparent 28%),
+    linear-gradient(180deg, #f8fbff 0%, #eef4fb 100%);
 }
 
-.session-bar {
-  width: 220px;
+.session-rail {
+  width: 320px;
   flex-shrink: 0;
-  background: #fff;
-  border-right: 1px solid #e2e8f0;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  overflow: hidden;
+  border-right: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(18px);
 }
-.session-bar.collapsed {
-  width: 40px;
+
+.session-rail.collapsed {
+  width: 52px;
 }
-.session-bar .header {
-  padding: 0.5rem 0.75rem;
-  cursor: pointer;
+
+.rail-toggle {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  border-bottom: 1px solid #e2e8f0;
-  flex-shrink: 0;
-}
-.session-bar .icon {
+  gap: 0.65rem;
+  padding: 0.85rem 1rem;
+  border: none;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
+  background: transparent;
+  color: #1e293b;
   font-size: 0.875rem;
-  color: #64748b;
+  font-weight: 700;
+  cursor: pointer;
 }
-.session-bar .title {
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: #334155;
-}
-.session-bar .list {
-  list-style: none;
-  margin: 0;
-  padding: 0.25rem 0;
-  overflow-y: auto;
+
+.session-rail-body {
   flex: 1;
   min-height: 0;
+  overflow: auto;
+  padding: 1rem;
 }
-.session-bar .item {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 0.4rem 0.75rem;
+
+.quick-open-card {
+  padding: 1rem;
+  border-radius: 18px;
+  background: linear-gradient(135deg, #0f172a 0%, #1d4ed8 100%);
+  color: #eff6ff;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.18);
+}
+
+.quick-open-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.quick-open-desc {
+  margin-top: 0.35rem;
   font-size: 0.8125rem;
+  line-height: 1.5;
+  color: rgba(219, 234, 254, 0.88);
+}
+
+.quick-open-actions {
+  margin-top: 0.85rem;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.quick-open-select,
+.switcher-select {
+  min-width: 0;
+  padding: 0.55rem 0.7rem;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  font-size: 0.8125rem;
+}
+
+.quick-open-select {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.96);
+  color: #0f172a;
+}
+
+.quick-open-btn,
+.header-action {
+  padding: 0.6rem 0.9rem;
+  border: none;
+  border-radius: 12px;
+  background: #0f172a;
+  color: #fff;
+  font-size: 0.8125rem;
+  font-weight: 600;
   cursor: pointer;
 }
-.session-bar .item:hover {
-  background: #f8fafc;
+
+.quick-open-btn:disabled,
+.header-action:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
-.session-bar .item.active {
-  background: rgba(37, 99, 235, 0.1);
-  color: #2563eb;
+
+.header-action.secondary {
+  background: rgba(15, 23, 42, 0.08);
+  color: #334155;
 }
-.session-bar .label {
+
+.session-groups {
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.session-group-title {
+  margin-bottom: 0.4rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.session-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.8rem 0.85rem;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  border-radius: 16px;
+  background: #fff;
+  text-align: left;
+}
+
+.session-item + .session-item {
+  margin-top: 0.45rem;
+}
+
+.session-item:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
+}
+
+.session-item.active {
+  border-color: rgba(37, 99, 235, 0.35);
+  box-shadow: 0 14px 30px rgba(37, 99, 235, 0.12);
+  background: linear-gradient(135deg, #ffffff 0%, #eff6ff 100%);
+}
+
+.session-item-main-button {
   flex: 1;
   min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0;
+  border: none;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.session-item-badge {
+  flex-shrink: 0;
+  min-width: 44px;
+  padding: 0.2rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.session-item-badge.host {
+  background: rgba(245, 158, 11, 0.14);
+  color: #b45309;
+}
+
+.session-item-badge.pod {
+  background: rgba(34, 197, 94, 0.14);
+  color: #15803d;
+}
+
+.session-item-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.session-item-name {
+  display: block;
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: #0f172a;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.session-bar .status-badge {
-  font-size: 0.6875rem;
-  padding: 0.1rem 0.35rem;
-  border-radius: 4px;
-}
-.session-bar .status-badge.connecting {
-  background: #fef3c7;
-  color: #b45309;
-}
-.session-bar .status-badge.error {
-  background: #fef2f2;
-  color: #dc2626;
-}
-.session-bar .close {
-  padding: 0 0.25rem;
-  border: none;
-  background: none;
-  font-size: 1rem;
-  color: #94a3b8;
-  cursor: pointer;
-  line-height: 1;
-}
-.session-bar .close:hover {
-  color: #dc2626;
-}
-.session-bar .empty {
-  padding: 0.75rem 1rem;
-  font-size: 0.8125rem;
-  color: #94a3b8;
-  margin: 0;
+
+.session-item-meta {
+  display: block;
+  margin-top: 0.18rem;
+  font-size: 0.75rem;
+  color: #64748b;
 }
 
-.shell-main {
+.session-item-close {
+  border: none;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.session-item-close:hover {
+  color: #dc2626;
+}
+
+.session-empty {
+  margin-top: 1rem;
+  padding: 1rem;
+  border-radius: 16px;
+  background: rgba(248, 250, 252, 0.92);
+  color: #64748b;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+
+.terminal-main {
   flex: 1;
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   overflow: hidden;
-  background: #1e293b;
 }
 
-.shell-terminal-wrap {
+.terminal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.1rem 1.25rem 1rem;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(14px);
+}
+
+.terminal-title {
+  margin: 0.25rem 0 0;
+  font-size: 1.4rem;
+  line-height: 1.15;
+  color: #0f172a;
+}
+
+.terminal-subtitle {
+  margin: 0.3rem 0 0;
+  font-size: 0.88rem;
+  color: #64748b;
+}
+
+.terminal-header-actions {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.terminal-stage {
   flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
+  padding: 1rem 1.1rem 1.1rem;
 }
 
-.switcher-bar {
+.terminal-context-bar {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 0.75rem 1rem;
-  padding: 0.35rem 0.75rem;
-  background: rgba(0, 0, 0, 0.2);
-  flex-shrink: 0;
+  gap: 0.8rem;
+  padding: 0.75rem 0.9rem;
+  border-radius: 18px 18px 0 0;
+  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+}
+
+.context-bar-spacer {
+  flex: 1;
+  min-width: 0;
+}
+
+.context-pill {
+  padding: 0.28rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.context-pill.host {
+  background: rgba(245, 158, 11, 0.18);
+  color: #fde68a;
+}
+
+.context-pill.pod {
+  background: rgba(34, 197, 94, 0.18);
+  color: #bbf7d0;
+}
+
+.context-name-pill {
+  max-width: min(42vw, 420px);
+  padding: 0.42rem 0.8rem;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(255, 255, 255, 0.08);
+  color: #f8fafc;
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.context-name-pill.host {
+  border-color: rgba(245, 158, 11, 0.24);
+  background: rgba(245, 158, 11, 0.12);
+  color: #fef3c7;
+}
+
+.context-name-pill.pod {
+  border-color: rgba(34, 197, 94, 0.24);
+  background: rgba(34, 197, 94, 0.12);
+  color: #dcfce7;
 }
 
 .switcher-row {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.45rem;
 }
 
 .switcher-label {
   font-size: 0.75rem;
-  color: #94a3b8;
+  color: #cbd5e1;
 }
 
 .switcher-select {
-  padding: 0.25rem 0.5rem;
-  border: 1px solid #475569;
-  border-radius: 4px;
-  background: #1e293b;
-  color: #e2e8f0;
-  font-size: 0.8125rem;
-  min-width: 120px;
+  background: rgba(15, 23, 42, 0.72);
+  color: #f8fafc;
+  border-color: rgba(148, 163, 184, 0.32);
 }
 
-.switcher-select:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
+.context-action {
+  flex-shrink: 0;
+  padding: 0.5rem 0.85rem;
+  border: 1px solid rgba(96, 165, 250, 0.42);
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.28), rgba(59, 130, 246, 0.18));
+  color: #dbeafe;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(191, 219, 254, 0.12);
+  transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.15s;
 }
 
-.empty-state {
+.context-action:hover {
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.4), rgba(37, 99, 235, 0.3));
+  border-color: rgba(147, 197, 253, 0.58);
+  color: #fff;
+  transform: translateY(-1px);
+}
+
+.terminal-stage :deep(.pod-shell-terminal) {
+  border-radius: 0 0 20px 20px;
+  background: #0f172a;
+}
+
+.terminal-loading,
+.terminal-empty {
   flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 0.5rem;
-  color: #94a3b8;
-  font-size: 0.875rem;
+  gap: 0.65rem;
+  padding: 2rem;
+  color: #475569;
 }
-.empty-state.error {
-  color: #fca5a5;
+
+.terminal-loading {
+  margin: 0 1.1rem 1.1rem;
+  border-radius: 0 0 20px 20px;
+  background: #0f172a;
+  color: #cbd5e1;
 }
-.empty-state.connecting {
-  color: #94a3b8;
+
+.terminal-loading-hint,
+.empty-desc {
+  font-size: 0.82rem;
+  color: inherit;
+  opacity: 0.88;
 }
-.empty-state .reconnect-hint {
-  margin: 0;
-  font-size: 0.8125rem;
-  opacity: 0.9;
+
+.terminal-empty.error {
+  color: #b91c1c;
 }
-.empty-state .error-actions {
+
+.empty-actions {
   display: flex;
-  gap: 0.5rem;
+  gap: 0.6rem;
 }
-.empty-state .btn-reconnect {
-  padding: 0.35rem 0.75rem;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  background: #fff;
-  font-size: 0.8125rem;
+
+.empty-hero {
+  text-align: center;
+}
+
+.empty-kicker {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #2563eb;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.empty-hero h3 {
+  margin: 0.35rem 0 0;
+  font-size: 1.55rem;
+  color: #0f172a;
+}
+
+.empty-hero p {
+  margin: 0.45rem 0 0;
+  color: #64748b;
+}
+
+.empty-grid {
+  margin-top: 1.4rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.9rem;
+  width: min(900px, 100%);
+}
+
+.empty-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 1rem 1.05rem;
+  border: 1px solid rgba(191, 219, 254, 0.9);
+  border-radius: 18px;
+  background: linear-gradient(135deg, #ffffff 0%, #eff6ff 100%);
+  text-align: left;
   cursor: pointer;
+}
+
+.empty-card.secondary {
+  border-color: rgba(226, 232, 240, 0.95);
+  background: #fff;
+}
+
+.empty-card.info {
+  cursor: default;
+  border-color: rgba(226, 232, 240, 0.95);
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.empty-card-title {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.empty-card-desc {
+  font-size: 0.8125rem;
+  color: #64748b;
+  line-height: 1.55;
+}
+
+@media (max-width: 960px) {
+  .terminal-center {
+    flex-direction: column;
+  }
+
+  .session-rail,
+  .session-rail.collapsed {
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.22);
+  }
+
+  .terminal-header {
+    flex-direction: column;
+  }
+
+  .terminal-context-bar {
+    flex-wrap: wrap;
+  }
+
+  .context-name-pill {
+    max-width: 100%;
+  }
+
+  .context-bar-spacer {
+    display: none;
+  }
 }
 </style>

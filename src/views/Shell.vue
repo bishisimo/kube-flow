@@ -18,18 +18,19 @@ const { switchToShellRequested } = useShellStore();
 const { switchToOrchestratorRequested } = useOrchestratorStore();
 
 watch(switchToShellRequested, () => {
-  if (canAccessMain.value) setTab("shell");
+  if (canAccessShell.value) setTab("shell");
 });
 watch(switchToOrchestratorRequested, () => {
   if (canAccessOrchestrator.value) setTab("orchestrator");
 });
 
 const canAccessMain = computed(() => openedEnvs.value.length > 0);
-const canAccessShell = computed(() => openedEnvs.value.length > 0);
+const canAccessShell = computed(() => environments.value.length > 0);
 const canAccessOrchestrator = computed(() => environments.value.length > 0);
 
 function setTab(tab: TabId) {
-  if ((tab === "main" || tab === "shell") && !canAccessMain.value) return;
+  if (tab === "main" && !canAccessMain.value) return;
+  if (tab === "shell" && !canAccessShell.value) return;
   if (tab === "orchestrator" && !canAccessOrchestrator.value) return;
   currentTab.value = tab;
 }
@@ -78,11 +79,11 @@ onMounted(async () => {
         type="button"
         class="tab"
         :class="{ active: currentTab === 'shell', disabled: !canAccessShell }"
-        :title="canAccessShell ? 'Pod Shell' : '请先在环境管理中打开至少一个环境'"
+        :title="canAccessShell ? '终端中心' : '请先创建至少一个环境'"
         :disabled="!canAccessShell"
         @click="setTab('shell')"
       >
-        Pod Shell
+        终端中心
       </button>
       <button
         type="button"
