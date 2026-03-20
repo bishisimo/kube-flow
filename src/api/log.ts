@@ -45,17 +45,20 @@ export const LOG_DISPLAY_FORMATS: { value: LogDisplayFormat; label: string }[] =
 export async function logGetDisplaySettings(): Promise<{
   order: LogDisplayOrder;
   format: LogDisplayFormat;
+  tailLines: number;
 }> {
-  const [order, format] = await invoke<[string, string]>("log_get_display_settings");
+  const [order, format, tailLines] = await invoke<[string, string, number]>("log_get_display_settings");
   return {
     order: order as LogDisplayOrder,
     format: format as LogDisplayFormat,
+    tailLines,
   };
 }
 
 export async function logSetDisplaySettings(
   order: LogDisplayOrder,
-  format: LogDisplayFormat
+  format: LogDisplayFormat,
+  tailLines: number
 ): Promise<void> {
-  return invoke("log_set_display_settings", { order, format });
+  return invoke("log_set_display_settings", { order, format, tailLines });
 }

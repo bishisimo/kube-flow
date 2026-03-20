@@ -2,19 +2,21 @@
 import { ref, computed, onMounted, watch } from "vue";
 import { useEnvStore } from "../stores/env";
 import { useShellStore } from "../stores/shell";
+import { useLogCenterStore } from "../stores/logCenter";
 import { useOrchestratorStore } from "../stores/orchestrator";
 import EnvManage from "./EnvManage.vue";
 import Main from "./Main.vue";
 import PodShellView from "./PodShellView.vue";
 import Settings from "./Settings.vue";
-import LogView from "./LogView.vue";
+import LogCenterView from "./LogCenterView.vue";
 import ResourceOrchestratorView from "./ResourceOrchestratorView.vue";
 
-type TabId = "env" | "main" | "orchestrator" | "shell" | "settings" | "log";
+type TabId = "env" | "main" | "orchestrator" | "shell" | "settings" | "logCenter";
 
 const currentTab = ref<TabId>("env");
 const { environments, openedEnvs, loadEnvironments } = useEnvStore();
 const { switchToShellRequested } = useShellStore();
+const { switchToLogCenterRequested } = useLogCenterStore();
 const { switchToOrchestratorRequested } = useOrchestratorStore();
 
 watch(switchToShellRequested, () => {
@@ -23,15 +25,20 @@ watch(switchToShellRequested, () => {
 watch(switchToOrchestratorRequested, () => {
   if (canAccessOrchestrator.value) setTab("orchestrator");
 });
+watch(switchToLogCenterRequested, () => {
+  if (canAccessLogCenter.value) setTab("logCenter");
+});
 
 const canAccessMain = computed(() => openedEnvs.value.length > 0);
 const canAccessShell = computed(() => environments.value.length > 0);
 const canAccessOrchestrator = computed(() => environments.value.length > 0);
+const canAccessLogCenter = computed(() => environments.value.length > 0);
 
 function setTab(tab: TabId) {
   if (tab === "main" && !canAccessMain.value) return;
   if (tab === "shell" && !canAccessShell.value) return;
   if (tab === "orchestrator" && !canAccessOrchestrator.value) return;
+  if (tab === "logCenter" && !canAccessLogCenter.value) return;
   currentTab.value = tab;
 }
 
@@ -88,18 +95,20 @@ onMounted(async () => {
       <button
         type="button"
         class="tab"
-        :class="{ active: currentTab === 'settings' }"
-        @click="setTab('settings')"
+        :class="{ active: currentTab === 'logCenter', disabled: !canAccessLogCenter }"
+        :title="canAccessLogCenter ? '日志中心' : '请先创建至少一个环境'"
+        :disabled="!canAccessLogCenter"
+        @click="setTab('logCenter')"
       >
-        设置
+        日志中心
       </button>
       <button
         type="button"
         class="tab"
-        :class="{ active: currentTab === 'log' }"
-        @click="setTab('log')"
+        :class="{ active: currentTab === 'settings' }"
+        @click="setTab('settings')"
       >
-        日志
+        设置
       </button>
     </header>
     <main class="shell-content">
@@ -107,8 +116,8 @@ onMounted(async () => {
       <Main v-show="currentTab === 'main'" />
       <ResourceOrchestratorView v-show="currentTab === 'orchestrator'" />
       <PodShellView v-show="currentTab === 'shell'" />
+      <LogCenterView v-show="currentTab === 'logCenter'" />
       <Settings v-show="currentTab === 'settings'" />
-      <LogView v-show="currentTab === 'log'" :visible="currentTab === 'log'" />
     </main>
   </div>
 </template>

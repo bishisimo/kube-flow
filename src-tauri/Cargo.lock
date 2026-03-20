@@ -2217,6 +2217,7 @@ dependencies = [
  "k8s-openapi",
  "keyring",
  "kube",
+ "libc",
  "rand 0.8.5",
  "serde",
  "serde_json",

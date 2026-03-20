@@ -36,21 +36,23 @@ pub fn log_read() -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn log_get_display_settings() -> Result<(String, String), String> {
+pub fn log_get_display_settings() -> Result<(String, String, u32), String> {
     let path = app_settings_path().ok_or_else(|| "app data dir not available".to_string())?;
     let config = AppSettingsConfig::load(&path).map_err(|e| e.to_string())?;
     Ok((
         config.log_display_order().as_str().to_string(),
         config.log_display_format().as_str().to_string(),
+        config.log_tail_lines(),
     ))
 }
 
 #[tauri::command]
-pub fn log_set_display_settings(order: String, format: String) -> Result<(), String> {
+pub fn log_set_display_settings(order: String, format: String, tail_lines: u32) -> Result<(), String> {
     let path = app_settings_path().ok_or_else(|| "app data dir not available".to_string())?;
     let mut config = AppSettingsConfig::load(&path).map_err(|e| e.to_string())?;
     config.set_log_display_order(LogDisplayOrder::from_str(&order));
     config.set_log_display_format(LogDisplayFormat::from_str(&format));
+    config.set_log_tail_lines(tail_lines);
     config.save(&path).map_err(|e| e.to_string())
 }
 

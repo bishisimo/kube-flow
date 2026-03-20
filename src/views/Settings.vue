@@ -68,6 +68,7 @@ const activeCategory = ref<CategoryId>("appearance");
 const currentLevel = ref<string>("off");
 const currentOrder = ref<LogDisplayOrder>("asc");
 const currentFormat = ref<LogDisplayFormat>("json");
+const currentLogTailLines = ref(100);
 const currentSshTunnelMode = ref<TunnelMappingMode>("ssh");
 const currentAutoSnapshotEnabled = ref(true);
 const currentAutoSnapshotLimitPerResource = ref(10);
@@ -149,6 +150,7 @@ async function load() {
     currentLevel.value = level;
     currentOrder.value = settings.order;
     currentFormat.value = settings.format;
+    currentLogTailLines.value = settings.tailLines;
     currentSshTunnelMode.value = sshMode;
     currentAutoSnapshotEnabled.value = autoSnapshot;
     currentAutoSnapshotLimitPerResource.value = Math.max(0, Math.floor(autoSnapshotLimit || 0));
@@ -373,9 +375,26 @@ async function saveDisplaySettings(order: LogDisplayOrder, format: LogDisplayFor
   saving.value = true;
   message.value = null;
   try {
-    await logSetDisplaySettings(order, format);
+    await logSetDisplaySettings(order, format, currentLogTailLines.value);
     currentOrder.value = order;
     currentFormat.value = format;
+    message.value = "已保存";
+    setTimeout(() => (message.value = null), 2000);
+    triggerLogRefresh();
+  } catch (e) {
+    message.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function saveLogTailLines(lines: number) {
+  saving.value = true;
+  message.value = null;
+  try {
+    const normalized = Math.max(1, Math.min(5000, Math.floor(Number.isFinite(lines) ? lines : 100)));
+    await logSetDisplaySettings(currentOrder.value, currentFormat.value, normalized);
+    currentLogTailLines.value = normalized;
     message.value = "已保存";
     setTimeout(() => (message.value = null), 2000);
     triggerLogRefresh();
@@ -497,8 +516,8 @@ watch(selectedNodeStrategyEnvId, (envId) => {
       <!-- 调试 -->
       <template v-if="activeCategory === 'debug'">
         <section class="card">
-          <h2 class="card-title">调试日志</h2>
-          <p class="card-desc">日志级别决定写入 kube-flow-debug.log 的内容量，用于排查资源列表等问题。</p>
+          <h2 class="card-title">调试日志采集</h2>
+          <p class="card-desc">日志级别决定写入 kube-flow-debug.log 的内容量，用于排查资源列表、连接与后端行为问题。</p>
           <div class="level-options">
             <button
               v-for="opt in LOG_LEVELS"
@@ -512,7 +531,28 @@ watch(selectedNodeStrategyEnvId, (envId) => {
               {{ opt.label }}
             </button>
           </div>
-          <p class="card-desc" style="margin-top: 0.5rem">显示顺序与格式：控制日志页的展示方式。</p>
+          <p class="card-desc" style="margin-top: 0.5rem">调试日志格式：仅作用于调试日志页，不影响 Pod 或 Workload 日志输出。</p>
+          <div class="option-group">
+            <label class="option-label">格式</label>
+            <div class="option-buttons">
+              <button
+                v-for="opt in LOG_DISPLAY_FORMATS"
+                :key="opt.value"
+                type="button"
+                class="level-btn"
+                :class="{ active: currentFormat === opt.value }"
+                :disabled="saving"
+                @click="saveDisplaySettings(currentOrder, opt.value)"
+              >
+                {{ opt.label }}
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2 class="card-title">全局日志显示</h2>
+          <p class="card-desc">这里的顺序会同时作用于日志中心里的资源日志和调试日志。</p>
           <div class="display-options">
             <div class="option-group">
               <label class="option-label">顺序</label>
@@ -530,21 +570,31 @@ watch(selectedNodeStrategyEnvId, (envId) => {
                 </button>
               </div>
             </div>
-            <div class="option-group">
-              <label class="option-label">格式</label>
-              <div class="option-buttons">
-                <button
-                  v-for="opt in LOG_DISPLAY_FORMATS"
-                  :key="opt.value"
-                  type="button"
-                  class="level-btn"
-                  :class="{ active: currentFormat === opt.value }"
-                  :disabled="saving"
-                  @click="saveDisplaySettings(currentOrder, opt.value)"
-                >
-                  {{ opt.label }}
-                </button>
-              </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-copy">
+              <div class="setting-title">默认展示行数</div>
+              <div class="setting-desc">新打开的资源日志默认按这个行数加载，默认 100 行。</div>
+            </div>
+            <div class="setting-input-wrap">
+              <input
+                v-model.number="currentLogTailLines"
+                type="number"
+                min="1"
+                max="5000"
+                step="1"
+                class="setting-number-input"
+                :disabled="saving"
+                @blur="saveLogTailLines(currentLogTailLines)"
+              />
+              <button
+                type="button"
+                class="level-btn"
+                :disabled="saving"
+                @click="saveLogTailLines(currentLogTailLines)"
+              >
+                保存行数
+              </button>
             </div>
           </div>
           <p v-if="message" class="message" :class="{ error: message !== '已保存' }">

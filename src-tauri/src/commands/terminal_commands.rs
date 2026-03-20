@@ -2,6 +2,10 @@ use crate::config::{app_settings_config_path, ssh_config_get_host_config, AppSet
 use crate::credentials::{CredentialKey, CredentialManager};
 use crate::env::{EnvService, EnvironmentSource};
 use std::collections::HashMap;
+#[cfg(unix)]
+use std::ffi::CString;
+#[cfg(unix)]
+use std::os::fd::FromRawFd;
 use std::process::Stdio;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
@@ -54,6 +58,7 @@ impl Drop for SshAskpassGuard {
 
 pub struct HostShellSession {
     pub stdin_tx: mpsc::Sender<Vec<u8>>,
+    pub resize_tx: Option<mpsc::Sender<(u16, u16)>>,
     pub abort_handle: tokio::task::AbortHandle,
 }
 
@@ -91,6 +96,16 @@ impl HostShellStore {
             session.abort_handle.abort();
         }
     }
+
+    pub async fn send_resize(&self, stream_id: &str, cols: u16, rows: u16) -> Result<(), String> {
+        let guard = self.sessions.read().await;
+        let session = guard.get(stream_id).ok_or_else(|| "session not found".to_string())?;
+        if let Some(ref tx) = session.resize_tx {
+            tx.send((cols, rows)).await.map_err(|e| e.to_string())
+        } else {
+            Err("session has no tty".to_string())
+        }
+    }
 }
 
 impl Default for HostShellStore {
@@ -124,6 +139,84 @@ fn build_local_shell_command() -> Command {
         apply_no_window(&mut cmd);
         cmd
     }
+}
+
+#[cfg(unix)]
+fn create_pty(cols: u16, rows: u16) -> Result<(std::fs::File, std::fs::File), String> {
+    let mut master_fd = -1;
+    let mut slave_fd = -1;
+    let winsize = libc::winsize {
+        ws_row: rows,
+        ws_col: cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+
+    let rc = unsafe {
+        libc::openpty(
+            &mut master_fd,
+            &mut slave_fd,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &winsize as *const libc::winsize as *mut libc::winsize,
+        )
+    };
+    if rc != 0 {
+        return Err(format!("openpty failed: {}", std::io::Error::last_os_error()));
+    }
+
+    let master = unsafe { std::fs::File::from_raw_fd(master_fd) };
+    let slave = unsafe { std::fs::File::from_raw_fd(slave_fd) };
+    Ok((master, slave))
+}
+
+#[cfg(unix)]
+fn configure_child_pty(cmd: &mut Command, slave: std::fs::File) -> Result<(), String> {
+    let stdin = slave
+        .try_clone()
+        .map_err(|e| format!("clone slave stdin failed: {}", e))?;
+    let stdout = slave
+        .try_clone()
+        .map_err(|e| format!("clone slave stdout failed: {}", e))?;
+
+    cmd.stdin(Stdio::from(stdin))
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(slave));
+
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let tty_path = CString::new("/dev/tty")
+                .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid tty path"))?;
+            let tty_fd = libc::open(tty_path.as_ptr(), libc::O_RDWR);
+            if tty_fd >= 0 {
+                libc::close(tty_fd);
+            }
+            Ok(())
+        });
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn resize_pty(file: &std::fs::File, cols: u16, rows: u16) -> Result<(), String> {
+    use std::os::fd::AsRawFd;
+
+    let winsize = libc::winsize {
+        ws_row: rows,
+        ws_col: cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+
+    let rc = unsafe { libc::ioctl(file.as_raw_fd(), libc::TIOCSWINSZ, &winsize) };
+    if rc == -1 {
+        return Err(format!("resize pty failed: {}", std::io::Error::last_os_error()));
+    }
+    Ok(())
 }
 
 fn build_remote_shell_command(
@@ -173,14 +266,72 @@ async fn run_host_shell_process(
     _askpass_guard: Option<SshAskpassGuard>,
     store: Arc<HostShellStore>,
 ) {
+    cmd.kill_on_drop(true);
+
+    #[cfg(unix)]
+    let pty = match create_pty(80, 24) {
+        Ok(pair) => Some(pair),
+        Err(e) => {
+            let _ = app.emit(HOST_SHELL_END_EVENT, serde_json::json!({
+                "stream_id": stream_id,
+                "error": format!("无法创建终端 PTY: {}", e)
+            }));
+            return;
+        }
+    };
+
+    #[cfg(unix)]
+    let (master_file, slave_file) = pty.unwrap();
+
+    #[cfg(unix)]
+    if let Err(e) = configure_child_pty(&mut cmd, slave_file) {
+        let _ = app.emit(HOST_SHELL_END_EVENT, serde_json::json!({
+            "stream_id": stream_id,
+            "error": format!("无法配置终端 PTY: {}", e)
+        }));
+        return;
+    }
+
+    #[cfg(not(unix))]
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+        .stderr(Stdio::piped());
 
     let end_error = match cmd.spawn() {
         Ok(mut child) => {
             let (stdin_tx, mut stdin_rx) = mpsc::channel::<Vec<u8>>(64);
+            let (resize_tx, mut resize_rx) = mpsc::channel::<(u16, u16)>(8);
+            let stream_id_clone = stream_id.clone();
+            let app_clone = app.clone();
+
+            #[cfg(unix)]
+            let resize_file = match master_file.try_clone() {
+                Ok(file) => file,
+                Err(e) => {
+                    let _ = app.emit(HOST_SHELL_END_EVENT, serde_json::json!({
+                        "stream_id": stream_id,
+                        "error": format!("无法克隆 PTY resize 端: {}", e)
+                    }));
+                    return;
+                }
+            };
+
+            #[cfg(unix)]
+            let mut writer = match master_file.try_clone() {
+                Ok(file) => tokio::fs::File::from_std(file),
+                Err(e) => {
+                    let _ = app.emit(HOST_SHELL_END_EVENT, serde_json::json!({
+                        "stream_id": stream_id,
+                        "error": format!("无法克隆 PTY 写入端: {}", e)
+                    }));
+                    return;
+                }
+            };
+
+            #[cfg(unix)]
+            let mut reader = tokio::fs::File::from_std(master_file);
+
+            #[cfg(not(unix))]
             let mut stdin = match child.stdin.take() {
                 Some(v) => v,
                 None => {
@@ -191,14 +342,58 @@ async fn run_host_shell_process(
                     return;
                 }
             };
+            #[cfg(not(unix))]
             let mut stdout = child.stdout.take();
+            #[cfg(not(unix))]
             let mut stderr = child.stderr.take();
-            let stream_id_clone = stream_id.clone();
-            let app_clone = app.clone();
 
+            #[cfg(unix)]
+            let task: tokio::task::JoinHandle<Option<String>> = tokio::spawn(async move {
+                let mut read_buf = [0u8; 4096];
+
+                loop {
+                    tokio::select! {
+                        Some(data) = stdin_rx.recv() => {
+                            if let Err(e) = writer.write_all(&data).await {
+                                break Some(format!("stdin write failed: {}", e));
+                            }
+                            let _ = writer.flush().await;
+                        }
+                        Some((cols, rows)) = resize_rx.recv() => {
+                            if let Err(e) = resize_pty(&resize_file, cols, rows) {
+                                break Some(e);
+                            }
+                        }
+                        result = reader.read(&mut read_buf) => {
+                            match result {
+                                Ok(0) => break None,
+                                Ok(n) => {
+                                    if app_clone.emit(HOST_SHELL_CHUNK_EVENT, serde_json::json!({
+                                        "stream_id": stream_id_clone,
+                                        "chunk_bytes": &read_buf[..n]
+                                    })).is_err() {
+                                        break Some("emit pty chunk failed".to_string());
+                                    }
+                                }
+                                Err(e) => break Some(format!("pty read failed: {}", e)),
+                            }
+                        }
+                        status = child.wait() => {
+                            match status {
+                                Ok(exit) if exit.success() => break None,
+                                Ok(exit) => break Some(format!("shell exited with status {}", exit)),
+                                Err(e) => break Some(format!("shell wait failed: {}", e)),
+                            }
+                        }
+                    }
+                }
+            });
+
+            #[cfg(not(unix))]
             let task: tokio::task::JoinHandle<Option<String>> = tokio::spawn(async move {
                 let mut stdout_buf = [0u8; 4096];
                 let mut stderr_buf = [0u8; 4096];
+
                 loop {
                     tokio::select! {
                         Some(data) = stdin_rx.recv() => {
@@ -206,6 +401,9 @@ async fn run_host_shell_process(
                                 break Some(format!("stdin write failed: {}", e));
                             }
                             let _ = stdin.flush().await;
+                        }
+                        Some((cols, rows)) = resize_rx.recv() => {
+                            let _ = (cols, rows);
                         }
                         result = async {
                             if let Some(ref mut out) = stdout {
@@ -274,6 +472,7 @@ async fn run_host_shell_process(
                     stream_id.clone(),
                     HostShellSession {
                         stdin_tx,
+                        resize_tx: Some(resize_tx),
                         abort_handle,
                     },
                 )
@@ -352,12 +551,12 @@ pub async fn host_shell_stdin(
 
 #[tauri::command]
 pub async fn host_shell_resize(
-    _store: State<'_, Arc<HostShellStore>>,
-    _stream_id: String,
-    _cols: u16,
-    _rows: u16,
+    store: State<'_, Arc<HostShellStore>>,
+    stream_id: String,
+    cols: u16,
+    rows: u16,
 ) -> Result<(), String> {
-    Ok(())
+    store.send_resize(&stream_id, cols, rows).await
 }
 
 #[tauri::command]

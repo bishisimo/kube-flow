@@ -14,6 +14,7 @@ import { kubeDeleteResource, kubeRemoveClient } from "../api/kube";
 import { useConnectionStore, isConnectionError } from "../stores/connection";
 import { useSshAuthStore } from "../stores/sshAuth";
 import { useShellStore } from "../stores/shell";
+import { useLogCenterStore } from "../stores/logCenter";
 import { useOrchestratorStore } from "../stores/orchestrator";
 import {
   kubeGetResource,
@@ -84,6 +85,7 @@ import { defaultNamespace } from "../api/env";
 
 const { openedEnvs, currentEnv, currentId, touchEnv, loadEnvironments, getEnvViewState, setEnvViewState } = useEnvStore();
 const { pendingOpen, requestSwitchToShell } = useShellStore();
+const { pendingLogOpen, requestSwitchToLogCenter } = useLogCenterStore();
 const { manifests, upsertFromWorkbenchSync, requestSwitchToOrchestrator } = useOrchestratorStore();
 const {
   getProgress,
@@ -641,8 +643,28 @@ function openResourceDetail() {
 }
 
 function openPodLogs() {
-  detailDrawerInitialTab.value = "logs";
-  detailDrawerVisible.value = true;
+  const r = selectedResource.value;
+  if (!r || !currentId.value || !currentEnv.value) return;
+  const ns = r.namespace ?? "default";
+  if (r.kind === "Pod") {
+    pendingLogOpen.value = {
+      kind: "pod",
+      envId: currentId.value,
+      envName: currentEnv.value.display_name,
+      namespace: ns,
+      podName: r.name,
+    };
+  } else {
+    pendingLogOpen.value = {
+      kind: "workload",
+      envId: currentId.value,
+      envName: currentEnv.value.display_name,
+      namespace: ns,
+      workloadKind: r.kind,
+      workloadName: r.name,
+    };
+  }
+  requestSwitchToLogCenter();
   closeActionMenu();
 }
 
@@ -2675,15 +2697,15 @@ onUnmounted(() => {
               </span>
             </button>
             <button
-              v-if="selectedResource && selectedResource.kind === 'Pod'"
+              v-if="selectedResource && ['Pod', 'Deployment', 'StatefulSet', 'DaemonSet'].includes(selectedResource.kind)"
               type="button"
               class="action-menu-item"
               @click="openPodLogs"
             >
               <span class="action-menu-icon" aria-hidden="true">📜</span>
               <span class="action-menu-text">
-                <span class="action-menu-main">查看日志</span>
-                <span class="action-menu-sub">查看 Pod 运行日志与输出</span>
+                <span class="action-menu-main">打开日志中心</span>
+                <span class="action-menu-sub">集中查看 Pod 或工作负载日志</span>
               </span>
             </button>
             <button

@@ -89,6 +89,8 @@ pub struct AppSettingsConfig {
     pub log_display_order: String,
     #[serde(default)]
     pub log_display_format: String,
+    #[serde(default = "default_log_tail_lines")]
+    pub log_tail_lines: u32,
     /// 默认 SSH 隧道映射方式：ssh 或 builtin，供新建隧道或未显式配置的隧道使用。
     #[serde(default)]
     pub default_ssh_tunnel_mode: String,
@@ -105,6 +107,10 @@ pub struct AppSettingsConfig {
 
 fn default_auto_snapshot_enabled() -> bool {
     true
+}
+
+fn default_log_tail_lines() -> u32 {
+    100
 }
 
 fn default_auto_snapshot_limit_per_resource() -> u32 {
@@ -134,6 +140,14 @@ impl AppSettingsConfig {
 
     pub fn set_log_display_format(&mut self, format: LogDisplayFormat) {
         self.log_display_format = format.as_str().to_string();
+    }
+
+    pub fn log_tail_lines(&self) -> u32 {
+        self.log_tail_lines.max(1)
+    }
+
+    pub fn set_log_tail_lines(&mut self, lines: u32) {
+        self.log_tail_lines = lines.max(1);
     }
 
     /// 默认 SSH 隧道映射方式，解析失败时返回 "ssh"。
@@ -231,6 +245,8 @@ struct AppSettingsFile {
     log_display_order: String,
     #[serde(default)]
     log_display_format: String,
+    #[serde(default = "default_log_tail_lines")]
+    log_tail_lines: u32,
     #[serde(default)]
     default_ssh_tunnel_mode: String,
     #[serde(default = "default_auto_snapshot_enabled")]
@@ -267,6 +283,7 @@ impl AppSettingsConfig {
             } else {
                 file.log_display_format
             },
+            log_tail_lines: file.log_tail_lines.max(1),
             default_ssh_tunnel_mode: if file.default_ssh_tunnel_mode.is_empty() {
                 "ssh".to_string()
             } else {
@@ -286,6 +303,7 @@ impl AppSettingsConfig {
             log_level: self.log_level.clone(),
             log_display_order: self.log_display_order.clone(),
             log_display_format: self.log_display_format.clone(),
+            log_tail_lines: self.log_tail_lines.max(1),
             default_ssh_tunnel_mode: self.default_ssh_tunnel_mode.clone(),
             auto_snapshot_enabled: self.auto_snapshot_enabled,
             auto_snapshot_limit_per_resource: self.auto_snapshot_limit_per_resource,
