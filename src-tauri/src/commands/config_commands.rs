@@ -41,3 +41,18 @@ pub fn app_settings_set_auto_snapshot_enabled(enabled: bool) -> Result<(), Strin
     config.set_auto_snapshot_enabled(enabled);
     config.save(&path).map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub fn app_settings_get_auto_snapshot_limit_per_resource() -> Result<u32, String> {
+    let path = app_settings_config_path().ok_or_else(|| "app data dir not available".to_string())?;
+    let config = AppSettingsConfig::load(&path).map_err(|e| e.to_string())?;
+    Ok(config.auto_snapshot_limit_per_resource())
+}
+
+#[tauri::command]
+pub fn app_settings_set_auto_snapshot_limit_per_resource(limit: u32) -> Result<(), String> {
+    let path = app_settings_config_path().ok_or_else(|| "app data dir not available".to_string())?;
+    let mut config = AppSettingsConfig::load(&path).map_err(|e| e.to_string())?;
+    config.set_auto_snapshot_limit_per_resource(limit);
+    config.save(&path).map_err(|e| e.to_string())
+}

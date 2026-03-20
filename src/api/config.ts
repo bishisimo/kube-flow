@@ -20,3 +20,11 @@ export function appSettingsGetAutoSnapshotEnabled(): Promise<boolean> {
 export function appSettingsSetAutoSnapshotEnabled(enabled: boolean): Promise<void> {
   return invoke("app_settings_set_auto_snapshot_enabled", { enabled });
 }
+
+export function appSettingsGetAutoSnapshotLimitPerResource(): Promise<number> {
+  return invoke("app_settings_get_auto_snapshot_limit_per_resource");
+}
+
+export function appSettingsSetAutoSnapshotLimitPerResource(limit: number): Promise<void> {
+  return invoke("app_settings_set_auto_snapshot_limit_per_resource", { limit });
+}

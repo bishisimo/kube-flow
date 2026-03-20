@@ -1,5 +1,6 @@
 import { ref } from "vue";
 import * as jsYaml from "js-yaml";
+import { useAppSettingsStore } from "./appSettings";
 
 export interface ResourceSnapshotRef {
   env_id: string;
@@ -19,9 +20,8 @@ export interface ResourceSnapshotItem extends ResourceSnapshotRef {
 }
 
 const STORAGE_KEY = "kube-flow:resource-snapshots";
-const SNAPSHOT_LIMIT_PER_RESOURCE = 20;
-
 const snapshots = ref<ResourceSnapshotItem[]>(loadSnapshots());
+const { autoSnapshotLimitPerResource } = useAppSettingsStore();
 
 function loadSnapshots(): ResourceSnapshotItem[] {
   try {
@@ -210,9 +210,13 @@ export function createResourceSnapshot(
     yaml,
   };
   const sameResource = listResourceSnapshots(resource);
-  const sameResourceIds = new Set(
-    sameResource
-      .slice(0, Math.max(0, SNAPSHOT_LIMIT_PER_RESOURCE - 1))
+  const isAutomatic = input.source !== "manual";
+  const automaticLimit = Math.max(0, Math.floor(autoSnapshotLimitPerResource.value ?? 10));
+  const automaticSnapshots = isAutomatic
+    ? [next, ...sameResource.filter((item) => item.source !== "manual")]
+    : sameResource.filter((item) => item.source !== "manual");
+  const keptAutomaticIds = new Set(
+    (automaticLimit === 0 ? automaticSnapshots : automaticSnapshots.slice(0, automaticLimit))
       .map((item) => item.id)
   );
   snapshots.value = [
@@ -223,7 +227,9 @@ export function createResourceSnapshot(
         item.resource_kind === resource.resource_kind &&
         item.resource_name === resource.resource_name &&
         (item.resource_namespace ?? null) === (resource.resource_namespace ?? null);
-      return !matchesResource || sameResourceIds.has(item.id);
+      if (!matchesResource) return true;
+      if (item.source === "manual") return true;
+      return keptAutomaticIds.has(item.id);
     }),
   ];
   persist();

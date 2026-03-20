@@ -95,6 +95,9 @@ pub struct AppSettingsConfig {
     /// 是否启用自动快照；默认开启。
     #[serde(default = "default_auto_snapshot_enabled")]
     pub auto_snapshot_enabled: bool,
+    /// 每个资源自动快照数量上限；默认 10，仅作用于自动快照。0 表示不自动淘汰。
+    #[serde(default = "default_auto_snapshot_limit_per_resource")]
+    pub auto_snapshot_limit_per_resource: u32,
     /// 凭证存储与安全设置。
     #[serde(default)]
     pub security: SecurityConfig,
@@ -102,6 +105,10 @@ pub struct AppSettingsConfig {
 
 fn default_auto_snapshot_enabled() -> bool {
     true
+}
+
+fn default_auto_snapshot_limit_per_resource() -> u32 {
+    10
 }
 
 impl AppSettingsConfig {
@@ -154,6 +161,14 @@ impl AppSettingsConfig {
 
     pub fn set_auto_snapshot_enabled(&mut self, enabled: bool) {
         self.auto_snapshot_enabled = enabled;
+    }
+
+    pub fn auto_snapshot_limit_per_resource(&self) -> u32 {
+        self.auto_snapshot_limit_per_resource
+    }
+
+    pub fn set_auto_snapshot_limit_per_resource(&mut self, limit: u32) {
+        self.auto_snapshot_limit_per_resource = limit;
     }
 
 }
@@ -220,6 +235,8 @@ struct AppSettingsFile {
     default_ssh_tunnel_mode: String,
     #[serde(default = "default_auto_snapshot_enabled")]
     auto_snapshot_enabled: bool,
+    #[serde(default = "default_auto_snapshot_limit_per_resource")]
+    auto_snapshot_limit_per_resource: u32,
     #[serde(default)]
     security: SecurityConfig,
 }
@@ -256,6 +273,7 @@ impl AppSettingsConfig {
                 file.default_ssh_tunnel_mode
             },
             auto_snapshot_enabled: file.auto_snapshot_enabled,
+            auto_snapshot_limit_per_resource: file.auto_snapshot_limit_per_resource,
             security: file.security,
         })
     }
@@ -270,6 +288,7 @@ impl AppSettingsConfig {
             log_display_format: self.log_display_format.clone(),
             default_ssh_tunnel_mode: self.default_ssh_tunnel_mode.clone(),
             auto_snapshot_enabled: self.auto_snapshot_enabled,
+            auto_snapshot_limit_per_resource: self.auto_snapshot_limit_per_resource,
             security: self.security.clone(),
         };
         let content = toml::to_string_pretty(&file).map_err(ConfigError::TomlSer)?;

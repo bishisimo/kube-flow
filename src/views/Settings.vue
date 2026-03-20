@@ -17,8 +17,10 @@ import { useLogStore } from "../stores/log";
 import { useYamlTheme, useYamlMonacoTheme, YAML_THEMES } from "../stores/yamlTheme";
 import {
   appSettingsGetAutoSnapshotEnabled,
+  appSettingsGetAutoSnapshotLimitPerResource,
   appSettingsGetSshTunnelMode,
   appSettingsSetAutoSnapshotEnabled,
+  appSettingsSetAutoSnapshotLimitPerResource,
   appSettingsSetSshTunnelMode,
   type TunnelMappingMode,
 } from "../api/config";
@@ -60,7 +62,7 @@ const CATEGORIES: { id: CategoryId; label: string; icon: string }[] = [
 const { themeId } = useYamlTheme();
 const { monacoTheme } = useYamlMonacoTheme();
 const { triggerLogRefresh } = useLogStore();
-const { autoSnapshotEnabled } = useAppSettingsStore();
+const { autoSnapshotEnabled, autoSnapshotLimitPerResource } = useAppSettingsStore();
 const { environments, loadEnvironments } = useEnvStore();
 const activeCategory = ref<CategoryId>("appearance");
 const currentLevel = ref<string>("off");
@@ -68,6 +70,7 @@ const currentOrder = ref<LogDisplayOrder>("asc");
 const currentFormat = ref<LogDisplayFormat>("json");
 const currentSshTunnelMode = ref<TunnelMappingMode>("ssh");
 const currentAutoSnapshotEnabled = ref(true);
+const currentAutoSnapshotLimitPerResource = ref(10);
 const saving = ref(false);
 const message = ref<string | null>(null);
 const yamlThemePreview = `apiVersion: apps/v1
@@ -136,18 +139,21 @@ const nodeStrategyPreview = computed(() =>
 
 async function load() {
   try {
-    const [level, settings, sshMode, autoSnapshot] = await Promise.all([
+    const [level, settings, sshMode, autoSnapshot, autoSnapshotLimit] = await Promise.all([
       logGetLevel(),
       logGetDisplaySettings(),
       appSettingsGetSshTunnelMode(),
       appSettingsGetAutoSnapshotEnabled(),
+      appSettingsGetAutoSnapshotLimitPerResource(),
     ]);
     currentLevel.value = level;
     currentOrder.value = settings.order;
     currentFormat.value = settings.format;
     currentSshTunnelMode.value = sshMode;
     currentAutoSnapshotEnabled.value = autoSnapshot;
+    currentAutoSnapshotLimitPerResource.value = Math.max(0, Math.floor(autoSnapshotLimit || 0));
     autoSnapshotEnabled.value = autoSnapshot;
+    autoSnapshotLimitPerResource.value = currentAutoSnapshotLimitPerResource.value;
   } catch {
     currentLevel.value = "off";
   }
@@ -304,6 +310,23 @@ async function saveAutoSnapshotEnabled(enabled: boolean) {
   }
 }
 
+async function saveAutoSnapshotLimitPerResource(limit: number) {
+  saving.value = true;
+  message.value = null;
+  try {
+    const normalized = Math.max(0, Math.min(100, Math.floor(Number.isFinite(limit) ? limit : 10)));
+    await appSettingsSetAutoSnapshotLimitPerResource(normalized);
+    currentAutoSnapshotLimitPerResource.value = normalized;
+    autoSnapshotLimitPerResource.value = normalized;
+    message.value = "已保存";
+    setTimeout(() => (message.value = null), 2000);
+  } catch (e) {
+    message.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    saving.value = false;
+  }
+}
+
 function syncNodeStrategyForm(envId: string) {
   const strategy = getNodeTerminalStrategy(envId);
   nodeStrategyForm.value = strategy
@@ -437,6 +460,32 @@ watch(selectedNodeStrategyEnvId, (envId) => {
             >
               关闭自动快照
             </button>
+          </div>
+          <div class="setting-row">
+            <div class="setting-copy">
+              <div class="setting-title">每个资源自动快照上限</div>
+              <div class="setting-desc">默认 10 个。超过上限后，会自动删除最旧的自动快照，手动快照不受影响；设置为 0 表示不自动淘汰。</div>
+            </div>
+            <div class="setting-input-wrap">
+              <input
+                v-model.number="currentAutoSnapshotLimitPerResource"
+                type="number"
+                min="0"
+                max="100"
+                step="1"
+                class="setting-number-input"
+                :disabled="saving"
+                @blur="saveAutoSnapshotLimitPerResource(currentAutoSnapshotLimitPerResource)"
+              />
+              <button
+                type="button"
+                class="level-btn"
+                :disabled="saving"
+                @click="saveAutoSnapshotLimitPerResource(currentAutoSnapshotLimitPerResource)"
+              >
+                保存上限
+              </button>
+            </div>
           </div>
           <p v-if="message" class="message" :class="{ error: message !== '已保存' }">
             <span v-if="message === '已保存'" class="message-icon">✓</span>
@@ -1010,6 +1059,50 @@ watch(selectedNodeStrategyEnvId, (envId) => {
 }
 .message.error {
   color: #dc2626;
+}
+.setting-row {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.setting-copy {
+  flex: 1;
+  min-width: 220px;
+}
+.setting-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #1e293b;
+}
+.setting-desc {
+  margin-top: 0.3rem;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: #64748b;
+}
+.setting-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.setting-number-input {
+  width: 88px;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  color: #1e293b;
+  background: #fff;
+}
+.setting-number-input:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
 .theme-select-wrap {
   max-width: 240px;

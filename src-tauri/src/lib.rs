@@ -31,6 +31,8 @@ pub fn run() {
             commands::config_commands::app_settings_set_ssh_tunnel_mode,
             commands::config_commands::app_settings_get_auto_snapshot_enabled,
             commands::config_commands::app_settings_set_auto_snapshot_enabled,
+            commands::config_commands::app_settings_get_auto_snapshot_limit_per_resource,
+            commands::config_commands::app_settings_set_auto_snapshot_limit_per_resource,
             commands::log_commands::log_get_level,
             commands::log_commands::log_set_level,
             commands::log_commands::log_get_display_settings,
