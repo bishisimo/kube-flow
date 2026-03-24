@@ -11,6 +11,7 @@ import {
   type PodItem,
 } from "../api/kube";
 import { hostShellStart, hostShellStdin, hostShellStop } from "../api/terminal";
+import { useStrongholdAuthStore } from "../stores/strongholdAuth";
 import PodShellTerminal from "../components/PodShellTerminal.vue";
 
 const {
@@ -25,6 +26,7 @@ const {
   clearPendingOpen,
 } = useShellStore();
 const { environments } = useEnvStore();
+const strongholdAuth = useStrongholdAuthStore();
 
 const sessionRailCollapsed = ref(false);
 const podOptions = ref<PodItem[]>([]);
@@ -84,6 +86,13 @@ function extractErrorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+async function handleStrongholdLocked(message: string, onConfirmed: () => void): Promise<boolean> {
+  return strongholdAuth.checkAndHandle(message, onConfirmed, {
+    title: "解锁终端凭证",
+    description: "当前终端会话需要访问已保存凭证，请先输入 Stronghold 主密码解锁。",
+  });
+}
+
 function isLikelyConnectionError(message?: string): boolean {
   if (!message) return false;
   const m = message.toLowerCase();
@@ -133,10 +142,22 @@ async function startHostSessionStream(sessionId: string): Promise<boolean> {
     clearReconnectState(sessionId);
     return true;
   } catch (e) {
+    const msg = extractErrorMessage(e);
+    const isStrongholdRequired = await handleStrongholdLocked(msg, () => {
+      void startHostSessionStream(sessionId);
+    });
+    if (isStrongholdRequired) {
+      updateSession(sessionId, {
+        streamId: null,
+        status: "disconnected",
+        error: "需要先解锁 Stronghold，解锁后可点击“重新连接”继续。",
+      });
+      return false;
+    }
     updateSession(sessionId, {
       streamId: null,
       status: "reconnecting",
-      error: extractErrorMessage(e),
+      error: msg,
     });
     return false;
   }
@@ -168,10 +189,22 @@ async function tryReconnectSession(sessionId: string, resetClient: boolean): Pro
     clearReconnectState(sessionId);
     return true;
   } catch (e) {
+    const msg = extractErrorMessage(e);
+    const isStrongholdRequired = await handleStrongholdLocked(msg, () => {
+      void tryReconnectSession(sessionId, resetClient);
+    });
+    if (isStrongholdRequired) {
+      updateSession(sessionId, {
+        streamId: null,
+        status: "disconnected",
+        error: "需要先解锁 Stronghold，解锁后可点击“重新连接”继续。",
+      });
+      return false;
+    }
     updateSession(sessionId, {
       streamId: null,
       status: "reconnecting",
-      error: extractErrorMessage(e),
+      error: msg,
     });
     return false;
   } finally {
@@ -222,24 +255,56 @@ async function openPodConnection(
   podName: string,
   container: string,
   workloadKind?: string,
-  workloadName?: string
+  workloadName?: string,
+  existingSessionId?: string
 ) {
-  const id = addSession({
-    kind: "pod",
-    envId,
-    envName,
-    namespace,
-    podName,
-    container,
-    workloadKind,
-    workloadName,
-  });
+  const id =
+    existingSessionId ??
+    addSession({
+      kind: "pod",
+      envId,
+      envName,
+      namespace,
+      podName,
+      container,
+      workloadKind,
+      workloadName,
+    });
+  if (existingSessionId) {
+    updateSession(id, {
+      streamId: null,
+      status: "connecting",
+      error: undefined,
+      podName,
+      container,
+    });
+  }
   try {
     const streamId = await kubePodExecStart(envId, namespace, podName, container || null);
     updateSession(id, { streamId, status: "connected", error: undefined });
     clearReconnectState(id);
   } catch (e) {
-    updateSession(id, { status: "error", error: extractErrorMessage(e) });
+    const msg = extractErrorMessage(e);
+    const isStrongholdRequired = await handleStrongholdLocked(msg, () => {
+      void openPodConnection(
+        envId,
+        envName,
+        namespace,
+        podName,
+        container,
+        workloadKind,
+        workloadName,
+        id
+      );
+    });
+    if (isStrongholdRequired) {
+      updateSession(id, {
+        status: "disconnected",
+        error: "需要先解锁 Stronghold，解锁后可点击“重新连接”继续。",
+      });
+      return;
+    }
+    updateSession(id, { status: "error", error: msg });
   }
 }
 
@@ -257,22 +322,45 @@ async function openHostConnectionWithBootstrap(
   envId: string,
   envName: string,
   hostLabel?: string,
-  bootstrapCommands?: string[]
+  bootstrapCommands?: string[],
+  existingSessionId?: string
 ) {
-  const id = addSession({
-    kind: "host",
-    envId,
-    envName,
-    hostLabel: hostLabel || `${envName} 主机`,
-    bootstrapCommands,
-  });
+  const nextHostLabel = hostLabel || `${envName} 主机`;
+  const id =
+    existingSessionId ??
+    addSession({
+      kind: "host",
+      envId,
+      envName,
+      hostLabel: nextHostLabel,
+      bootstrapCommands,
+    });
+  if (existingSessionId) {
+    updateSession(id, {
+      streamId: null,
+      status: "connecting",
+      error: undefined,
+      hostLabel: nextHostLabel,
+    });
+  }
   try {
     const streamId = await hostShellStart(envId);
     updateSession(id, { streamId, status: "connected", error: undefined });
     scheduleHostBootstrap(streamId, bootstrapCommands);
     clearReconnectState(id);
   } catch (e) {
-    updateSession(id, { status: "error", error: extractErrorMessage(e) });
+    const msg = extractErrorMessage(e);
+    const isStrongholdRequired = await handleStrongholdLocked(msg, () => {
+      void openHostConnectionWithBootstrap(envId, envName, hostLabel, bootstrapCommands, id);
+    });
+    if (isStrongholdRequired) {
+      updateSession(id, {
+        status: "disconnected",
+        error: "需要先解锁 Stronghold，解锁后可点击“重新连接”继续。",
+      });
+      return;
+    }
+    updateSession(id, { status: "error", error: msg });
   }
 }
 
@@ -402,7 +490,18 @@ async function switchPod(newPodName: string) {
     updateSession(session.id, { streamId, status: "connected", error: undefined });
     containerOptions.value = containers;
   } catch (e) {
-    updateSession(session.id, { status: "error", error: extractErrorMessage(e) });
+    const msg = extractErrorMessage(e);
+    const isStrongholdRequired = await handleStrongholdLocked(msg, () => {
+      void switchPod(newPodName);
+    });
+    if (isStrongholdRequired) {
+      updateSession(session.id, {
+        status: "disconnected",
+        error: "需要先解锁 Stronghold，解锁后可点击“重新连接”继续。",
+      });
+      return;
+    }
+    updateSession(session.id, { status: "error", error: msg });
   }
 }
 
@@ -424,7 +523,18 @@ async function switchContainer(newContainer: string) {
     );
     updateSession(session.id, { streamId, status: "connected", error: undefined });
   } catch (e) {
-    updateSession(session.id, { status: "error", error: extractErrorMessage(e) });
+    const msg = extractErrorMessage(e);
+    const isStrongholdRequired = await handleStrongholdLocked(msg, () => {
+      void switchContainer(newContainer);
+    });
+    if (isStrongholdRequired) {
+      updateSession(session.id, {
+        status: "disconnected",
+        error: "需要先解锁 Stronghold，解锁后可点击“重新连接”继续。",
+      });
+      return;
+    }
+    updateSession(session.id, { status: "error", error: msg });
   }
 }
 

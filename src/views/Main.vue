@@ -13,9 +13,11 @@ import { listen } from "@tauri-apps/api/event";
 import { kubeDeleteResource, kubeRemoveClient } from "../api/kube";
 import { useConnectionStore, isConnectionError } from "../stores/connection";
 import { useSshAuthStore } from "../stores/sshAuth";
+import { useStrongholdAuthStore } from "../stores/strongholdAuth";
 import { useShellStore } from "../stores/shell";
 import { useLogCenterStore } from "../stores/logCenter";
 import { useOrchestratorStore } from "../stores/orchestrator";
+import { effectiveContext } from "../api/env";
 import {
   kubeGetResource,
   kubeListNamespaces,
@@ -98,12 +100,13 @@ const {
 } = useConnectionStore();
 
 const sshAuth = useSshAuthStore();
+const strongholdAuth = useStrongholdAuthStore();
 
 const ENV_BAR_COLLAPSED_KEY = "kube-flow:env-bar-collapsed";
 const NS_FAVORITES_KEY = "kube-flow:ns-favorites";
 const NS_RECENT_KEY_PREFIX = "kube-flow:ns-recent:";
 const RECENT_KINDS_KEY = "kube-flow:recent-kinds";
-const MAX_RECENT_KINDS = 5;
+const MAX_RECENT_KINDS = 6;
 const ALL_NAMESPACES_SENTINEL = "__all__";
 const envBarCollapsed = ref(
   (() => {
@@ -258,6 +261,45 @@ const labelSelector = ref("");
 /** Watch 实时更新：开启后通过 Tauri 事件接收增量，仅部分 kind 支持 */
 const watchEnabled = ref(true);
 /** 排序：默认按创建时间倒序 */
+
+function currentEnvSourceLabel(): string {
+  return currentEnv.value?.source === "ssh_tunnel" ? "SSH 环境" : "本地 kubeconfig";
+}
+
+function currentEnvContextLabel(): string {
+  if (!currentEnv.value) return "未选择 Context";
+  return effectiveContext(currentEnv.value) ?? "未选择 Context";
+}
+
+function shouldShowCurrentEnvContext(): boolean {
+  return currentEnv.value?.source !== "ssh_tunnel";
+}
+
+function currentEnvStateLabel(): string {
+  if (!currentId.value) return "未连接";
+  const state = getState(currentId.value);
+  if (state === "disconnected") return "连接断开";
+  if (state === "connecting") return "连接中";
+  return "已就绪";
+}
+
+function supportsIpFilter(): boolean {
+  return selectedKind.value === "pods" || selectedKind.value === "services";
+}
+
+function ipFilterPlaceholder(): string {
+  return selectedKind.value === "services" ? "按 Service IP 筛选…" : "按 Pod IP 筛选…";
+}
+
+function ipFilterTitle(): string {
+  return selectedKind.value === "services"
+    ? "按 Service ClusterIP 包含匹配（前端过滤）"
+    : "按 Pod IP 包含匹配（前端过滤）";
+}
+
+function ipFilterChipLabel(): string {
+  return selectedKind.value === "services" ? "Service IP" : "Pod IP";
+}
 const sortBy = ref<string>("creationTime");
 const sortOrder = ref<"asc" | "desc">("desc");
 const viewSessionId = ref(0);
@@ -589,6 +631,8 @@ const actionMenuVisible = ref(false);
 const actionMenuPosition = ref({ x: 0, y: 0 });
 const actionMenuRef = ref<HTMLElement | null>(null);
 const deleteActionArmed = ref(false);
+const ACTION_MENU_OFFSET = 6;
+const ACTION_MENU_VIEWPORT_GAP = 10;
 
 function selectResourceFromRow(row: Record<string, unknown>) {
   const name = row.name as string | undefined;
@@ -618,8 +662,14 @@ function onRowContextMenu(row: Record<string, unknown>, e: MouseEvent) {
   if (!resource) return;
   selectedResource.value = resource;
   deleteActionArmed.value = false;
-  actionMenuPosition.value = { x: e.clientX, y: e.clientY };
   actionMenuVisible.value = true;
+  actionMenuPosition.value = {
+    x: e.clientX + ACTION_MENU_OFFSET,
+    y: e.clientY + ACTION_MENU_OFFSET,
+  };
+  nextTick(() => {
+    adjustActionMenuPosition();
+  });
 }
 
 function onRowClick(row: Record<string, unknown>) {
@@ -634,6 +684,23 @@ function onRowClick(row: Record<string, unknown>) {
 function closeActionMenu() {
   actionMenuVisible.value = false;
   deleteActionArmed.value = false;
+}
+
+function adjustActionMenuPosition() {
+  if (!actionMenuVisible.value || !actionMenuRef.value) return;
+  const rect = actionMenuRef.value.getBoundingClientRect();
+  const maxX = Math.max(
+    ACTION_MENU_VIEWPORT_GAP,
+    window.innerWidth - rect.width - ACTION_MENU_VIEWPORT_GAP
+  );
+  const maxY = Math.max(
+    ACTION_MENU_VIEWPORT_GAP,
+    window.innerHeight - rect.height - ACTION_MENU_VIEWPORT_GAP
+  );
+  actionMenuPosition.value = {
+    x: Math.min(Math.max(ACTION_MENU_VIEWPORT_GAP, actionMenuPosition.value.x), maxX),
+    y: Math.min(Math.max(ACTION_MENU_VIEWPORT_GAP, actionMenuPosition.value.y), maxY),
+  };
 }
 
 function openResourceDetail() {
@@ -1468,9 +1535,14 @@ const tableRows = computed(() => {
   if (selectedKind.value === "pods" && nodeFilter.value !== "all") {
     raw = raw.filter((r) => String(r.node ?? "") === nodeFilter.value);
   }
-  if (selectedKind.value === "pods") {
+  if (supportsIpFilter()) {
     const ip = podIpFilter.value.trim().toLowerCase();
-    if (ip) raw = raw.filter((r) => String(r.podIp ?? "").toLowerCase().includes(ip));
+    if (ip) {
+      raw = raw.filter((r) => {
+        const candidate = selectedKind.value === "services" ? r.clusterIp : r.podIp;
+        return String(candidate ?? "").toLowerCase().includes(ip);
+      });
+    }
   }
   const by = sortBy.value;
   const order = sortOrder.value;
@@ -1494,9 +1566,9 @@ const activeFilterChips = computed<ActiveFilterChip[]>(() => {
   if (selectedKind.value === "pods" && nodeFilter.value !== "all") {
     chips.push({ id: "node", label: "Node", value: nodeFilter.value });
   }
-  if (selectedKind.value === "pods") {
+  if (supportsIpFilter()) {
     const podIp = podIpFilter.value.trim();
-    if (podIp) chips.push({ id: "podIp", label: "Pod IP", value: podIp });
+    if (podIp) chips.push({ id: "podIp", label: ipFilterChipLabel(), value: podIp });
   }
   if (label) chips.push({ id: "label", label: "Label", value: label });
   return chips;
@@ -2052,6 +2124,20 @@ async function loadList() {
   } catch (e: unknown) {
     if (isStaleView(id, sessionId, requestId)) return;
     const msg = extractErrorMessage(e);
+    const isStrongholdRequired = await strongholdAuth.checkAndHandle(
+      msg,
+      () => {
+        loadList();
+      },
+      {
+        title: "解锁环境凭证",
+        description: "当前环境连接需要访问已保存凭证，请先输入 Stronghold 主密码解锁。",
+      }
+    );
+    if (isStrongholdRequired) {
+      setConnecting(id);
+      return;
+    }
     // SSH 认证错误：弹出密码输入框，用户输入后可重试
     const isAuthRequired = await sshAuth.checkAndHandle(msg, () => {
       loadList();
@@ -2099,9 +2185,13 @@ onMounted(() => {
   const id = currentId.value;
   if (id) restoreEnvViewState(id);
   document.addEventListener("click", onDocClick);
+  window.addEventListener("resize", adjustActionMenuPosition);
+  window.addEventListener("scroll", adjustActionMenuPosition, true);
 });
 onUnmounted(() => {
   document.removeEventListener("click", onDocClick);
+  window.removeEventListener("resize", adjustActionMenuPosition);
+  window.removeEventListener("scroll", adjustActionMenuPosition, true);
 });
 watch(selectedKind, () => {
   sortBy.value = "creationTime";
@@ -2169,6 +2259,18 @@ function applyWatch() {
     kubeStartWatch(id, selectedKind.value, ns, labelSelector.value.trim() || null, watchToken).catch(async (e) => {
       if (isStaleView(id, sessionId)) return;
       const msg = extractErrorMessage(e);
+      const isStrongholdRequired = await strongholdAuth.checkAndHandle(
+        msg,
+        () => applyWatch(),
+        {
+          title: "解锁环境凭证",
+          description: "当前环境连接需要访问已保存凭证，请先输入 Stronghold 主密码解锁。",
+        }
+      );
+      if (isStrongholdRequired) {
+        setConnecting(id);
+        return;
+      }
       const isAuthRequired = await sshAuth.checkAndHandle(msg, () => applyWatch());
       if (isAuthRequired) {
         setConnecting(id);
@@ -2245,122 +2347,176 @@ onUnmounted(() => {
       />
       <div class="content">
         <nav v-if="currentId" class="breadcrumb-bar" aria-label="导航">
-          <template v-if="drillFrom">
-            <button type="button" class="breadcrumb-seg" @click="selectedNamespace = drillFrom!.namespace; clearDrillAndReload()">
-              {{ drillFrom!.namespace || "全部" }}
-            </button>
-            <span class="breadcrumb-sep">›</span>
-            <button type="button" class="breadcrumb-seg" @click="onBreadcrumbKindClick()">
-              {{ drillFrom!.kind }}
-            </button>
-            <span class="breadcrumb-sep">›</span>
-            <button
-              v-if="(API_KIND_TO_ID[drillFrom!.kind] ?? 'services') !== selectedKind"
-              type="button"
-              class="breadcrumb-seg"
-              @click="onBreadcrumbResourceNameClick()"
-            >
-              {{ drillFrom!.name }}
-            </button>
-            <template v-if="(API_KIND_TO_ID[drillFrom!.kind] ?? 'services') !== selectedKind">
+          <span class="breadcrumb-kicker">当前位置</span>
+          <div class="breadcrumb-trail">
+            <template v-if="drillFrom">
+              <button
+                type="button"
+                class="breadcrumb-seg"
+                :title="drillFrom!.namespace || '全部'"
+                @click="selectedNamespace = drillFrom!.namespace; clearDrillAndReload()"
+              >
+                {{ drillFrom!.namespace || "全部" }}
+              </button>
               <span class="breadcrumb-sep">›</span>
-              <span class="breadcrumb-seg breadcrumb-current">{{ selectedKindLabel }}</span>
+              <button type="button" class="breadcrumb-seg" :title="drillFrom!.kind" @click="onBreadcrumbKindClick()">
+                {{ drillFrom!.kind }}
+              </button>
+              <span class="breadcrumb-sep">›</span>
+              <button
+                v-if="(API_KIND_TO_ID[drillFrom!.kind] ?? 'services') !== selectedKind"
+                type="button"
+                class="breadcrumb-seg"
+                :title="drillFrom!.name"
+                @click="onBreadcrumbResourceNameClick()"
+              >
+                {{ drillFrom!.name }}
+              </button>
+              <template v-if="(API_KIND_TO_ID[drillFrom!.kind] ?? 'services') !== selectedKind">
+                <span class="breadcrumb-sep">›</span>
+                <span class="breadcrumb-seg breadcrumb-current" :title="selectedKindLabel">{{ selectedKindLabel }}</span>
+              </template>
+              <span v-else class="breadcrumb-seg breadcrumb-current" :title="drillFrom!.name">{{ drillFrom!.name }}</span>
             </template>
-            <span v-else class="breadcrumb-seg breadcrumb-current">{{ drillFrom!.name }}</span>
-          </template>
-          <template v-else>
-            <span class="breadcrumb-seg breadcrumb-current">{{ effectiveNamespace }}</span>
-            <span class="breadcrumb-sep">›</span>
-            <span class="breadcrumb-seg breadcrumb-current">{{ selectedKindLabel }}</span>
-          </template>
+            <template v-else>
+              <span class="breadcrumb-seg breadcrumb-base" :title="effectiveNamespace">{{ effectiveNamespace }}</span>
+              <span class="breadcrumb-sep">›</span>
+              <span class="breadcrumb-seg breadcrumb-current" :title="selectedKindLabel">{{ selectedKindLabel }}</span>
+            </template>
+          </div>
         </nav>
         <header class="toolbar">
           <div class="toolbar-card">
             <div class="toolbar-main">
-              <span v-if="currentEnv" class="env-name">{{ currentEnv.display_name }}</span>
+              <div v-if="currentEnv" class="active-env-banner">
+                <div class="active-env-copy">
+                  <div class="active-env-name-row">
+                    <span class="active-env-kicker">当前环境</span>
+                    <span class="env-name">{{ currentEnv.display_name }}</span>
+                    <span class="active-env-state" :class="`active-env-state-${getState(currentId!)}`">
+                      {{ currentEnvStateLabel() }}
+                    </span>
+                  </div>
+                  <div class="active-env-meta-row">
+                    <span class="active-env-chip">{{ currentEnvSourceLabel() }}</span>
+                    <span v-if="shouldShowCurrentEnvContext()" class="active-env-chip subtle">
+                      Context: {{ currentEnvContextLabel() }}
+                    </span>
+                  </div>
+                </div>
+              </div>
               <div v-if="currentId" ref="nsDropdownRef" class="combobox-wrap">
                 <button
                   type="button"
                   class="combobox-trigger"
-              :class="{ open: nsDropdownOpen, disabled: nsSelectionDisabled }"
-              :disabled="nsSelectionDisabled"
-              :title="nsSelectionDisabled ? '当前资源为集群级，命名空间不生效' : '命名空间：输入筛选后选择'"
-              @click="toggleNamespaceDropdown"
+                  :class="{ open: nsDropdownOpen, disabled: nsSelectionDisabled, 'combobox-trigger-strong': true }"
+                  :disabled="nsSelectionDisabled"
+                  :title="nsSelectionDisabled ? '当前资源为集群级，命名空间不生效' : '命名空间：输入筛选后选择'"
+                  @click="toggleNamespaceDropdown"
                 >
-                  <span class="combobox-label">NS</span>
-              <span class="combobox-value">{{ nsSelectionDisabled ? '集群级资源' : effectiveNamespace }}</span>
+                  <span class="combobox-trigger-main">
+                    <span class="combobox-label">命名空间</span>
+                    <span class="combobox-value">{{ nsSelectionDisabled ? '集群级资源' : effectiveNamespace }}</span>
+                  </span>
                   <span class="combobox-arrow">▼</span>
                 </button>
-            <div v-show="nsDropdownOpen" ref="nsMenuRef" class="combobox-menu">
-                  <input
-                    v-model="nsFilter"
-                    type="text"
-                    class="combobox-input"
-                    placeholder="输入筛选…"
-                    autocomplete="off"
-                  />
-              <button type="button" class="combobox-item" :class="{ active: selectedNamespace === null }" @click="selectNamespace(null)">
-                    全部
+                <div v-show="nsDropdownOpen" ref="nsMenuRef" class="combobox-menu">
+                  <div class="combobox-panel-head">
+                    <div class="combobox-panel-title">选择命名空间</div>
+                    <div class="combobox-panel-subtitle">当前资源范围会基于这里切换</div>
+                  </div>
+                  <div class="combobox-search">
+                    <input
+                      v-model="nsFilter"
+                      type="text"
+                      class="combobox-input"
+                      placeholder="搜索命名空间…"
+                      autocomplete="off"
+                    />
+                  </div>
+                  <button type="button" class="combobox-item" :class="{ active: selectedNamespace === null }" @click="selectNamespace(null)">
+                    <span class="combobox-item-main">
+                      <span class="combobox-item-title">全部命名空间</span>
+                      <span class="combobox-item-subtitle">浏览当前环境下的全部命名空间</span>
+                    </span>
+                    <span class="combobox-item-check">{{ selectedNamespace === null ? "✓" : "" }}</span>
                   </button>
-              <template v-if="namespaceFavorites.length > 0">
-                <div class="combobox-group-label">收藏</div>
-                <button
-                  v-for="n in namespaceFavorites"
-                  :key="`fav-${n.name}`"
-                  type="button"
-                  class="combobox-item combobox-item-with-action"
-                  :class="{ active: selectedNamespace === n.name }"
-                  @click="selectNamespace(n.name)"
-                >
-                  <span>{{ n.name }}</span>
-                  <span
-                    class="ns-star active"
-                    title="取消收藏"
-                    @click.stop="toggleFavoriteNamespace(n.name)"
-                  >
-                    ★
-                  </span>
-                </button>
-              </template>
-              <template v-if="namespaceRecent.length > 0">
-                <div class="combobox-group-label">最近</div>
-                <button
-                  v-for="n in namespaceRecent"
-                  :key="`recent-${n.name}`"
-                  type="button"
-                  class="combobox-item combobox-item-with-action"
-                  :class="{ active: selectedNamespace === n.name }"
-                  @click="selectNamespace(n.name)"
-                >
-                  <span>{{ n.name }}</span>
-                  <span
-                    class="ns-star"
-                    :class="{ active: favoriteNamespaces.has(n.name) }"
-                    :title="favoriteNamespaces.has(n.name) ? '取消收藏' : '收藏'"
-                    @click.stop="toggleFavoriteNamespace(n.name)"
-                  >
-                    ★
-                  </span>
-                </button>
-              </template>
-              <div class="combobox-group-label">全部</div>
+                  <template v-if="namespaceFavorites.length > 0">
+                    <div class="combobox-group-label">收藏</div>
+                    <button
+                      v-for="n in namespaceFavorites"
+                      :key="`fav-${n.name}`"
+                      type="button"
+                      class="combobox-item combobox-item-with-action"
+                      :class="{ active: selectedNamespace === n.name }"
+                      @click="selectNamespace(n.name)"
+                    >
+                      <span class="combobox-item-main">
+                        <span class="combobox-item-title">{{ n.name }}</span>
+                        <span class="combobox-item-subtitle">收藏的命名空间</span>
+                      </span>
+                      <span class="combobox-item-trailing">
+                        <span class="combobox-item-check">{{ selectedNamespace === n.name ? "✓" : "" }}</span>
+                        <span
+                          class="ns-star active"
+                          title="取消收藏"
+                          @click.stop="toggleFavoriteNamespace(n.name)"
+                        >
+                          ★
+                        </span>
+                      </span>
+                    </button>
+                  </template>
+                  <template v-if="namespaceRecent.length > 0">
+                    <div class="combobox-group-label">最近</div>
+                    <button
+                      v-for="n in namespaceRecent"
+                      :key="`recent-${n.name}`"
+                      type="button"
+                      class="combobox-item combobox-item-with-action"
+                      :class="{ active: selectedNamespace === n.name }"
+                      @click="selectNamespace(n.name)"
+                    >
+                      <span class="combobox-item-main">
+                        <span class="combobox-item-title">{{ n.name }}</span>
+                        <span class="combobox-item-subtitle">最近访问</span>
+                      </span>
+                      <span class="combobox-item-trailing">
+                        <span class="combobox-item-check">{{ selectedNamespace === n.name ? "✓" : "" }}</span>
+                        <span
+                          class="ns-star"
+                          :class="{ active: favoriteNamespaces.has(n.name) }"
+                          :title="favoriteNamespaces.has(n.name) ? '取消收藏' : '收藏'"
+                          @click.stop="toggleFavoriteNamespace(n.name)"
+                        >
+                          ★
+                        </span>
+                      </span>
+                    </button>
+                  </template>
+                  <div class="combobox-group-label">全部</div>
                   <button
-                v-for="n in namespaceOthers"
+                    v-for="n in namespaceOthers"
                     :key="n.name"
                     type="button"
-                class="combobox-item combobox-item-with-action"
+                    class="combobox-item combobox-item-with-action"
                     :class="{ active: selectedNamespace === n.name }"
-                @click="selectNamespace(n.name)"
+                    @click="selectNamespace(n.name)"
                   >
-                <span>{{ n.name }}</span>
-                <span
-                  class="ns-star"
-                  :class="{ active: favoriteNamespaces.has(n.name) }"
-                  :title="favoriteNamespaces.has(n.name) ? '取消收藏' : '收藏'"
-                  @click.stop="toggleFavoriteNamespace(n.name)"
-                >
-                  ★
-                </span>
+                    <span class="combobox-item-main">
+                      <span class="combobox-item-title">{{ n.name }}</span>
+                    </span>
+                    <span class="combobox-item-trailing">
+                      <span class="combobox-item-check">{{ selectedNamespace === n.name ? "✓" : "" }}</span>
+                      <span
+                        class="ns-star"
+                        :class="{ active: favoriteNamespaces.has(n.name) }"
+                        :title="favoriteNamespaces.has(n.name) ? '取消收藏' : '收藏'"
+                        @click.stop="toggleFavoriteNamespace(n.name)"
+                      >
+                        ★
+                      </span>
+                    </span>
                   </button>
                 </div>
               </div>
@@ -2368,37 +2524,45 @@ onUnmounted(() => {
                 <button
                   type="button"
                   class="combobox-trigger"
-                  :class="{ open: kindDropdownOpen }"
+                  :class="{ open: kindDropdownOpen, 'combobox-trigger-strong': true }"
                   title="资源类型：输入筛选后选择"
                   @click="kindDropdownOpen = !kindDropdownOpen; if (kindDropdownOpen) { kindFilter = ''; nsDropdownOpen = false }"
                 >
-                  <span class="combobox-label">资源</span>
-                  <span class="combobox-value">{{ selectedKindLabel }}</span>
+                  <span class="combobox-trigger-main">
+                    <span class="combobox-label">资源类型</span>
+                    <span class="combobox-value">{{ selectedKindLabel }}</span>
+                  </span>
                   <span class="combobox-arrow">▼</span>
                 </button>
-            <div v-show="kindDropdownOpen" ref="kindMenuRef" class="combobox-menu combobox-menu-grouped">
-                  <input
-                    v-model="kindFilter"
-                    type="text"
-                    class="combobox-input"
-                    placeholder="输入筛选…"
-                    autocomplete="off"
-                  />
-              <div v-if="recentKindItems.length > 0 && !kindFilter.trim()" class="recent-kind-panel">
-                <div class="recent-kind-title">最近使用（快捷入口）</div>
-                <div class="recent-kind-list">
-                  <button
-                    v-for="k in recentKindItems"
-                    :key="`recent-kind-${k.id}`"
-                    type="button"
-                    class="recent-kind-pill"
-                    :class="{ active: selectedKind === k.id }"
-                    @click="selectKindAndClearDrill(k.id)"
-                  >
-                    {{ k.label }}
-                  </button>
-                </div>
-              </div>
+                <div v-show="kindDropdownOpen" ref="kindMenuRef" class="combobox-menu combobox-menu-grouped">
+                  <div class="combobox-panel-head">
+                    <div class="combobox-panel-title">选择资源类型</div>
+                    <div class="combobox-panel-subtitle">快速切换当前工作台的资源视图</div>
+                  </div>
+                  <div class="combobox-search">
+                    <input
+                      v-model="kindFilter"
+                      type="text"
+                      class="combobox-input"
+                      placeholder="搜索资源类型…"
+                      autocomplete="off"
+                    />
+                  </div>
+                  <div v-if="recentKindItems.length > 0 && !kindFilter.trim()" class="recent-kind-panel">
+                    <div class="recent-kind-title">最近使用</div>
+                    <div class="recent-kind-list">
+                      <button
+                        v-for="k in recentKindItems"
+                        :key="`recent-kind-${k.id}`"
+                        type="button"
+                        class="recent-kind-pill"
+                        :class="{ active: selectedKind === k.id }"
+                        @click="selectKindAndClearDrill(k.id)"
+                      >
+                        {{ k.label }}
+                      </button>
+                    </div>
+                  </div>
                   <template v-for="group in filteredKindGroups" :key="group.id">
                     <div class="combobox-group-label">{{ group.label }}</div>
                     <button
@@ -2409,7 +2573,10 @@ onUnmounted(() => {
                       :class="{ active: selectedKind === k.id }"
                       @click="selectKindAndClearDrill(k.id)"
                     >
-                      {{ k.label }}
+                      <span class="combobox-item-main">
+                        <span class="combobox-item-title">{{ k.label }}</span>
+                      </span>
+                      <span class="combobox-item-check">{{ selectedKind === k.id ? "✓" : "" }}</span>
                     </button>
                   </template>
                 </div>
@@ -2427,14 +2594,6 @@ onUnmounted(() => {
                 </button>
                 <button type="button" class="btn-refresh" :disabled="listLoading" @click="loadList">
                   {{ listLoading ? "刷新中…" : "刷新" }}
-                </button>
-                <button
-                  v-if="currentId"
-                  type="button"
-                  class="btn-secondary-outline"
-                  @click="openEnvironmentTerminal(currentId)"
-                >
-                  当前环境终端
                 </button>
                 <template v-if="currentId">
                   <button
@@ -2462,43 +2621,47 @@ onUnmounted(() => {
               </div>
             </div>
             <div v-if="currentId" class="toolbar-filters">
-              <input
-                v-model="nameFilter"
-                type="text"
-                class="filter-input"
-                placeholder="按名称筛选…"
-                autocomplete="off"
-                title="按名称包含匹配（前端过滤）"
-              />
-              <select
-                v-if="selectedKind === 'pods'"
-                v-model="nodeFilter"
-                class="filter-input"
-                title="按 Node 选项筛选"
-              >
-                <option value="all">Node: All</option>
-                <option v-for="node in podNodeOptions" :key="node" :value="node">
-                  Node: {{ node }}
-                </option>
-              </select>
-              <input
-                v-if="selectedKind === 'pods'"
-                v-model="podIpFilter"
-                type="text"
-                class="filter-input"
-                placeholder="按 Pod IP 筛选…"
-                autocomplete="off"
-                title="按 Pod IP 包含匹配（前端过滤）"
-              />
-              <input
-                v-model="labelSelector"
-                type="text"
-                class="filter-input filter-input-label"
-                placeholder="Label 筛选，如 app=nginx"
-                autocomplete="off"
-                title="K8s label selector，如 app=nginx 或 env in (prod,staging)"
-                @keyup.enter="watchEnabled && WATCH_SUPPORTED_KINDS.has(selectedKind) ? applyWatch() : loadList()"
-              />
+              <div class="toolbar-filters-primary">
+                <input
+                  v-model="nameFilter"
+                  type="text"
+                  class="filter-input"
+                  placeholder="按名称筛选…"
+                  autocomplete="off"
+                  title="按名称包含匹配（前端过滤）"
+                />
+                <input
+                  v-model="labelSelector"
+                  type="text"
+                  class="filter-input filter-input-label"
+                  placeholder="Label 筛选，如 app=nginx"
+                  autocomplete="off"
+                  title="K8s label selector，如 app=nginx 或 env in (prod,staging)"
+                  @keyup.enter="watchEnabled && WATCH_SUPPORTED_KINDS.has(selectedKind) ? applyWatch() : loadList()"
+                />
+              </div>
+              <div v-if="selectedKind === 'pods' || selectedKind === 'services'" class="toolbar-filters-secondary">
+                <select
+                  v-if="selectedKind === 'pods'"
+                  v-model="nodeFilter"
+                  class="filter-input"
+                  title="按 Node 选项筛选"
+                >
+                  <option value="all">Node: All</option>
+                  <option v-for="node in podNodeOptions" :key="node" :value="node">
+                    Node: {{ node }}
+                  </option>
+                </select>
+                <input
+                  v-if="supportsIpFilter()"
+                  v-model="podIpFilter"
+                  type="text"
+                  class="filter-input"
+                  :placeholder="ipFilterPlaceholder()"
+                  autocomplete="off"
+                  :title="ipFilterTitle()"
+                />
+              </div>
             </div>
             <div v-if="activeFilterChips.length" class="filter-chip-bar">
               <span class="filter-chip-label">已启用筛选</span>
@@ -2939,6 +3102,16 @@ onUnmounted(() => {
   gap: 0.5rem;
   padding-top: 0.1rem;
 }
+.toolbar-filters-primary,
+.toolbar-filters-secondary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.toolbar-filters-secondary {
+  margin-left: auto;
+}
 .toolbar-actions {
   margin-left: auto;
   display: inline-flex;
@@ -2946,45 +3119,170 @@ onUnmounted(() => {
   gap: 0.5rem;
 }
 .env-name {
-  font-weight: 500;
-  font-size: 0.875rem;
-  padding: 0.2rem 0.55rem;
+  font-weight: 800;
+  font-size: 0.88rem;
+  color: #0f172a;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.active-env-banner {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 1 auto;
+  width: fit-content;
+  max-width: min(100%, 300px);
+  min-width: 0;
+  padding: 0.4rem 0.55rem;
+  border-radius: 12px;
+  border: 1px solid rgba(37, 99, 235, 0.14);
+  background:
+    radial-gradient(circle at top right, rgba(14, 165, 233, 0.14), transparent 26%),
+    linear-gradient(135deg, #eff6ff, #f8fafc 72%);
+}
+.active-env-copy {
+  min-width: 0;
+  width: auto;
+}
+.active-env-kicker {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.12rem 0.34rem;
   border-radius: 999px;
-  background: #eff6ff;
+  background: rgba(37, 99, 235, 0.1);
+  font-size: 0.6rem;
+  font-weight: 700;
+  color: #2563eb;
+  flex-shrink: 0;
+}
+.active-env-name-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.38rem;
+}
+.active-env-meta-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.24rem;
+  margin-top: 0.28rem;
+}
+.active-env-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.12rem 0.36rem;
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.1);
   color: #1d4ed8;
+  font-size: 0.64rem;
+  font-weight: 700;
+  max-width: 100%;
+}
+.active-env-chip.subtle {
+  background: rgba(255, 255, 255, 0.78);
+  color: #475569;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+}
+.active-env-state {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.12rem 0.34rem;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.active-env-state-connected,
+.active-env-state-error {
+  background: #ecfdf5;
+  color: #15803d;
+}
+.active-env-state-connecting {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+.active-env-state-disconnected {
+  background: #fef2f2;
+  color: #dc2626;
 }
 .breadcrumb-bar {
   display: flex;
   align-items: center;
-  gap: 0.25rem;
-  padding: 0.5rem 1rem;
-  font-size: 0.8125rem;
+  gap: 0.55rem;
+  padding: 0.55rem 1rem;
+  font-size: 0.8rem;
   color: #64748b;
-  background: #f8fafc;
+  background:
+    linear-gradient(180deg, #f8fafc, #f1f5f9);
   border-bottom: 1px solid #e2e8f0;
   flex-shrink: 0;
+  min-width: 0;
+}
+.breadcrumb-kicker {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  padding: 0.14rem 0.45rem;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #475569;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+.breadcrumb-trail {
+  display: flex;
+  align-items: center;
+  gap: 0.28rem;
+  min-width: 0;
+  overflow: auto hidden;
+  padding-bottom: 0.05rem;
+  scrollbar-width: none;
+}
+.breadcrumb-trail::-webkit-scrollbar {
+  display: none;
 }
 .breadcrumb-seg {
-  background: none;
-  border: none;
-  padding: 0.2rem 0.4rem;
-  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  max-width: 260px;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(203, 213, 225, 0.9);
+  padding: 0.28rem 0.55rem;
+  border-radius: 999px;
   cursor: pointer;
   color: inherit;
   font: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 1px 1px rgba(15, 23, 42, 0.02);
 }
-.breadcrumb-seg:hover:not(.breadcrumb-current) {
-  background: #e2e8f0;
-  color: #334155;
+.breadcrumb-seg:hover:not(.breadcrumb-current):not(.breadcrumb-base) {
+  background: #fff;
+  border-color: #93c5fd;
+  color: #1d4ed8;
+}
+.breadcrumb-seg.breadcrumb-base {
+  background: transparent;
+  border-color: transparent;
+  color: #64748b;
+  cursor: default;
+  box-shadow: none;
 }
 .breadcrumb-seg.breadcrumb-current {
+  background: #dbeafe;
+  border-color: #bfdbfe;
   color: #0f172a;
-  font-weight: 500;
+  font-weight: 700;
   cursor: default;
 }
 .breadcrumb-sep {
-  color: #cbd5e1;
+  color: #94a3b8;
   user-select: none;
+  flex-shrink: 0;
 }
 .action-menu-backdrop {
   position: fixed;
@@ -2994,13 +3292,16 @@ onUnmounted(() => {
 .action-menu-overlay {
   position: fixed;
   z-index: 1000;
-  margin: 0.25rem 0 0 0.25rem;
-  min-width: 220px;
+  width: min(320px, calc(100vw - 20px));
+  max-width: calc(100vw - 20px);
+  max-height: calc(100vh - 20px);
   padding: 0.5rem 0;
   background: #fff;
   border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  border-radius: 12px;
+  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.18);
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 .action-menu-section {
   padding: 0 0.25rem;
@@ -3052,6 +3353,7 @@ onUnmounted(() => {
   font-size: 0.72rem;
   line-height: 1.25;
   color: #94a3b8;
+  word-break: break-word;
 }
 .action-menu-item:hover .action-menu-sub {
   color: #64748b;
@@ -3069,6 +3371,16 @@ onUnmounted(() => {
   background: #fef2f2;
   color: #dc2626;
 }
+@media (max-width: 960px) {
+  .active-env-banner {
+    display: flex;
+    width: 100%;
+    max-width: none;
+  }
+  .toolbar-filters-secondary {
+    margin-left: 0;
+  }
+}
 .action-menu-item-danger:hover .action-menu-sub {
   color: #b91c1c;
 }
@@ -3085,25 +3397,53 @@ onUnmounted(() => {
   font-size: 0.8125rem;
   color: #94a3b8;
 }
+@media (max-width: 640px) {
+  .action-menu-overlay {
+    width: min(300px, calc(100vw - 16px));
+    max-width: calc(100vw - 16px);
+    max-height: calc(100vh - 16px);
+    padding: 0.35rem 0;
+    border-radius: 10px;
+  }
+  .action-menu-section {
+    padding: 0 0.18rem;
+  }
+  .action-menu-item {
+    gap: 0.42rem;
+    padding: 0.42rem 0.62rem;
+  }
+  .action-menu-main {
+    font-size: 0.78rem;
+  }
+  .action-menu-sub {
+    font-size: 0.68rem;
+  }
+}
 .combobox-wrap {
   position: relative;
 }
 .combobox-trigger {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  padding: 0.35rem 0.6rem;
+  justify-content: space-between;
+  gap: 0.55rem;
+  padding: 0.48rem 0.7rem;
   border: 1px solid #e2e8f0;
-  border-radius: 6px;
+  border-radius: 12px;
   background: #fff;
   font-size: 0.8125rem;
   color: #475569;
   cursor: pointer;
   min-width: 0;
+  min-height: 48px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
 }
 .combobox-trigger:hover {
   background: #f8fafc;
   border-color: #cbd5e1;
+}
+.combobox-trigger-strong {
+  min-width: 190px;
 }
 .combobox-trigger.disabled {
   opacity: 0.6;
@@ -3112,48 +3452,92 @@ onUnmounted(() => {
 }
 .combobox-trigger.open {
   border-color: #2563eb;
-  background: #f8fafc;
+  background: #eff6ff;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+.combobox-trigger-main {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
 }
 .combobox-label {
-  color: #94a3b8;
-  font-size: 0.75rem;
+  color: #64748b;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 .combobox-value {
-  max-width: 120px;
+  max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: #0f172a;
+  font-weight: 700;
+  line-height: 1.25;
 }
 .combobox-arrow {
-  font-size: 0.6rem;
-  color: #94a3b8;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 999px;
+  background: #f1f5f9;
+  font-size: 0.62rem;
+  color: #64748b;
+  flex-shrink: 0;
 }
 .combobox-menu {
   position: absolute;
-  top: calc(100% + 4px);
+  top: calc(100% + 8px);
   left: 0;
-  min-width: 180px;
-  max-height: 280px;
-  overflow: auto;
+  min-width: max(280px, 100%);
+  width: fit-content;
+  max-width: min(560px, calc(100vw - 32px));
+  max-height: 420px;
+  overflow-y: auto;
+  overflow-x: hidden;
   background: #fff;
   border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-  padding: 0.25rem 0;
+  border-radius: 16px;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.16);
+  padding: 0.3rem 0;
   z-index: 100;
   display: flex;
   flex-direction: column;
 }
+.combobox-panel-head {
+  padding: 0.55rem 0.8rem 0.25rem;
+}
+.combobox-panel-title {
+  font-size: 0.86rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+.combobox-panel-subtitle {
+  margin-top: 0.16rem;
+  font-size: 0.72rem;
+  color: #64748b;
+}
+.combobox-search {
+  padding: 0.2rem 0.6rem 0.35rem;
+}
 .combobox-input {
-  margin: 0.25rem 0.5rem 0.35rem;
-  padding: 0.35rem 0.5rem;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.55rem 0.7rem;
   border: 1px solid #e2e8f0;
-  border-radius: 4px;
+  border-radius: 10px;
   font-size: 0.8125rem;
+  background: #f8fafc;
 }
 .combobox-input:focus {
   outline: none;
   border-color: #2563eb;
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
 .filter-input {
   padding: 0.35rem 0.6rem;
@@ -3173,20 +3557,54 @@ onUnmounted(() => {
   max-width: 220px;
 }
 .combobox-item {
-  display: block;
-  width: 100%;
-  padding: 0.4rem 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: calc(100% - 0.7rem);
+  box-sizing: border-box;
+  gap: 0.5rem;
+  padding: 0.52rem 0.8rem;
   border: none;
   background: none;
   font-size: 0.8125rem;
   text-align: left;
   cursor: pointer;
   color: #334155;
+  border-radius: 10px;
+  margin: 0 0.35rem;
 }
 .combobox-item-with-action {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+.combobox-item-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.combobox-item-title {
+  white-space: nowrap;
+}
+.combobox-item-subtitle {
+  margin-top: 0.1rem;
+  font-size: 0.71rem;
+  color: #94a3b8;
+  white-space: nowrap;
+}
+.combobox-item-trailing {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+.combobox-item-check {
+  width: 1rem;
+  text-align: center;
+  color: #2563eb;
+  font-weight: 800;
+  flex-shrink: 0;
 }
 .ns-star {
   font-size: 0.875rem;
@@ -3202,15 +3620,15 @@ onUnmounted(() => {
   background: #f1f5f9;
 }
 .combobox-item:hover {
-  background: #f1f5f9;
+  background: #f8fafc;
 }
 .combobox-item.active {
-  background: rgba(37, 99, 235, 0.1);
-  color: #2563eb;
-  font-weight: 500;
+  background: rgba(37, 99, 235, 0.09);
+  color: #1d4ed8;
+  font-weight: 600;
 }
 .combobox-group-label {
-  padding: 0.35rem 0.75rem 0.2rem;
+  padding: 0.45rem 0.85rem 0.22rem;
   font-size: 0.6875rem;
   font-weight: 600;
   text-transform: uppercase;
@@ -3219,15 +3637,15 @@ onUnmounted(() => {
   border-top: 1px solid #f1f5f9;
 }
 .recent-kind-panel {
-  margin: 0.2rem 0.5rem 0.45rem;
-  padding: 0.35rem 0.45rem 0.45rem;
+  margin: 0.15rem 0.6rem 0.45rem;
+  padding: 0.45rem 0.5rem 0.5rem;
   border: 1px solid #dbeafe;
-  border-radius: 8px;
+  border-radius: 12px;
   background: #f0f7ff;
 }
 .recent-kind-title {
-  margin: 0.1rem 0.1rem 0.3rem;
-  font-size: 0.6875rem;
+  margin: 0.05rem 0.15rem 0.32rem;
+  font-size: 0.71rem;
   font-weight: 600;
   color: #3b82f6;
   letter-spacing: 0.03em;
@@ -3243,7 +3661,7 @@ onUnmounted(() => {
   background: #eff6ff;
   color: #1d4ed8;
   border-radius: 999px;
-  padding: 0.15rem 0.55rem;
+  padding: 0.2rem 0.6rem;
   font-size: 0.75rem;
   line-height: 1.2;
   cursor: pointer;

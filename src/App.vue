@@ -2,10 +2,14 @@
 import { RouterView } from "vue-router";
 import { computed } from "vue";
 import { useSshAuthStore } from "./stores/sshAuth";
+import { useStrongholdAuthStore } from "./stores/strongholdAuth";
 import SshCredentialDialog from "./components/SshCredentialDialog.vue";
+import StrongholdUnlockDialog from "./components/StrongholdUnlockDialog.vue";
 
 const sshAuth = useSshAuthStore();
-const authDialogVisible = computed(() => sshAuth.pending !== null);
+const strongholdAuth = useStrongholdAuthStore();
+const authDialogVisible = computed(() => sshAuth.pending.value !== null);
+const strongholdDialogVisible = computed(() => strongholdAuth.pending.value !== null);
 
 async function onCredentialConfirm(password: string) {
   await sshAuth.confirm(password);
@@ -13,6 +17,14 @@ async function onCredentialConfirm(password: string) {
 
 function onCredentialCancel() {
   sshAuth.cancel();
+}
+
+async function onStrongholdConfirm(password: string) {
+  await strongholdAuth.confirm(password);
+}
+
+function onStrongholdCancel() {
+  strongholdAuth.cancel();
 }
 </script>
 
@@ -28,6 +40,17 @@ function onCredentialCancel() {
     :visible="authDialogVisible"
     @confirm="onCredentialConfirm"
     @cancel="onCredentialCancel"
+  />
+
+  <StrongholdUnlockDialog
+    v-if="strongholdAuth.pending.value"
+    :visible="strongholdDialogVisible"
+    :title="strongholdAuth.pending.value.title"
+    :description="strongholdAuth.pending.value.description"
+    :loading="strongholdAuth.loading.value"
+    :error="strongholdAuth.error.value"
+    @confirm="onStrongholdConfirm"
+    @cancel="onStrongholdCancel"
   />
 </template>
 

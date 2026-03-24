@@ -698,6 +698,7 @@ export function kubePodLogStreamStart(
     tailLines?: number | null;
     sinceSeconds?: number | null;
     timestamps?: boolean;
+    previous?: boolean;
   }
 ): Promise<string> {
   return invoke("kube_pod_log_stream_start", {
@@ -708,6 +709,7 @@ export function kubePodLogStreamStart(
     tailLines: options?.tailLines ?? null,
     sinceSeconds: options?.sinceSeconds ?? null,
     timestamps: options?.timestamps ?? false,
+    previous: options?.previous ?? false,
   });
 }
 
@@ -754,6 +756,7 @@ export function kubePodLogs(
     tailLines?: number | null;
     sinceSeconds?: number | null;
     timestamps?: boolean;
+    previous?: boolean;
   }
 ): Promise<string> {
   return invoke("kube_pod_logs", {
@@ -764,6 +767,7 @@ export function kubePodLogs(
     tailLines: options?.tailLines ?? null,
     sinceSeconds: options?.sinceSeconds ?? null,
     timestamps: options?.timestamps ?? false,
+    previous: options?.previous ?? false,
   });
 }
 

@@ -727,6 +727,41 @@ pub async fn list_services_matching_workload_selector(
     Ok(names)
 }
 
+/// 列出 selector 与 Pod labels 匹配的 Services（Service.spec.selector 是 Pod labels 的子集）。
+/// 用于 Pod 的关联资源，展示当前 Pod 被哪些 Service 选中。
+pub async fn list_services_matching_pod_labels(
+    client: &Client,
+    namespace: &str,
+    pod_labels: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Vec<String>, ResourceError> {
+    if pod_labels.is_empty() {
+        return Ok(Vec::new());
+    }
+    let api: Api<Service> = Api::namespaced(client.clone(), namespace);
+    let list = api.list(&ListParams::default()).await.map_err(ResourceError::Kube)?;
+    let mut names = Vec::new();
+    for svc in list.items {
+        let Some(spec) = svc.spec.as_ref() else { continue };
+        let Some(sel) = spec.selector.as_ref() else { continue };
+        if sel.is_empty() {
+            continue;
+        }
+        let all_match = sel.iter().all(|(k, v)| {
+            pod_labels
+                .get(k)
+                .and_then(|lv| lv.as_str())
+                .map(|lv| lv == v)
+                .unwrap_or(false)
+        });
+        if all_match {
+            if let Some(name) = svc.metadata.name.as_deref() {
+                names.push(name.to_string());
+            }
+        }
+    }
+    Ok(names)
+}
+
 /// 列出指定 namespace 的 StatefulSets。
 pub async fn list_stateful_sets(
     client: &Client,

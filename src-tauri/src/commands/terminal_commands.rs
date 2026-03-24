@@ -1,5 +1,5 @@
 use crate::config::{app_settings_config_path, ssh_config_get_host_config, AppSettingsConfig};
-use crate::credentials::{CredentialKey, CredentialManager};
+use crate::credentials::{AuthMethod, CredentialKey, CredentialManager};
 use crate::env::{EnvService, EnvironmentSource};
 use std::collections::HashMap;
 #[cfg(unix)]
@@ -220,10 +220,10 @@ fn resize_pty(file: &std::fs::File, cols: u16, rows: u16) -> Result<(), String> 
 }
 
 fn build_remote_shell_command(
-    ssh_host: &str,
-    tunnel_id: &str,
+    tunnel: &crate::env::SshTunnel,
     manager: &CredentialManager,
 ) -> Result<(Command, Option<SshAskpassGuard>), String> {
+    let ssh_host = &tunnel.ssh_host;
     let _host_config = ssh_config_get_host_config(ssh_host)
         .ok_or_else(|| format!("~/.ssh/config 中未找到 Host: {}", ssh_host))?;
 
@@ -240,22 +240,32 @@ if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi";
 
     #[cfg(unix)]
     {
-        let settings = load_settings()?;
-        let password = manager
-            .get(&CredentialKey::new(tunnel_id), &settings.security)
-            .map_err(|e| e.to_string())?;
-        if let Some(ref pwd) = password {
-            let askpass = SshAskpassGuard::new(pwd).map_err(|e| format!("创建 SSH_ASKPASS 失败: {}", e))?;
-            let ap = askpass.path_str().to_string();
-            cmd.env("SSH_ASKPASS", ap)
-                .env("SSH_ASKPASS_REQUIRE", "force")
-                .env("DISPLAY", ":0");
-            cmd.args(["-tt", ssh_host, remote_cmd]);
-            return Ok((cmd, Some(askpass)));
+        if tunnel.has_saved_credential {
+            let settings = load_settings()?;
+            let password = manager
+                .get(&CredentialKey::new(&tunnel.id), &settings.security)
+                .map_err(|e| e.to_string())?;
+            if let Some(ref pwd) = password {
+                let askpass = SshAskpassGuard::new(pwd)
+                    .map_err(|e| format!("创建 SSH_ASKPASS 失败: {}", e))?;
+                let ap = askpass.path_str().to_string();
+                cmd.env("SSH_ASKPASS", ap)
+                    .env("SSH_ASKPASS_REQUIRE", "force")
+                    .env("DISPLAY", ":0");
+                cmd.args(["-tt", ssh_host, remote_cmd]);
+                return Ok((cmd, Some(askpass)));
+            }
         }
     }
 
-    cmd.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-tt", ssh_host, remote_cmd]);
+    match tunnel.auth_method {
+        AuthMethod::Password | AuthMethod::KeyboardInteractive => {
+            cmd.args(["-o", "ConnectTimeout=10", "-tt", ssh_host, remote_cmd]);
+        }
+        AuthMethod::Auto | AuthMethod::PublicKey => {
+            cmd.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-tt", ssh_host, remote_cmd]);
+        }
+    }
     Ok((cmd, None))
 }
 
@@ -530,7 +540,7 @@ pub async fn host_shell_start(
             let tunnel = EnvService::get_ssh_tunnel(&tunnel_id)
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| format!("未找到隧道配置: {}", tunnel_id))?;
-            let (cmd, askpass_guard) = build_remote_shell_command(&tunnel.ssh_host, &tunnel.id, &manager)?;
+            let (cmd, askpass_guard) = build_remote_shell_command(&tunnel, &manager)?;
             tokio::spawn(async move {
                 run_host_shell_process(app_handle, stream_id_clone, cmd, askpass_guard, store_clone).await;
             });

@@ -10,6 +10,7 @@ import {
 } from "../api/kube";
 import { logGetDisplaySettings, type LogDisplayOrder } from "../api/log";
 import { useLogStore } from "../stores/log";
+import { useStrongholdAuthStore } from "../stores/strongholdAuth";
 
 const props = withDefaults(
   defineProps<{
@@ -56,6 +57,7 @@ const error = ref<string | null>(null);
 const tailLines = ref<number>(100);
 const sinceSeconds = ref<number | null>(null);
 const timestamps = ref(false);
+const previousLogs = ref(false);
 const follow = ref(true);
 const streamId = ref<string | null>(null);
 const searchQuery = ref("");
@@ -64,6 +66,7 @@ const currentMatchIndex = ref(0);
 const logContentRef = ref<HTMLElement | null>(null);
 const displayOrder = ref<LogDisplayOrder>("asc");
 const { logRefreshTrigger } = useLogStore();
+const strongholdAuth = useStrongholdAuthStore();
 type LogQuickFilter = "error" | "warn" | "info" | "debug";
 const selectedLevels = ref<Set<LogQuickFilter>>(new Set());
 const onlyMatches = ref(false);
@@ -212,6 +215,13 @@ function scrollToMatch(lineIndex: number) {
   lineEl?.scrollIntoView({ block: "center", behavior: "smooth" });
 }
 
+async function handleStrongholdLocked(message: string, onConfirmed: () => void): Promise<boolean> {
+  return strongholdAuth.checkAndHandle(message, onConfirmed, {
+    title: "解锁日志凭证",
+    description: "当前日志操作需要访问已保存凭证，请先输入 Stronghold 主密码解锁。",
+  });
+}
+
 async function loadContainers() {
   if (!props.envId || !props.namespace || !props.podName) return;
   containersLoading.value = true;
@@ -256,9 +266,15 @@ async function loadLogs() {
       tailLines: tailLines.value,
       sinceSeconds: sinceSeconds.value ?? undefined,
       timestamps: timestamps.value,
+      previous: previousLogs.value,
     });
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
+    const msg = e instanceof Error ? e.message : String(e);
+    const isStrongholdRequired = await handleStrongholdLocked(msg, () => {
+      void loadLogs();
+    });
+    if (isStrongholdRequired) return;
+    error.value = msg;
   } finally {
     loading.value = false;
   }
@@ -280,11 +296,18 @@ async function startFollow() {
         tailLines: tailLines.value,
         sinceSeconds: sinceSeconds.value ?? undefined,
         timestamps: timestamps.value,
+        previous: previousLogs.value,
       }
     );
     streamId.value = id;
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
+    const msg = e instanceof Error ? e.message : String(e);
+    const isStrongholdRequired = await handleStrongholdLocked(msg, () => {
+      void startFollow();
+    });
+    if (!isStrongholdRequired) {
+      error.value = msg;
+    }
     follow.value = false;
   } finally {
     loading.value = false;
@@ -327,7 +350,7 @@ watch(
   }
 );
 
-watch([tailLines, sinceSeconds, timestamps], () => {
+watch([tailLines, sinceSeconds, timestamps, previousLogs], () => {
   if (props.envId && props.namespace && props.podName && effectiveContainer.value && !follow.value)
     loadLogs();
 });
@@ -504,6 +527,10 @@ setupStreamListeners();
       <label class="checkbox-label">
         <input v-model="timestamps" type="checkbox" :disabled="follow" />
         <span>时间戳</span>
+      </label>
+      <label class="checkbox-label">
+        <input v-model="previousLogs" type="checkbox" />
+        <span>重启前日志</span>
       </label>
       <label class="checkbox-label follow-toggle">
         <input v-model="follow" type="checkbox" :disabled="!effectiveContainer || loading" />

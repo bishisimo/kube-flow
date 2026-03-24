@@ -56,6 +56,7 @@ pub async fn get_pod_logs(
     tail_lines: Option<i64>,
     since_seconds: Option<i64>,
     timestamps: bool,
+    previous: bool,
 ) -> Result<String, String> {
     let api: Api<Pod> = Api::namespaced(client.clone(), namespace);
     let lp = LogParams {
@@ -63,6 +64,7 @@ pub async fn get_pod_logs(
         tail_lines,
         since_seconds,
         timestamps,
+        previous,
         follow: false,
         ..Default::default()
     };
@@ -116,6 +118,7 @@ pub async fn run_pod_log_stream(
     tail_lines: Option<i64>,
     since_seconds: Option<i64>,
     timestamps: bool,
+    previous: bool,
 ) {
     let api: Api<Pod> = Api::namespaced(client, &namespace);
     let lp = LogParams {
@@ -123,6 +126,7 @@ pub async fn run_pod_log_stream(
         tail_lines,
         since_seconds,
         timestamps,
+        previous,
         follow: true,
         ..Default::default()
     };

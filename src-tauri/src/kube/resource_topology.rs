@@ -3,11 +3,13 @@
 use crate::kube::related_targets::{selector_to_string, simple_map_to_selector};
 use crate::kube::resource_get::get_resource_value;
 use crate::kube::resources::{
-    list_daemon_sets, list_deployments, list_pods, list_pods_using_pvc,
-    list_services_matching_workload_selector, list_stateful_sets, ResourceError,
+    list_daemon_sets, list_deployments, list_persistent_volume_claims, list_pods,
+    list_pods_using_pvc, list_services_matching_workload_selector, list_stateful_sets,
+    ResourceError,
 };
 use kube::Client;
 use serde::Serialize;
+use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TopologyItem {
@@ -121,6 +123,84 @@ fn refs_from_workload_spec(spec: &serde_json::Value) -> Vec<(String, String, &'s
     refs
 }
 
+fn refs_from_pod_spec(spec: &serde_json::Value) -> Vec<(String, String, &'static str)> {
+    let mut refs = Vec::new();
+    let pod_spec = match spec.as_object() {
+        Some(obj) => obj,
+        None => return refs,
+    };
+
+    if let Some(vols) = pod_spec.get("volumes").and_then(|v| v.as_array()) {
+        for v in vols {
+            let obj = match v.as_object() {
+                Some(o) => o,
+                None => continue,
+            };
+            if let Some(cm) = obj.get("configMap").and_then(|x| x.get("name")).and_then(|x| x.as_str()) {
+                if !cm.is_empty() {
+                    refs.push(("ConfigMap".to_string(), cm.to_string(), "volumes"));
+                }
+            }
+            if let Some(sec) = obj.get("secret").and_then(|x| x.get("secretName")).and_then(|x| x.as_str()) {
+                if !sec.is_empty() {
+                    refs.push(("Secret".to_string(), sec.to_string(), "volumes"));
+                }
+            }
+            if let Some(pvc) = obj.get("persistentVolumeClaim").and_then(|x| x.get("claimName")).and_then(|x| x.as_str()) {
+                if !pvc.is_empty() {
+                    refs.push(("PersistentVolumeClaim".to_string(), pvc.to_string(), "volumes"));
+                }
+            }
+        }
+    }
+    refs
+}
+
+fn statefulset_volume_claim_template_names(obj: &serde_json::Value) -> Vec<String> {
+    let templates = obj
+        .get("spec")
+        .and_then(|v| v.get("volumeClaimTemplates"))
+        .and_then(|v| v.as_array());
+    let Some(templates) = templates else { return Vec::new() };
+
+    let mut names = BTreeSet::new();
+    for template in templates {
+        if let Some(name) = template
+            .get("metadata")
+            .and_then(|v| v.get("name"))
+            .and_then(|v| v.as_str())
+        {
+            if !name.is_empty() {
+                names.insert(name.to_string());
+            }
+        }
+    }
+    names.into_iter().collect()
+}
+
+async fn statefulset_generated_pvc_names(
+    client: &Client,
+    namespace: &str,
+    statefulset_name: &str,
+    template_names: &[String],
+) -> Result<Vec<String>, ResourceError> {
+    if template_names.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let pvcs = list_persistent_volume_claims(client, Some(namespace), None).await?;
+    let mut names = BTreeSet::new();
+    for pvc in pvcs {
+        if template_names
+            .iter()
+            .any(|template| pvc.name.starts_with(&format!("{template}-{statefulset_name}-")))
+        {
+            names.insert(pvc.name);
+        }
+    }
+    Ok(names.into_iter().collect())
+}
+
 /// 若 workload 引用指定 ConfigMap/Secret，返回关系类型（volumes/envFrom）
 fn workload_ref_relation_type(workload: &serde_json::Value, kind: &str, name: &str) -> Option<&'static str> {
     let spec = workload.get("spec")?;
@@ -168,6 +248,27 @@ pub async fn get_resource_topology(
                         is_concrete: true,
                         relation_type: Some(rt.to_string()),
                     });
+                }
+            }
+            if kind == "StatefulSet" {
+                let ns_ref = ns.as_deref().unwrap_or("default");
+                let template_names = statefulset_volume_claim_template_names(&obj);
+                if let Ok(pvc_names) =
+                    statefulset_generated_pvc_names(client, ns_ref, name, &template_names).await
+                {
+                    for pvc_name in pvc_names {
+                        upstream.push(TopologyItem {
+                            kind: "PersistentVolumeClaim".to_string(),
+                            name: pvc_name.clone(),
+                            namespace: ns.clone(),
+                            target_kind: "persistentvolumeclaims".to_string(),
+                            label: pvc_name.clone(),
+                            label_selector: None,
+                            resource_name: Some(pvc_name),
+                            is_concrete: true,
+                            relation_type: Some("volumeClaimTemplates".to_string()),
+                        });
+                    }
                 }
             }
             if let Some(spec) = obj.get("spec").and_then(|v| v.as_object()) {
@@ -312,6 +413,21 @@ pub async fn get_resource_topology(
             }
         }
         "Pod" => {
+            if let Some(spec) = obj.get("spec") {
+                for (ref_kind, ref_name, rt) in refs_from_pod_spec(spec) {
+                    upstream.push(TopologyItem {
+                        kind: ref_kind.clone(),
+                        name: ref_name.clone(),
+                        namespace: ns.clone(),
+                        target_kind: kind_to_target_id(&ref_kind).to_string(),
+                        label: ref_name.clone(),
+                        label_selector: None,
+                        resource_name: Some(ref_name),
+                        is_concrete: true,
+                        relation_type: Some(rt.to_string()),
+                    });
+                }
+            }
             if let Some(owners) = obj.get("metadata").and_then(|m| m.get("ownerReferences")).and_then(|v| v.as_array()) {
                 for o in owners {
                     let o_kind = o.get("kind").and_then(|v| v.as_str()).unwrap_or("");
@@ -512,6 +628,28 @@ pub async fn get_resource_topology(
                             is_concrete: true,
                             relation_type: Some(rt.to_string()),
                         });
+                    }
+                    if let Ok(pvc_names) = statefulset_generated_pvc_names(
+                        client,
+                        &s.namespace,
+                        &s.name,
+                        &statefulset_volume_claim_template_names(&vo),
+                    )
+                    .await
+                    {
+                        if pvc_names.iter().any(|pvc_name| pvc_name == name) {
+                            upstream.push(TopologyItem {
+                                kind: "StatefulSet".to_string(),
+                                name: s.name.clone(),
+                                namespace: Some(s.namespace.clone()),
+                                target_kind: "statefulsets".to_string(),
+                                label: s.name.clone(),
+                                label_selector: None,
+                                resource_name: Some(s.name.clone()),
+                                is_concrete: true,
+                                relation_type: Some("volumeClaimTemplates".to_string()),
+                            });
+                        }
                     }
                 }
             }

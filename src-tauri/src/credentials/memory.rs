@@ -25,4 +25,8 @@ impl MemoryCache {
     pub fn remove(&self, key: &CredentialKey) {
         self.store.lock().unwrap().remove(key);
     }
+
+    pub fn clear(&self) {
+        self.store.lock().unwrap().clear();
+    }
 }

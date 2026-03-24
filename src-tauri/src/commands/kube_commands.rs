@@ -673,6 +673,7 @@ pub async fn kube_pod_log_stream_start(
     tail_lines: Option<i64>,
     since_seconds: Option<i64>,
     timestamps: Option<bool>,
+    previous: Option<bool>,
 ) -> Result<String, String> {
     let env = EnvService::list()
         .map_err(|e| e.to_string())?
@@ -694,6 +695,7 @@ pub async fn kube_pod_log_stream_start(
             tail_lines,
             since_seconds,
             timestamps.unwrap_or(false),
+            previous.unwrap_or(false),
         )
         .await
     });
@@ -784,6 +786,7 @@ pub async fn kube_pod_logs(
     tail_lines: Option<i64>,
     since_seconds: Option<i64>,
     timestamps: Option<bool>,
+    previous: Option<bool>,
 ) -> Result<String, String> {
     let env = EnvService::list()
         .map_err(|e| e.to_string())?
@@ -799,6 +802,7 @@ pub async fn kube_pod_logs(
         tail_lines,
         since_seconds,
         timestamps.unwrap_or(false),
+        previous.unwrap_or(false),
     )
     .await
 }

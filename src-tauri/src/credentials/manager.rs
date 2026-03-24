@@ -110,11 +110,13 @@ impl CredentialManager {
 
     pub fn stronghold_lock(&self) {
         self.stronghold.lock().unwrap().lock();
+        self.memory.clear();
     }
 
     /// 更新 Stronghold 快照路径（设置变更时调用）；旧凭证不迁移。
     pub fn stronghold_reset_path(&self, new_path: PathBuf) {
         *self.stronghold.lock().unwrap() = StrongholdBackend::new(new_path);
+        self.memory.clear();
     }
 
     // ──────────────────────────────────────────

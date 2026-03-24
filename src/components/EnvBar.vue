@@ -5,10 +5,12 @@ import { useConnectionStore } from "../stores/connection";
 import { kubeGetTunnelLocalPort } from "../api/kube";
 import { envListSshTunnels } from "../api/env";
 import type { SshTunnel } from "../api/env";
+import { effectiveContext } from "../api/env";
 
 const props = defineProps<{
   collapsed: boolean;
   onReconnect?: (envId: string) => void;
+  onOpenTerminal?: (envId: string) => void;
 }>();
 const emit = defineEmits<{ (e: "toggle"): void }>();
 
@@ -83,10 +85,24 @@ function statusLabel(envId: string): string {
   return "就绪";
 }
 
+function sourceLabel(source: string): string {
+  return source === "ssh_tunnel" ? "SSH" : "本地";
+}
+
+function contextLabel(env: { current_context?: string | null; contexts: Array<{ context_name: string }> }): string {
+  return effectiveContext(env as never) ?? "未设置 Context";
+}
+
+function remoteKubeconfigLabel(env: { ssh_tunnel_id?: string | null }): string {
+  if (!env.ssh_tunnel_id) return "未设置远程 kubeconfig";
+  return tunnelsById.value[env.ssh_tunnel_id]?.remote_kubeconfig_path ?? "未设置远程 kubeconfig";
+}
+
 /** 某环境 hover 详情：状态、SSH 的 localPort/remoteHost、断开时的错误信息 */
 function hoverLines(e: { id: string; source: string; ssh_tunnel_id?: string | null }): string[] {
   const lines: string[] = [];
   lines.push(`状态: ${statusLabel(e.id)}`);
+  lines.push(`来源: ${sourceLabel(e.source)}`);
   if (e.source === "ssh_tunnel") {
     const port = tunnelPorts.value[e.id];
     const tunnel = e.ssh_tunnel_id ? tunnelsById.value[e.ssh_tunnel_id] : null;
@@ -144,39 +160,65 @@ function toggle() {
         :class="{ active: currentId === e.id }"
         @click="setCurrent(e.id)"
       >
-        <span class="name">{{ e.display_name }}</span>
-        <span
-          class="env-item-status-wrap"
-          @mouseenter="onStatusEnter($event, e.id)"
-          @mouseleave="onStatusLeave"
-        >
+        <div class="item-main">
+          <div class="item-topline">
+            <span class="name" :title="e.display_name">{{ e.display_name }}</span>
+            <span v-if="currentId === e.id" class="item-current-badge">当前</span>
+          </div>
+          <div class="item-meta-row">
+            <span class="meta-chip soft">{{ sourceLabel(e.source) }}</span>
+            <span class="meta-chip" :class="`meta-chip-${getState(e.id)}`">{{ statusLabel(e.id) }}</span>
+          </div>
+          <div
+            class="item-context"
+            :title="e.source === 'ssh_tunnel' ? remoteKubeconfigLabel(e) : contextLabel(e)"
+          >
+            {{ e.source === "ssh_tunnel" ? remoteKubeconfigLabel(e) : contextLabel(e) }}
+          </div>
+        </div>
+        <div class="item-actions">
           <span
-            class="status-icon"
-            :class="{
-              'status-disconnected': getState(e.id) === 'disconnected',
-              'status-connecting': getState(e.id) === 'connecting',
-              'status-ready': getState(e.id) === 'connected' || getState(e.id) === 'error',
-            }"
-            :aria-label="statusLabel(e.id)"
-          />
-        </span>
-        <button
-          v-if="getState(e.id) === 'disconnected' && props.onReconnect"
-          type="button"
-          class="btn-reconnect-small"
-          title="重连"
-          @click.stop="props.onReconnect(e.id)"
-        >
-          重连
-        </button>
-        <button
-          type="button"
-          class="close"
-          title="关闭"
-          @click.stop="closeEnv(e.id)"
-        >
-          ×
-        </button>
+            class="env-item-status-wrap"
+            @mouseenter="onStatusEnter($event, e.id)"
+            @mouseleave="onStatusLeave"
+          >
+            <span
+              class="status-icon"
+              :class="{
+                'status-disconnected': getState(e.id) === 'disconnected',
+                'status-connecting': getState(e.id) === 'connecting',
+                'status-ready': getState(e.id) === 'connected' || getState(e.id) === 'error',
+              }"
+              :aria-label="statusLabel(e.id)"
+            />
+          </span>
+          <button
+            v-if="getState(e.id) === 'disconnected' && props.onReconnect"
+            type="button"
+            class="btn-reconnect-small"
+            title="重连"
+            @click.stop="props.onReconnect(e.id)"
+          >
+            重连
+          </button>
+          <button
+            v-if="props.onOpenTerminal"
+            type="button"
+            class="item-action-btn"
+            title="打开终端"
+            @click.stop="props.onOpenTerminal(e.id)"
+          >
+            终端
+          </button>
+          <button
+            type="button"
+            class="close"
+            title="关闭"
+            @click.stop="closeEnv(e.id)"
+          >
+            ×
+          </button>
+        </div>
       </li>
     </ul>
     <p v-if="!collapsed && !hasOpened" class="empty">暂无打开的环境</p>
@@ -235,23 +277,44 @@ function toggle() {
 .list {
   list-style: none;
   margin: 0;
-  padding: 0.5rem 0;
+  padding: 0.65rem;
   overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
 }
 .item {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  padding: 0.5rem 0.75rem;
+  padding: 0.7rem 0.75rem;
   cursor: pointer;
-  gap: 0.5rem;
+  gap: 0.65rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
 }
 .item:hover {
-  background: rgba(0, 0, 0, 0.04);
+  border-color: #cbd5e1;
+  background: #f8fafc;
 }
 .item.active {
-  background: rgba(57, 108, 216, 0.12);
-  color: #396cd8;
+  border-color: #2563eb;
+  background:
+    linear-gradient(135deg, rgba(37, 99, 235, 0.14), rgba(14, 165, 233, 0.06)),
+    #eff6ff;
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.08);
+}
+.item-main {
+  flex: 1;
+  min-width: 0;
+}
+.item-topline {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
 }
 .item .name {
   flex: 1;
@@ -259,7 +322,67 @@ function toggle() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 0.875rem;
+  font-size: 0.89rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+.item-context {
+  margin-top: 0.34rem;
+  font-size: 0.76rem;
+  color: #64748b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.item-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+.item-meta-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.4rem;
+}
+.item-current-badge {
+  padding: 0.14rem 0.45rem;
+  border-radius: 999px;
+  background: #1d4ed8;
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.meta-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.14rem 0.45rem;
+  font-size: 0.69rem;
+  font-weight: 600;
+  line-height: 1.2;
+  border: 1px solid transparent;
+}
+.meta-chip.primary,
+.meta-chip.soft {
+  background: #eef2ff;
+  color: #4338ca;
+}
+.meta-chip-connected,
+.meta-chip-error {
+  background: #ecfdf5;
+  color: #15803d;
+}
+.meta-chip-connecting {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+.meta-chip-disconnected {
+  background: #fef2f2;
+  color: #dc2626;
 }
 .env-item-status-wrap {
   position: relative;
@@ -299,6 +422,21 @@ function toggle() {
 }
 .btn-reconnect-small:hover {
   background: #92400e;
+}
+.item-action-btn {
+  flex-shrink: 0;
+  padding: 0.18rem 0.45rem;
+  font-size: 0.7rem;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #475569;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.item-action-btn:hover {
+  border-color: #94a3b8;
+  color: #0f172a;
+  background: #f8fafc;
 }
 .close {
   flex-shrink: 0;

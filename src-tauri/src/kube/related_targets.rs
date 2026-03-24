@@ -3,11 +3,13 @@
 
 use crate::kube::resource_get::get_resource_value;
 use crate::kube::resources::{
-    list_daemon_sets, list_deployments, list_pods_using_pvc, list_services_matching_workload_selector,
-    list_stateful_sets, ResourceError,
+    list_daemon_sets, list_deployments, list_pods_using_pvc, list_services_matching_pod_labels,
+    list_persistent_volume_claims, list_services_matching_workload_selector, list_stateful_sets,
+    ResourceError,
 };
 use kube::Client;
 use serde::Serialize;
+use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RelatedTarget {
@@ -118,6 +120,97 @@ fn workload_uses_pvc(workload: &serde_json::Value, pvc_name: &str) -> bool {
     })
 }
 
+fn pod_pvc_names(pod: &serde_json::Value) -> Vec<String> {
+    let volumes = pod
+        .get("spec")
+        .and_then(|v| v.get("volumes"))
+        .and_then(|v| v.as_array());
+    let Some(volumes) = volumes else { return Vec::new() };
+
+    let mut names = BTreeSet::new();
+    for volume in volumes {
+        if let Some(name) = volume
+            .get("persistentVolumeClaim")
+            .and_then(|x| x.get("claimName"))
+            .and_then(|x| x.as_str())
+        {
+            if !name.is_empty() {
+                names.insert(name.to_string());
+            }
+        }
+    }
+    names.into_iter().collect()
+}
+
+fn workload_pvc_names(workload: &serde_json::Value) -> Vec<String> {
+    let template = workload
+        .get("spec")
+        .and_then(|v| v.get("template"))
+        .and_then(|v| v.get("spec"))
+        .and_then(|v| v.get("volumes"))
+        .and_then(|v| v.as_array());
+    let Some(template) = template else { return Vec::new() };
+
+    let mut names = BTreeSet::new();
+    for volume in template {
+        if let Some(name) = volume
+            .get("persistentVolumeClaim")
+            .and_then(|x| x.get("claimName"))
+            .and_then(|x| x.as_str())
+        {
+            if !name.is_empty() {
+                names.insert(name.to_string());
+            }
+        }
+    }
+    names.into_iter().collect()
+}
+
+fn statefulset_volume_claim_template_names(workload: &serde_json::Value) -> Vec<String> {
+    let templates = workload
+        .get("spec")
+        .and_then(|v| v.get("volumeClaimTemplates"))
+        .and_then(|v| v.as_array());
+    let Some(templates) = templates else { return Vec::new() };
+
+    let mut names = BTreeSet::new();
+    for template in templates {
+        if let Some(name) = template
+            .get("metadata")
+            .and_then(|v| v.get("name"))
+            .and_then(|v| v.as_str())
+        {
+            if !name.is_empty() {
+                names.insert(name.to_string());
+            }
+        }
+    }
+    names.into_iter().collect()
+}
+
+async fn statefulset_generated_pvc_names(
+    client: &Client,
+    namespace: &str,
+    statefulset_name: &str,
+    template_names: &[String],
+) -> Result<Vec<String>, ResourceError> {
+    if template_names.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let pvcs = list_persistent_volume_claims(client, Some(namespace), None).await?;
+    let mut names = BTreeSet::new();
+    for pvc in pvcs {
+        if template_names
+            .iter()
+            .any(|template| pvc.name.starts_with(&format!("{template}-{statefulset_name}-")))
+        {
+            names.insert(pvc.name);
+        }
+    }
+    Ok(names.into_iter().collect())
+}
+
 /// 获取指定资源的可跳转关联目标列表。
 pub async fn get_related_targets(
     client: &Client,
@@ -149,6 +242,34 @@ pub async fn get_related_targets(
                 }
             }
         }
+        "Pod" => {
+            let labels = obj
+                .get("metadata")
+                .and_then(|m| m.get("labels"))
+                .and_then(|v| v.as_object());
+            if let (Some(labels), Some(ns_ref)) = (labels, ns.as_deref()) {
+                if let Ok(svc_names) = list_services_matching_pod_labels(client, ns_ref, labels).await {
+                    for svc_name in svc_names {
+                        targets.push(RelatedTarget {
+                            target_kind: "services".to_string(),
+                            label: format!("查看 Service {}", svc_name),
+                            namespace: ns.clone(),
+                            label_selector: None,
+                            resource_name: Some(svc_name),
+                        });
+                    }
+                }
+            }
+            for pvc_name in pod_pvc_names(&obj) {
+                targets.push(RelatedTarget {
+                    target_kind: "persistentvolumeclaims".to_string(),
+                    label: format!("查看 PVC {}", pvc_name),
+                    namespace: ns.clone(),
+                    label_selector: None,
+                    resource_name: Some(pvc_name),
+                });
+            }
+        }
         "Deployment" | "StatefulSet" | "DaemonSet" => {
             let spec = obj.get("spec").and_then(|v| v.as_object());
             if let Some(spec) = spec {
@@ -175,6 +296,32 @@ pub async fn get_related_targets(
                                 resource_name: Some(svc_name),
                             });
                         }
+                    }
+                }
+            }
+            for pvc_name in workload_pvc_names(&obj) {
+                targets.push(RelatedTarget {
+                    target_kind: "persistentvolumeclaims".to_string(),
+                    label: format!("查看 PVC {}", pvc_name),
+                    namespace: ns.clone(),
+                    label_selector: None,
+                    resource_name: Some(pvc_name),
+                });
+            }
+            if kind == "StatefulSet" {
+                let ns_ref = ns.as_deref().unwrap_or("default");
+                let template_names = statefulset_volume_claim_template_names(&obj);
+                if let Ok(pvc_names) =
+                    statefulset_generated_pvc_names(client, ns_ref, name, &template_names).await
+                {
+                    for pvc_name in pvc_names {
+                        targets.push(RelatedTarget {
+                            target_kind: "persistentvolumeclaims".to_string(),
+                            label: format!("查看 PVC {}", pvc_name),
+                            namespace: ns.clone(),
+                            label_selector: None,
+                            resource_name: Some(pvc_name),
+                        });
                     }
                 }
             }
@@ -329,8 +476,26 @@ pub async fn get_related_targets(
                             label: format!("查看 StatefulSet {}", s.name),
                             namespace: ns.clone(),
                             label_selector: None,
-                            resource_name: Some(s.name),
+                            resource_name: Some(s.name.clone()),
                         });
+                    }
+                    if let Ok(pvc_names) = statefulset_generated_pvc_names(
+                        client,
+                        &s.namespace,
+                        &s.name,
+                        &statefulset_volume_claim_template_names(&vo),
+                    )
+                    .await
+                    {
+                        if pvc_names.iter().any(|pvc_name| pvc_name == name) {
+                            targets.push(RelatedTarget {
+                                target_kind: "statefulsets".to_string(),
+                                label: format!("查看 StatefulSet {}", s.name),
+                                namespace: ns.clone(),
+                                label_selector: None,
+                                resource_name: Some(s.name.clone()),
+                            });
+                        }
                     }
                 }
             }

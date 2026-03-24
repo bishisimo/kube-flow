@@ -28,6 +28,7 @@ import { ensureAutoSnapshotSettingLoaded } from "../stores/appSettings";
 import { useEnvStore } from "../stores/env";
 import { useShellStore } from "../stores/shell";
 import { buildNodeTerminalCommand, getNodeTerminalStrategy } from "../stores/nodeTerminalStrategy";
+import { useStrongholdAuthStore } from "../stores/strongholdAuth";
 
 const DRAWER_WIDTH_KEY = "kube-flow:drawer-width";
 const DRAWER_MIN = 360;
@@ -77,6 +78,7 @@ const showManagedFields = ref(false);
 const { monacoTheme } = useYamlMonacoTheme();
 const { environments } = useEnvStore();
 const { pendingOpen, requestSwitchToShell } = useShellStore();
+const strongholdAuth = useStrongholdAuthStore();
 
 
 const monacoOptions = {
@@ -150,6 +152,13 @@ function openNodeTerminal() {
   };
   requestSwitchToShell();
   emit("close");
+}
+
+async function handleStrongholdLocked(message: string, onConfirmed: () => void): Promise<boolean> {
+  return strongholdAuth.checkAndHandle(message, onConfirmed, {
+    title: "解锁资源凭证",
+    description: "当前资源操作需要访问已保存凭证，请先输入 Stronghold 主密码解锁。",
+  });
 }
 const drawerWidth = ref(getInitialDrawerWidth());
 
@@ -244,7 +253,12 @@ async function fetchYaml() {
       props.resource.namespace
     );
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
+    const msg = e instanceof Error ? e.message : String(e);
+    const isStrongholdRequired = await handleStrongholdLocked(msg, () => {
+      void fetchYaml();
+    });
+    if (isStrongholdRequired) return;
+    error.value = msg;
   } finally {
     loading.value = false;
   }
@@ -264,7 +278,12 @@ async function fetchDescribe() {
     );
     describeMarkdown.value = res.markdown;
   } catch (e) {
-    describeError.value = e instanceof Error ? e.message : String(e);
+    const msg = e instanceof Error ? e.message : String(e);
+    const isStrongholdRequired = await handleStrongholdLocked(msg, () => {
+      void fetchDescribe();
+    });
+    if (isStrongholdRequired) return;
+    describeError.value = msg;
   } finally {
     describeLoading.value = false;
   }
@@ -295,7 +314,12 @@ async function applyEdit(yamlOverride?: string) {
     editInfo.value = "已自动保存当前编辑草稿快照，可在“快照”栏目统一查看。";
     activeTab.value = "yaml";
   } catch (e) {
-    editError.value = e instanceof Error ? e.message : String(e);
+    const msg = e instanceof Error ? e.message : String(e);
+    const isStrongholdRequired = await handleStrongholdLocked(msg, () => {
+      void applyEdit(yaml);
+    });
+    if (isStrongholdRequired) return;
+    editError.value = msg;
   } finally {
     editSaving.value = false;
   }

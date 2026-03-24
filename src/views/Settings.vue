@@ -26,6 +26,7 @@ import {
 } from "../api/config";
 import { useAppSettingsStore } from "../stores/appSettings";
 import { useEnvStore } from "../stores/env";
+import { useStrongholdStatusStore } from "../stores/strongholdStatus";
 import {
   buildNodeTerminalCommand,
   getNodeTerminalStrategy,
@@ -44,7 +45,6 @@ import {
   credentialList,
   credentialDelete,
   type SecurityConfig,
-  type StrongholdStatus,
   type CredentialInfo,
   type CredentialStoreKind,
 } from "../api/credential";
@@ -115,7 +115,7 @@ const securityCfg = ref<SecurityConfig>({
   stronghold_snapshot_path: "",
   auto_lock_minutes: 30,
 });
-const strongholdStatus = ref<StrongholdStatus>("uninitialized");
+const { strongholdStatus, refreshStrongholdStatus, setStrongholdStatus } = useStrongholdStatusStore();
 const savedCredentials = ref<CredentialInfo[]>([]);
 const masterPasswordInput = ref("");
 const masterPasswordConfirm = ref("");
@@ -170,7 +170,7 @@ async function loadSecurity() {
       credentialList(),
     ]);
     securityCfg.value = cfg;
-    strongholdStatus.value = status;
+    setStrongholdStatus(status);
     savedCredentials.value = credentials;
   } catch {
     // 静默处理
@@ -188,7 +188,7 @@ async function handleSetCredentialStore(store: CredentialStoreKind) {
   try {
     await securitySetCredentialStore(store);
     securityCfg.value.credential_store = store;
-    strongholdStatus.value = await strongholdGetStatus();
+    await refreshStrongholdStatus();
     showSecurityMsg("已保存");
   } catch (e) {
     showSecurityMsg(e instanceof Error ? e.message : String(e), true);
@@ -213,7 +213,7 @@ async function handleSaveStrongholdPath() {
   try {
     await securitySetStrongholdPath(tempStrongholdPath.value.trim());
     securityCfg.value.stronghold_snapshot_path = tempStrongholdPath.value.trim();
-    strongholdStatus.value = await strongholdGetStatus();
+    await refreshStrongholdStatus();
     editingStrongholdPath.value = false;
     showSecurityMsg("路径已更新");
   } catch (e) {
@@ -231,7 +231,7 @@ async function handleStrongholdInit() {
   securityLoading.value = true;
   try {
     await strongholdInitialize(masterPasswordInput.value);
-    strongholdStatus.value = "unlocked";
+    setStrongholdStatus("unlocked");
     masterPasswordInput.value = "";
     masterPasswordConfirm.value = "";
     showSecurityMsg("Stronghold 已初始化并解锁");
@@ -250,7 +250,7 @@ async function handleStrongholdUnlock() {
   securityLoading.value = true;
   try {
     await strongholdUnlock(masterPasswordInput.value);
-    strongholdStatus.value = "unlocked";
+    setStrongholdStatus("unlocked");
     masterPasswordInput.value = "";
     savedCredentials.value = await credentialList();
     showSecurityMsg("已解锁");
@@ -263,7 +263,7 @@ async function handleStrongholdUnlock() {
 
 async function handleStrongholdLock() {
   await strongholdLock();
-  strongholdStatus.value = "locked";
+  setStrongholdStatus("locked");
   savedCredentials.value = [];
   showSecurityMsg("已锁定");
 }
