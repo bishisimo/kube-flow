@@ -1,10 +1,19 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export type NodeTerminalStepType = "ssh" | "switch_user";
+export type PodDebugNamespace = "net" | "pid" | "mnt" | "uts" | "ipc";
 
 export interface NodeTerminalStep {
   type: NodeTerminalStepType;
   user: string;
+}
+
+export interface PodDebugTarget {
+  namespace: string;
+  podName: string;
+  container: string;
+  namespaces: PodDebugNamespace[];
+  pid?: number | null;
 }
 
 export interface HostShellBootstrap {
@@ -12,6 +21,7 @@ export interface HostShellBootstrap {
   host: string;
   steps: NodeTerminalStep[];
   credentialId?: string | null;
+  podDebug?: PodDebugTarget | null;
 }
 
 export function hostShellStart(envId: string, bootstrap?: HostShellBootstrap | null): Promise<string> {

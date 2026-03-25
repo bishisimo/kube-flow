@@ -24,6 +24,7 @@ import {
 import { effectiveContext } from "../api/env";
 import {
   kubeGetResource,
+  kubeGetPodContainers,
   kubeListNamespaces,
   kubeStartWatch,
   kubeStopWatch,
@@ -87,6 +88,7 @@ import {
   type ClusterRoleItem,
   type ClusterRoleBindingItem,
 } from "../api/kube";
+import type { PodDebugNamespace } from "../api/terminal";
 import { defaultNamespace } from "../api/env";
 
 const { openedEnvs, currentEnv, currentId, touchEnv, loadEnvironments, getEnvViewState, setEnvViewState } = useEnvStore();
@@ -598,6 +600,14 @@ const detailDrawerVisible = ref(false);
 const detailDrawerInitialTab = ref<string | null>(null);
 const changeImageModalVisible = ref(false);
 const deleteConfirmVisible = ref(false);
+const podDebugModalVisible = ref(false);
+const podDebugLoading = ref(false);
+const podDebugError = ref("");
+const podDebugContainerOptions = ref<string[]>([]);
+const podDebugSelectedContainer = ref("");
+const podDebugNamespaces = ref<PodDebugNamespace[]>(["net"]);
+const podDebugProcessMode = ref<"main" | "pid">("main");
+const podDebugPidInput = ref("");
 const syncOrchestratorDialogVisible = ref(false);
 const syncOrchestratorMode = ref<"existing" | "new">("existing");
 const syncOrchestratorExistingComponent = ref("");
@@ -608,6 +618,19 @@ const syncOrchestratorRelatedRefs = ref<SyncRelatedRef[]>([]);
 const syncOrchestratorSelectedRefKeys = ref<string[]>([]);
 const syncOrchestratorLoadingRelated = ref(false);
 const syncOrchestratorRelatedError = ref<string | null>(null);
+
+const POD_DEBUG_NAMESPACE_OPTIONS: Array<{
+  value: PodDebugNamespace;
+  label: string;
+  description: string;
+  recommended?: boolean;
+}> = [
+  { value: "net", label: "网络", description: "保留主机工具，排查连接、路由、DNS、端口与抓包。", recommended: true },
+  { value: "pid", label: "进程", description: "观察容器进程视图，配合 ps、lsof、ss 做进程级排障。" },
+  { value: "mnt", label: "挂载", description: "查看容器文件系统与挂载点，适合卷与配置文件排查。" },
+  { value: "uts", label: "主机名", description: "进入容器 UTS 环境，确认 hostname 与域名行为。" },
+  { value: "ipc", label: "IPC", description: "排查共享内存、信号量等 IPC 相关问题。" },
+];
 
 const orchestratorComponentsForCurrentEnv = computed(() => {
   const envId = currentId.value;
@@ -779,6 +802,16 @@ const nodeTerminalDisabledReason = computed(() => {
   return "";
 });
 
+const podDebugDisabledReason = computed(() => {
+  const resource = selectedResource.value;
+  if (!resource || resource.kind !== "Pod") return "";
+  return nodeTerminalDisabledReason.value;
+});
+
+const canOpenPodDebug = computed(
+  () => Boolean(selectedResource.value?.kind === "Pod" && !podDebugDisabledReason.value)
+);
+
 const canOpenNodeTerminal = computed(
   () =>
     Boolean(
@@ -832,6 +865,101 @@ async function openNodeTerminalFromMenu() {
   };
   requestSwitchToShell();
   closeActionMenu();
+}
+
+async function openPodDebugModal() {
+  const resource = selectedResource.value;
+  const envId = currentId.value;
+  if (!resource || resource.kind !== "Pod" || !envId || podDebugDisabledReason.value) return;
+  podDebugLoading.value = true;
+  podDebugError.value = "";
+  podDebugContainerOptions.value = [];
+  podDebugSelectedContainer.value = "";
+  podDebugNamespaces.value = ["net"];
+  podDebugProcessMode.value = "main";
+  podDebugPidInput.value = "";
+  try {
+    const containers = await kubeGetPodContainers(envId, resource.namespace ?? "default", resource.name);
+    podDebugContainerOptions.value = containers;
+    podDebugSelectedContainer.value = containers[0] ?? "";
+    if (!containers.length) {
+      podDebugError.value = "当前 Pod 没有可用容器。";
+    }
+    podDebugModalVisible.value = true;
+    closeActionMenu();
+  } catch (e) {
+    podDebugError.value = e instanceof Error ? e.message : String(e);
+    podDebugModalVisible.value = true;
+    closeActionMenu();
+  } finally {
+    podDebugLoading.value = false;
+  }
+}
+
+function closePodDebugModal() {
+  podDebugModalVisible.value = false;
+  podDebugLoading.value = false;
+  podDebugError.value = "";
+  podDebugContainerOptions.value = [];
+  podDebugSelectedContainer.value = "";
+  podDebugNamespaces.value = ["net"];
+  podDebugProcessMode.value = "main";
+  podDebugPidInput.value = "";
+}
+
+function togglePodDebugNamespace(value: PodDebugNamespace) {
+  const next = new Set(podDebugNamespaces.value);
+  if (next.has(value)) {
+    if (next.size === 1) return;
+    next.delete(value);
+  } else {
+    next.add(value);
+  }
+  podDebugNamespaces.value = POD_DEBUG_NAMESPACE_OPTIONS
+    .map((item) => item.value)
+    .filter((item) => next.has(item));
+}
+
+function confirmOpenPodDebug() {
+  const resource = selectedResource.value;
+  const env = currentEnv.value;
+  const envId = currentId.value;
+  if (
+    !resource ||
+    resource.kind !== "Pod" ||
+    !env ||
+    !envId ||
+    !resource.nodeName?.trim() ||
+    !podDebugSelectedContainer.value
+  ) {
+    return;
+  }
+  const pid =
+    podDebugProcessMode.value === "pid"
+      ? Number.parseInt(podDebugPidInput.value.trim(), 10)
+      : null;
+  if (podDebugProcessMode.value === "pid" && (!Number.isInteger(pid) || (pid ?? 0) <= 0)) {
+    podDebugError.value = "请输入有效的 PID。";
+    return;
+  }
+  const strategy = getNodeTerminalStrategy(envId);
+  const target = buildNodeTerminalLaunch(strategy, resource.nodeName.trim(), {
+    namespace: resource.namespace ?? "default",
+    podName: resource.name,
+    container: podDebugSelectedContainer.value,
+    namespaces: podDebugNamespaces.value,
+    pid,
+  });
+  if (!target) return;
+  pendingOpen.value = {
+    kind: "host",
+    envId,
+    envName: env.display_name,
+    hostLabel: `${env.display_name} / ${resource.name} / ${podDebugSelectedContainer.value}`,
+    nodeTerminalLaunch: target,
+  };
+  requestSwitchToShell();
+  closePodDebugModal();
 }
 
 function openEnvironmentTerminal(envId?: string | null) {
@@ -2969,6 +3097,21 @@ onUnmounted(() => {
                 <span class="action-menu-sub">通过环境入口快速切换到目标节点主机</span>
               </span>
             </button>
+            <button
+              v-if="selectedResource?.kind === 'Pod'"
+              type="button"
+              class="action-menu-item"
+              :class="{ 'action-menu-item-disabled': !canOpenPodDebug }"
+              :disabled="!canOpenPodDebug"
+              :title="podDebugDisabledReason || '进入容器调试环境'"
+              @click="openPodDebugModal"
+            >
+              <span class="action-menu-icon" aria-hidden="true">🧪</span>
+              <span class="action-menu-text">
+                <span class="action-menu-main">进入容器调试环境</span>
+                <span class="action-menu-sub">通过 nsenter 进入目标容器的网络或完整隔离空间</span>
+              </span>
+            </button>
           </div>
           <div class="action-menu-section">
             <div class="action-menu-section-title">编辑与变更</div>
@@ -3096,6 +3239,91 @@ onUnmounted(() => {
               @click="syncToOrchestrator"
             >
               确认同步
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <div v-if="podDebugModalVisible" class="error-modal-overlay" @click.self="closePodDebugModal">
+        <div class="pod-debug-modal" role="dialog" aria-label="进入容器调试环境">
+          <h3 class="sync-orchestrator-title">进入容器调试环境</h3>
+          <p class="sync-orchestrator-desc">
+            先通过节点终端策略进入 Pod 所在主机，再按你勾选的 namespace 组合执行 `nsenter`。这样可以保留主机工具，同时进入目标容器的关键隔离空间。
+          </p>
+          <div class="pod-debug-grid">
+            <label class="sync-field">
+              <span>容器</span>
+              <select v-model="podDebugSelectedContainer" class="filter-input pod-debug-input" :disabled="podDebugLoading || !podDebugContainerOptions.length">
+                <option value="" disabled>选择容器</option>
+                <option v-for="name in podDebugContainerOptions" :key="name" :value="name">
+                  {{ name }}
+                </option>
+              </select>
+            </label>
+            <div class="sync-field">
+              <span>进程目标</span>
+              <div class="pod-debug-radio-row">
+                <label class="pod-debug-radio">
+                  <input v-model="podDebugProcessMode" type="radio" value="main" />
+                  <span>容器主进程</span>
+                </label>
+                <label class="pod-debug-radio">
+                  <input v-model="podDebugProcessMode" type="radio" value="pid" />
+                  <span>指定 PID</span>
+                </label>
+              </div>
+            </div>
+            <label v-if="podDebugProcessMode === 'pid'" class="sync-field">
+              <span>PID</span>
+              <input
+                v-model="podDebugPidInput"
+                type="text"
+                class="filter-input pod-debug-input"
+                inputmode="numeric"
+                placeholder="输入目标进程 PID"
+              />
+            </label>
+          </div>
+          <div class="pod-debug-section">
+            <div class="pod-debug-section-title">
+              <span>Namespace 组合</span>
+              <small>至少保留一个，推荐先勾选 `网络`</small>
+            </div>
+            <div class="pod-debug-option-grid">
+              <button
+                v-for="item in POD_DEBUG_NAMESPACE_OPTIONS"
+                :key="item.value"
+                type="button"
+                class="pod-debug-option"
+                :class="{ active: podDebugNamespaces.includes(item.value) }"
+                @click="togglePodDebugNamespace(item.value)"
+              >
+                <div class="pod-debug-option-head">
+                  <span class="pod-debug-option-title">
+                    {{ item.label }}
+                    <span v-if="item.recommended" class="pod-debug-badge">推荐</span>
+                  </span>
+                  <span class="pod-debug-option-check">{{ podDebugNamespaces.includes(item.value) ? "✓" : "" }}</span>
+                </div>
+                <div class="pod-debug-option-desc">{{ item.description }}</div>
+              </button>
+            </div>
+          </div>
+          <p class="pod-debug-summary">
+            当前组合：{{ podDebugNamespaces.join(" + ") }}，{{ podDebugProcessMode === "main" ? "默认进入容器主进程" : `按指定 PID ${podDebugPidInput || "..." } 进入` }}。
+          </p>
+          <p v-if="podDebugError" class="form-error">{{ podDebugError }}</p>
+          <div class="sync-orchestrator-actions">
+            <button type="button" class="btn-secondary-outline" @click="closePodDebugModal">取消</button>
+            <button
+              type="button"
+              class="btn-primary"
+              :disabled="podDebugLoading || !podDebugSelectedContainer || !!podDebugError || (podDebugProcessMode === 'pid' && !podDebugPidInput.trim())"
+              @click="confirmOpenPodDebug"
+            >
+              打开调试终端
             </button>
           </div>
         </div>
@@ -4056,6 +4284,135 @@ onUnmounted(() => {
   display: flex;
   justify-content: flex-end;
   gap: 0.5rem;
+}
+.pod-debug-modal {
+  width: min(92vw, 680px);
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  border-radius: 18px;
+  border: 1px solid #dbe4ee;
+  padding: 1.1rem;
+  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.22);
+}
+.pod-debug-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.9rem 1rem;
+}
+.pod-debug-input {
+  min-width: 0;
+  max-width: none;
+  width: 100%;
+  box-sizing: border-box;
+}
+.pod-debug-radio-row {
+  display: flex;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+.pod-debug-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid #dbe4ee;
+  border-radius: 12px;
+  background: #fff;
+  font-size: 0.82rem;
+  color: #334155;
+}
+.pod-debug-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.9rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.92);
+  margin-bottom: 0.85rem;
+}
+.pod-debug-section-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.pod-debug-section-title span {
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+.pod-debug-section-title small {
+  color: #64748b;
+  font-size: 0.76rem;
+}
+.pod-debug-option-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+.pod-debug-option {
+  text-align: left;
+  border: 1px solid #dbe4ee;
+  border-radius: 14px;
+  background: #fff;
+  padding: 0.85rem 0.9rem;
+  cursor: pointer;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.pod-debug-option:hover {
+  border-color: #93c5fd;
+  box-shadow: 0 10px 22px rgba(59, 130, 246, 0.08);
+}
+.pod-debug-option.active {
+  border-color: #2563eb;
+  background: #eff6ff;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+.pod-debug-option-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.pod-debug-option-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+.pod-debug-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.08rem 0.38rem;
+  border-radius: 999px;
+  background: #dcfce7;
+  color: #166534;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+.pod-debug-option-check {
+  width: 1.1rem;
+  text-align: center;
+  font-weight: 800;
+  color: #2563eb;
+}
+.pod-debug-option-desc {
+  margin-top: 0.45rem;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: #64748b;
+}
+.pod-debug-summary {
+  margin: -0.15rem 0 0.6rem;
+  font-size: 0.8rem;
+  color: #475569;
+}
+@media (max-width: 640px) {
+  .pod-debug-grid,
+  .pod-debug-option-grid {
+    grid-template-columns: 1fr;
+  }
 }
 .loading-state {
   padding: 2rem 1.5rem;

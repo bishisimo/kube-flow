@@ -75,16 +75,6 @@ onMounted(async () => {
       <button
         type="button"
         class="tab"
-        :class="{ active: currentTab === 'orchestrator', disabled: !canAccessOrchestrator }"
-        :title="canAccessOrchestrator ? '编排中心' : '请先创建至少一个环境'"
-        :disabled="!canAccessOrchestrator"
-        @click="setTab('orchestrator')"
-      >
-        编排中心
-      </button>
-      <button
-        type="button"
-        class="tab"
         :class="{ active: currentTab === 'shell', disabled: !canAccessShell }"
         :title="canAccessShell ? '终端中心' : '请先创建至少一个环境'"
         :disabled="!canAccessShell"
@@ -101,6 +91,16 @@ onMounted(async () => {
         @click="setTab('logCenter')"
       >
         日志中心
+      </button>
+      <button
+        type="button"
+        class="tab"
+        :class="{ active: currentTab === 'orchestrator', disabled: !canAccessOrchestrator }"
+        :title="canAccessOrchestrator ? '编排中心' : '请先创建至少一个环境'"
+        :disabled="!canAccessOrchestrator"
+        @click="setTab('orchestrator')"
+      >
+        编排中心
       </button>
       <button
         type="button"

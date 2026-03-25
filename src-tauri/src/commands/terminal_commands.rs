@@ -1,6 +1,7 @@
 use crate::config::{app_settings_config_path, ssh_config_get_host_config, AppSettingsConfig};
 use crate::credentials::{AuthMethod, CredentialKey, CredentialManager};
 use crate::env::{EnvService, EnvironmentSource};
+use crate::kube::{resource_get, KubeClientStore};
 use serde::Deserialize;
 use std::collections::HashMap;
 #[cfg(unix)]
@@ -79,6 +80,27 @@ pub struct HostShellBootstrapRequest {
     pub host: String,
     pub steps: Vec<NodeTerminalStepRequest>,
     pub credential_id: Option<String>,
+    pub pod_debug: Option<PodDebugTargetRequest>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PodDebugNamespace {
+    Net,
+    Pid,
+    Mnt,
+    Uts,
+    Ipc,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PodDebugTargetRequest {
+    pub namespace: String,
+    pub pod_name: String,
+    pub container: String,
+    pub namespaces: Vec<PodDebugNamespace>,
+    pub pid: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -124,9 +146,126 @@ fn shell_single_quote(input: &str) -> String {
     format!("'{}'", input.replace('\'', "'\"'\"'"))
 }
 
+fn build_pod_nsenter_command(
+    container_id: Option<&str>,
+    pid: Option<u32>,
+    namespaces: &[PodDebugNamespace],
+) -> String {
+    let mut flags = Vec::new();
+    for ns in namespaces {
+        let flag = match ns {
+            PodDebugNamespace::Net => "-n",
+            PodDebugNamespace::Pid => "-p",
+            PodDebugNamespace::Mnt => "-m",
+            PodDebugNamespace::Uts => "-u",
+            PodDebugNamespace::Ipc => "-i",
+        };
+        if !flags.contains(&flag) {
+            flags.push(flag);
+        }
+    }
+    let ns_flags = if flags.is_empty() {
+        "-n".to_string()
+    } else {
+        flags.join(" ")
+    };
+    if let Some(target_pid) = pid {
+        return format!("exec nsenter -t {} {} sh -l", target_pid, ns_flags);
+    }
+    let container_id = container_id.unwrap_or_default();
+    format!(
+        "CONTAINER_ID={cid}; \
+PID=\"\"; \
+if command -v crictl >/dev/null 2>&1; then \
+  PID=$(crictl inspect \"$CONTAINER_ID\" 2>/dev/null | sed -n 's/.*\"pid\":[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p' | head -n 1); \
+fi; \
+if [ -z \"$PID\" ] && command -v docker >/dev/null 2>&1; then \
+  PID=$(docker inspect -f '{{{{.State.Pid}}}}' \"$CONTAINER_ID\" 2>/dev/null); \
+fi; \
+if [ -z \"$PID\" ] && command -v nerdctl >/dev/null 2>&1; then \
+  PID=$(nerdctl inspect --format '{{{{.State.Pid}}}}' \"$CONTAINER_ID\" 2>/dev/null); \
+fi; \
+if [ -z \"$PID\" ]; then \
+  echo '未能解析容器 PID，请确认节点已安装 crictl/docker/nerdctl 且当前用户有权限。' >&2; \
+  exit 1; \
+fi; \
+exec nsenter -t \"$PID\" {flags} sh -l",
+        cid = shell_single_quote(container_id),
+        flags = ns_flags,
+    )
+}
+
+fn resolve_pod_container_id(
+    pod_value: &serde_json::Value,
+    container_name: &str,
+) -> Result<String, String> {
+    let status = pod_value
+        .get("status")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| "Pod status 不存在，无法解析容器运行时信息".to_string())?;
+
+    for field in ["containerStatuses", "initContainerStatuses"] {
+        if let Some(items) = status.get(field).and_then(|v| v.as_array()) {
+            for item in items {
+                let name = item.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+                if name != container_name {
+                    continue;
+                }
+                let raw_id = item
+                    .get("containerID")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .trim();
+                if raw_id.is_empty() {
+                    return Err(format!("容器 {} 尚未运行，无法进入调试环境", container_name));
+                }
+                let normalized = raw_id
+                    .split_once("://")
+                    .map(|(_, id)| id)
+                    .unwrap_or(raw_id)
+                    .trim()
+                    .to_string();
+                if normalized.is_empty() {
+                    return Err(format!("容器 {} 缺少有效 containerID", container_name));
+                }
+                return Ok(normalized);
+            }
+        }
+    }
+
+    Err(format!("未找到容器 {} 的运行时状态", container_name))
+}
+
+async fn resolve_pod_debug_command(
+    kube_store: &KubeClientStore,
+    env: &crate::env::Environment,
+    target: &PodDebugTargetRequest,
+) -> Result<String, String> {
+    let client = kube_store.get_or_build(env).await.map_err(|e| e.to_string())?;
+    let pod_value = resource_get::get_resource_value(
+        &client,
+        "Pod",
+        &target.pod_name,
+        Some(&target.namespace),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let container_id = if target.pid.is_some() {
+        None
+    } else {
+        Some(resolve_pod_container_id(&pod_value, target.container.trim())?)
+    };
+    Ok(build_pod_nsenter_command(
+        container_id.as_deref(),
+        target.pid,
+        &target.namespaces,
+    ))
+}
+
 fn compile_node_terminal_steps(
     host: &str,
     steps: &[NodeTerminalStepRequest],
+    final_command: Option<&str>,
 ) -> Result<(String, bool), String> {
     if steps.is_empty() {
         return Err("节点终端策略至少需要一个步骤".to_string());
@@ -135,7 +274,7 @@ fn compile_node_terminal_steps(
     let compiled = steps
         .iter()
         .rev()
-        .try_fold(None::<String>, |next, step| {
+        .try_fold(final_command.map(|item| item.to_string()), |next, step| {
         let user = step.user.trim();
         if user.is_empty() {
             return Err("节点终端步骤缺少 user".to_string());
@@ -411,9 +550,11 @@ if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi";
     Ok((cmd, None))
 }
 
-fn resolve_host_shell_automation(
+async fn resolve_host_shell_automation(
     bootstrap: Option<HostShellBootstrapRequest>,
     manager: &CredentialManager,
+    kube_store: &KubeClientStore,
+    env: &crate::env::Environment,
 ) -> Result<Option<HostShellAutomation>, String> {
     let Some(bootstrap) = bootstrap else {
         return Ok(None);
@@ -427,7 +568,14 @@ fn resolve_host_shell_automation(
         return Err("节点终端策略缺少 host".to_string());
     }
 
-    let (command, needs_password) = compile_node_terminal_steps(host, &bootstrap.steps)?;
+    let debug_command = if let Some(target) = bootstrap.pod_debug.as_ref() {
+        Some(resolve_pod_debug_command(kube_store, env, target).await?)
+    } else {
+        None
+    };
+
+    let (command, needs_password) =
+        compile_node_terminal_steps(host, &bootstrap.steps, debug_command.as_deref())?;
 
     let sudo_password = if needs_password {
         let credential_id = bootstrap.credential_id.unwrap_or_default();
@@ -731,6 +879,7 @@ pub async fn host_shell_start(
     app: AppHandle,
     manager: State<'_, CredentialManager>,
     store: State<'_, Arc<HostShellStore>>,
+    kube_store: State<'_, KubeClientStore>,
     env_id: String,
     bootstrap: Option<HostShellBootstrapRequest>,
 ) -> Result<String, String> {
@@ -744,7 +893,7 @@ pub async fn host_shell_start(
     let stream_id_clone = stream_id.clone();
     let app_handle = app.clone();
     let store_clone = store.inner().clone();
-    let automation = resolve_host_shell_automation(bootstrap, &manager)?;
+    let automation = resolve_host_shell_automation(bootstrap, &manager, &kube_store, &env).await?;
     let bootstrap_command = automation.as_ref().map(|item| item.command.as_str());
 
     match env.source {

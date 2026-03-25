@@ -1,5 +1,5 @@
 import { ref } from "vue";
-import type { HostShellBootstrap, NodeTerminalStep } from "../api/terminal";
+import type { HostShellBootstrap, NodeTerminalStep, PodDebugTarget } from "../api/terminal";
 
 const STORAGE_KEY = "kube-flow:node-terminal-strategies";
 
@@ -157,7 +157,8 @@ export function strategyNeedsSwitchUserPassword(
 
 export function buildNodeTerminalLaunch(
   strategy: NodeTerminalStrategy | null | undefined,
-  nodeName: string
+  nodeName: string,
+  podDebug?: PodDebugTarget | null
 ): HostShellBootstrap | null {
   const target = buildNodeTerminalCommand(strategy, nodeName);
   if (!strategy || !target) return null;
@@ -169,6 +170,7 @@ export function buildNodeTerminalLaunch(
       !strategyNeedsSwitchUserPassword(strategy) || !strategy.hasSavedPassword
         ? null
         : nodeTerminalSwitchUserCredentialId(strategy.envId),
+    podDebug: podDebug ?? null,
   };
 }
 
