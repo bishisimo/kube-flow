@@ -4,7 +4,7 @@
 //!   安全设置   - security_get_settings / security_set_credential_store /
 //!               security_set_stronghold_path / security_set_auto_lock_minutes
 //!   凭证 CRUD  - credential_save / credential_delete / credential_exists /
-//!               credential_list / credential_cache_only
+//!               credential_get / credential_list / credential_cache_only
 //!   Stronghold - stronghold_get_status / stronghold_initialize /
 //!               stronghold_unlock / stronghold_lock
 
@@ -164,6 +164,14 @@ pub fn credential_exists(tunnel_id: String, manager: State<'_, CredentialManager
     let cfg = load_settings()?;
     let key = CredentialKey::new(&tunnel_id);
     Ok(manager.exists_in_backend(&key, &cfg.security))
+}
+
+/// 读取指定 key 对应的凭证内容；不存在时返回 None。
+#[tauri::command]
+pub fn credential_get(tunnel_id: String, manager: State<'_, CredentialManager>) -> Result<Option<String>, String> {
+    let cfg = load_settings()?;
+    let key = CredentialKey::new(&tunnel_id);
+    manager.get(&key, &cfg.security)
 }
 
 /// 列出持久化后端中所有已保存凭证的摘要（不含密码）。

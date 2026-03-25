@@ -3,6 +3,18 @@ import { ref, computed, onMounted } from "vue";
 import type { Environment, KubeContextInfo, SshTunnel } from "../api/env";
 import { useEnvStore } from "../stores/env";
 import { useShellStore } from "../stores/shell";
+import { useStrongholdAuthStore } from "../stores/strongholdAuth";
+import {
+  buildNodeTerminalCommand,
+  createNodeTerminalStep,
+  getNodeTerminalStrategy,
+  nodeTerminalSwitchUserCredentialId,
+  setNodeTerminalStrategy,
+  strategyNeedsSwitchUserPassword,
+  type NodeTerminalStepConfig,
+  type NodeTerminalStepType,
+  type NodeTerminalStrategy,
+} from "../stores/nodeTerminalStrategy";
 import {
   envList,
   envUpdate,
@@ -21,6 +33,7 @@ import { credentialExists, credentialSave, credentialDelete } from "../api/crede
 const emit = defineEmits<{ (e: "use-env"): void }>();
 const { openEnv, removeEnv: storeRemoveEnv } = useEnvStore();
 const { pendingOpen, requestSwitchToShell } = useShellStore();
+const strongholdAuth = useStrongholdAuthStore();
 const environments = ref<Environment[]>([]);
 const sshTunnels = ref<SshTunnel[]>([]);
 const listLoading = ref(false);
@@ -65,6 +78,46 @@ const editPasswordLoading = ref(false);
 const editPasswordMsg = ref<{ type: "ok" | "err"; text: string } | null>(null);
 const editTags = ref<string[]>([]);
 const editTagDraft = ref("");
+
+// 终端策略弹窗
+const showStrategyModal = ref(false);
+const strategyEnv = ref<Environment | null>(null);
+const strategyLoading = ref(false);
+const strategyError = ref("");
+const strategyForm = ref<NodeTerminalStrategy>({
+  envId: "",
+  enabled: false,
+  nodeAddressTemplate: "{node}",
+  steps: [createNodeTerminalStep("ssh", "root")],
+  hasSavedPassword: false,
+});
+const strategyCredentialExists = ref(false);
+const strategyPasswordInput = ref("");
+const strategyShowPassword = ref(false);
+const strategyShowPasswordInput = ref(false);
+const strategyPasswordLoading = ref(false);
+const strategyPasswordMsg = ref<{ type: "ok" | "err"; text: string } | null>(null);
+
+const strategyPreview = computed(() =>
+  buildNodeTerminalCommand(strategyForm.value.envId ? strategyForm.value : null, "node-01")
+);
+
+const strategyModeHint = computed(() =>
+  "按步骤编排节点终端进入流程。当前支持 `switch_user` 和 `ssh` 两种步骤，后续也可以继续扩展更多带凭证的步骤。"
+);
+
+function strategyStepHint(type: NodeTerminalStepType): string {
+  return type === "switch_user"
+    ? "切换到目标用户后继续执行后续步骤。"
+    : "使用指定用户连接到节点地址模板解析出的目标主机。";
+}
+
+async function handleStrongholdLocked(message: string, onConfirmed: () => void): Promise<boolean> {
+  return strongholdAuth.checkAndHandle(message, onConfirmed, {
+    title: "解锁终端策略凭证",
+    description: "保存或清除切换用户密码需要访问凭证存储，请先输入 Stronghold 主密码解锁。",
+  });
+}
 
 function addNewTagFromDraft() {
   const t = newTagDraft.value.trim();
@@ -382,6 +435,184 @@ async function doUpdate() {
   }
 }
 
+function strategyEnabled(envId: string): boolean {
+  return Boolean(getNodeTerminalStrategy(envId)?.enabled);
+}
+
+function openStrategyModal(env: Environment) {
+  strategyEnv.value = env;
+  strategyError.value = "";
+  strategyCredentialExists.value = false;
+  strategyPasswordInput.value = "";
+  strategyShowPassword.value = false;
+  strategyShowPasswordInput.value = false;
+  strategyPasswordMsg.value = null;
+  strategyForm.value = {
+    ...(getNodeTerminalStrategy(env.id) ?? {
+      envId: env.id,
+      enabled: false,
+      nodeAddressTemplate: "{node}",
+      steps: [createNodeTerminalStep("ssh", "root")],
+      hasSavedPassword: false,
+    }),
+    envId: env.id,
+  };
+  showStrategyModal.value = true;
+  void credentialExists(nodeTerminalSwitchUserCredentialId(env.id))
+    .then((exists) => {
+      strategyCredentialExists.value = exists;
+      strategyForm.value = {
+        ...strategyForm.value,
+        hasSavedPassword: exists,
+      };
+      setNodeTerminalStrategy(env.id, { hasSavedPassword: exists });
+    })
+    .catch(() => {});
+}
+
+function closeStrategyModal() {
+  showStrategyModal.value = false;
+  strategyEnv.value = null;
+  strategyError.value = "";
+  strategyPasswordInput.value = "";
+  strategyShowPassword.value = false;
+  strategyShowPasswordInput.value = false;
+  strategyPasswordMsg.value = null;
+}
+
+async function saveStrategy() {
+  if (!strategyEnv.value) return;
+  strategyError.value = "";
+  strategyLoading.value = true;
+  try {
+    setNodeTerminalStrategy(strategyEnv.value.id, strategyForm.value);
+    closeStrategyModal();
+  } catch (e: unknown) {
+    strategyError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    strategyLoading.value = false;
+  }
+}
+
+function updateStrategyField<K extends keyof NodeTerminalStrategy>(
+  key: K,
+  value: NodeTerminalStrategy[K]
+) {
+  if (!strategyEnv.value) return;
+  strategyForm.value = {
+    ...strategyForm.value,
+    envId: strategyEnv.value.id,
+    [key]: value,
+  };
+}
+
+function updateStrategyStep(stepId: string, patch: Partial<NodeTerminalStepConfig>) {
+  strategyForm.value = {
+    ...strategyForm.value,
+    steps: strategyForm.value.steps.map((step) =>
+      step.id === stepId ? { ...step, ...patch } : step
+    ),
+  };
+}
+
+function updateStrategyStepType(stepId: string, type: NodeTerminalStepType) {
+  const current = strategyForm.value.steps.find((step) => step.id === stepId);
+  updateStrategyStep(stepId, {
+    type,
+    user: current?.user?.trim() || "root",
+  });
+}
+
+function addStrategyStep(type: NodeTerminalStepType) {
+  strategyForm.value = {
+    ...strategyForm.value,
+    steps: [...strategyForm.value.steps, createNodeTerminalStep(type)],
+  };
+}
+
+function removeStrategyStep(stepId: string) {
+  const next = strategyForm.value.steps.filter((step) => step.id !== stepId);
+  strategyForm.value = {
+    ...strategyForm.value,
+    steps: next.length ? next : [createNodeTerminalStep("ssh", "root")],
+  };
+}
+
+async function handleSaveStrategyPassword() {
+  if (!strategyEnv.value || !strategyPasswordInput.value) return;
+  strategyPasswordLoading.value = true;
+  strategyPasswordMsg.value = null;
+  try {
+    await credentialSave(
+      nodeTerminalSwitchUserCredentialId(strategyEnv.value.id),
+      strategyPasswordInput.value
+    );
+    strategyCredentialExists.value = true;
+    strategyShowPasswordInput.value = false;
+    strategyPasswordInput.value = "";
+    strategyForm.value = {
+      ...strategyForm.value,
+      hasSavedPassword: true,
+    };
+    setNodeTerminalStrategy(strategyEnv.value.id, { hasSavedPassword: true });
+    strategyPasswordMsg.value = { type: "ok", text: "切换用户密码已保存到当前凭证存储后端。" };
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    const isStrongholdRequired = await handleStrongholdLocked(message, () => {
+      void handleSaveStrategyPassword();
+    });
+    if (isStrongholdRequired) {
+      strategyPasswordMsg.value = {
+        type: "err",
+        text: "需要先解锁 Stronghold，解锁后会自动继续保存。",
+      };
+      return;
+    }
+    strategyPasswordMsg.value = {
+      type: "err",
+      text: message,
+    };
+  } finally {
+    strategyPasswordLoading.value = false;
+  }
+}
+
+async function handleDeleteStrategyPassword() {
+  if (!strategyEnv.value) return;
+  strategyPasswordLoading.value = true;
+  strategyPasswordMsg.value = null;
+  try {
+    await credentialDelete(nodeTerminalSwitchUserCredentialId(strategyEnv.value.id));
+    strategyCredentialExists.value = false;
+    strategyShowPasswordInput.value = false;
+    strategyPasswordInput.value = "";
+    strategyForm.value = {
+      ...strategyForm.value,
+      hasSavedPassword: false,
+    };
+    setNodeTerminalStrategy(strategyEnv.value.id, { hasSavedPassword: false });
+    strategyPasswordMsg.value = { type: "ok", text: "已清除切换用户密码。" };
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    const isStrongholdRequired = await handleStrongholdLocked(message, () => {
+      void handleDeleteStrategyPassword();
+    });
+    if (isStrongholdRequired) {
+      strategyPasswordMsg.value = {
+        type: "err",
+        text: "需要先解锁 Stronghold，解锁后会自动继续清除。",
+      };
+      return;
+    }
+    strategyPasswordMsg.value = {
+      type: "err",
+      text: message,
+    };
+  } finally {
+    strategyPasswordLoading.value = false;
+  }
+}
+
 async function switchContext(env: Environment, contextName: string) {
   try {
     await envSetCurrentContext(env.id, contextName);
@@ -491,10 +722,14 @@ onMounted(() => {
               <p class="card-meta">Host: {{ getTunnelForEnv(env)?.ssh_host ?? '—' }}</p>
               <p class="card-meta">远程 kubeconfig: {{ getTunnelForEnv(env)?.remote_kubeconfig_path ?? '—' }}</p>
             </template>
+            <p class="card-meta strategy" :class="{ enabled: strategyEnabled(env.id) }">
+              节点终端策略：{{ strategyEnabled(env.id) ? "已启用" : "未配置" }}
+            </p>
           </div>
           <div class="card-actions" @click.stop>
             <button type="button" class="btn-use" @click="useEnvAndGoMain(env)">使用</button>
             <button type="button" class="btn-terminal" @click="openEnvTerminal(env)">终端</button>
+            <button type="button" class="btn-strategy" @click="openStrategyModal(env)">终端策略</button>
           </div>
         </article>
       </div>
@@ -690,6 +925,7 @@ onMounted(() => {
                 </option>
               </select>
             </template>
+
           </div>
           <p v-if="editError" class="form-error">{{ editError }}</p>
           <div class="modal-actions">
@@ -697,6 +933,183 @@ onMounted(() => {
             <div class="modal-actions-right">
               <button type="button" class="btn-secondary" @click="closeEditModal">取消</button>
               <button type="button" class="btn-primary" :disabled="editLoading" @click="doUpdate">{{ editLoading ? "保存中…" : "保存" }}</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <div v-if="showStrategyModal && strategyEnv" class="modal-overlay" @click.self="closeStrategyModal">
+        <div class="modal" role="dialog" aria-labelledby="strategy-modal-title">
+          <h2 id="strategy-modal-title" class="modal-title">终端切换策略</h2>
+          <p class="form-hint" style="margin: -0.5rem 0 1rem;">
+            环境：{{ strategyEnv.display_name }}。右键 Node 或 Pod 打开节点终端时，会先进入该环境主机，再执行这里配置的切换命令。
+          </p>
+          <div class="form">
+            <label class="checkbox-row">
+              <input
+                :checked="strategyForm.enabled"
+                type="checkbox"
+                @change="updateStrategyField('enabled', ($event.target as HTMLInputElement).checked)"
+              />
+              <span>启用节点终端切换策略</span>
+            </label>
+            <p class="form-hint" style="margin: 0.4rem 0 0.2rem;">{{ strategyModeHint }}</p>
+            <div class="node-strategy-grid">
+              <label class="node-strategy-wide">
+                <span>节点地址模板</span>
+                <input
+                  :value="strategyForm.nodeAddressTemplate"
+                  type="text"
+                  placeholder="{node}"
+                  @input="updateStrategyField('nodeAddressTemplate', ($event.target as HTMLInputElement).value)"
+                />
+              </label>
+              <div class="node-strategy-wide strategy-steps">
+                <div class="strategy-steps-header">
+                  <span>步骤编排</span>
+                  <div class="strategy-step-actions">
+                    <button
+                      type="button"
+                      class="strategy-step-add"
+                      title="添加步骤"
+                      @click="addStrategyStep('ssh')"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+                <div class="strategy-step-list">
+                  <div
+                    v-for="(step, index) in strategyForm.steps"
+                    :key="step.id"
+                    class="strategy-step-card"
+                  >
+                    <div class="strategy-step-row">
+                      <span class="strategy-step-index">{{ index + 1 }}</span>
+                      <select
+                        :value="step.type"
+                        @change="updateStrategyStepType(step.id, ($event.target as HTMLSelectElement).value as NodeTerminalStepType)"
+                      >
+                        <option value="switch_user">switch_user</option>
+                        <option value="ssh">ssh</option>
+                      </select>
+                      <input
+                        :value="step.user"
+                        type="text"
+                        :placeholder="step.type === 'switch_user' ? '目标用户，例如 root / deploy' : 'SSH 用户，例如 root'"
+                        @input="updateStrategyStep(step.id, { user: ($event.target as HTMLInputElement).value })"
+                      />
+                      <button
+                        type="button"
+                        class="strategy-step-remove"
+                        title="删除步骤"
+                        :disabled="strategyForm.steps.length <= 1"
+                        @click="removeStrategyStep(step.id)"
+                      >
+                        ×
+                      </button>
+                    </div>
+                    <div class="strategy-step-hint">{{ strategyStepHint(step.type) }}</div>
+                  </div>
+                </div>
+              </div>
+              <label v-if="strategyNeedsSwitchUserPassword(strategyForm)" class="node-strategy-wide">
+                <span>切换用户密码</span>
+                <div class="strategy-password-panel">
+                  <div class="credential-header">
+                    <span class="credential-title">切换用户密码</span>
+                    <span :class="['credential-badge', strategyCredentialExists ? 'saved' : 'none']">
+                      {{ strategyCredentialExists ? "已保存" : "未配置" }}
+                    </span>
+                  </div>
+                  <div class="credential-actions">
+                    <button
+                      type="button"
+                      class="btn-secondary btn-sm"
+                      :disabled="!strategyNeedsSwitchUserPassword(strategyForm)"
+                      @click="strategyShowPasswordInput = !strategyShowPasswordInput; strategyPasswordMsg = null"
+                    >
+                      {{ strategyCredentialExists ? "修改密码" : "设置密码" }}
+                    </button>
+                    <button
+                      v-if="strategyCredentialExists"
+                      type="button"
+                      class="btn-secondary btn-sm"
+                      :disabled="strategyPasswordLoading"
+                      @click="handleDeleteStrategyPassword"
+                    >
+                      清除密码
+                    </button>
+                  </div>
+                  <div v-if="strategyShowPasswordInput" class="password-row">
+                    <input
+                      :value="strategyPasswordInput"
+                      :type="strategyShowPassword ? 'text' : 'password'"
+                      :disabled="strategyPasswordLoading"
+                      :placeholder="strategyCredentialExists ? '输入新密码' : '输入切换用户密码'"
+                      class="password-input"
+                      autocomplete="new-password"
+                      @input="strategyPasswordInput = ($event.target as HTMLInputElement).value"
+                      @keyup.enter="handleSaveStrategyPassword"
+                    />
+                    <button
+                      type="button"
+                      class="toggle-vis"
+                      :title="strategyShowPassword ? '隐藏' : '显示'"
+                      @click="strategyShowPassword = !strategyShowPassword"
+                    >
+                      {{ strategyShowPassword ? "🙈" : "👁" }}
+                    </button>
+                    <button
+                      type="button"
+                      class="btn-primary btn-sm"
+                      :disabled="strategyPasswordLoading || !strategyPasswordInput || !strategyNeedsSwitchUserPassword(strategyForm)"
+                      @click="handleSaveStrategyPassword"
+                    >
+                      {{ strategyPasswordLoading ? "保存中…" : "保存密码" }}
+                    </button>
+                    <button
+                      v-if="strategyCredentialExists"
+                      type="button"
+                      class="btn-secondary btn-sm"
+                      :disabled="strategyPasswordLoading"
+                      @click="strategyShowPasswordInput = false"
+                    >
+                      取消
+                    </button>
+                  </div>
+                  <p v-if="strategyPasswordMsg" :class="['credential-msg', strategyPasswordMsg.type]">
+                    {{ strategyPasswordMsg.text }}
+                  </p>
+                  <div class="strategy-password-help">
+                    仅当步骤中包含 `switch_user` 时需要配置。密码会保存在当前凭证存储后端，并由后端在切换用户提示出现时安全写入。
+                  </div>
+                </div>
+              </label>
+            </div>
+            <div class="strategy-tip">
+              节点地址模板当前支持 `{node}` 占位符。常见链路可以配置成：
+              `ssh`
+              或 `switch_user -> ssh`。
+            </div>
+            <div v-if="strategyPreview" class="strategy-preview">
+              <div>预览地址：{{ strategyPreview.host }}</div>
+              <pre class="strategy-preview-code">{{ strategyPreview.command }}</pre>
+            </div>
+            <div v-else class="strategy-preview strategy-preview-empty">
+              当前策略未启用，或模板无法生成有效命令。
+            </div>
+          </div>
+          <p v-if="strategyError" class="form-error">{{ strategyError }}</p>
+          <div class="modal-actions">
+            <div></div>
+            <div class="modal-actions-right">
+              <button type="button" class="btn-secondary" @click="closeStrategyModal">取消</button>
+              <button type="button" class="btn-primary" :disabled="strategyLoading" @click="saveStrategy">
+                {{ strategyLoading ? "保存中…" : "保存策略" }}
+              </button>
             </div>
           </div>
         </div>
@@ -921,6 +1334,196 @@ onMounted(() => {
   border-radius: 6px;
   flex-shrink: 0;
 }
+.node-strategy-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem 1rem;
+  margin-top: 0.75rem;
+}
+.node-strategy-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.8125rem;
+  color: #475569;
+}
+.node-strategy-grid input,
+.node-strategy-grid textarea {
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 0.875rem;
+  outline: none;
+  resize: vertical;
+}
+.node-strategy-grid input:focus,
+.node-strategy-grid textarea:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+}
+.node-strategy-wide {
+  grid-column: 1 / -1;
+}
+.strategy-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.strategy-steps-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.8125rem;
+  color: #475569;
+}
+.strategy-step-actions {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+.strategy-step-add {
+  width: 2rem;
+  height: 2rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #22c55e;
+  border-radius: 999px;
+  background: #f0fdf4;
+  color: #16a34a;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.strategy-step-add:hover {
+  background: #dcfce7;
+  border-color: #16a34a;
+  color: #15803d;
+}
+.strategy-step-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+.strategy-step-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.55rem 0.6rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+.strategy-step-row {
+  display: grid;
+  grid-template-columns: auto minmax(120px, 160px) minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+.strategy-step-hint {
+  margin-left: 1.9rem;
+  font-size: 0.78rem;
+  color: #64748b;
+}
+.strategy-step-index {
+  width: 1.4rem;
+  height: 1.4rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #475569;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+.strategy-step-row select {
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 0.875rem;
+  outline: none;
+}
+.strategy-step-row select:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+}
+.strategy-step-remove {
+  width: 2rem;
+  height: 2rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #d1d5db;
+  border-radius: 999px;
+  background: #fff;
+  color: #64748b;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.strategy-step-remove:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.strategy-step-remove:not(:disabled):hover {
+  border-color: #cbd5e1;
+  color: #334155;
+}
+.strategy-preview-code {
+  margin: 0.45rem 0 0;
+  padding: 0.7rem 0.8rem;
+  border-radius: 10px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.strategy-tip {
+  margin-top: 0.65rem;
+  font-size: 0.78rem;
+  color: #64748b;
+}
+.strategy-preview {
+  margin-top: 0.65rem;
+  padding: 0.65rem 0.8rem;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  font-size: 0.8125rem;
+  color: #334155;
+}
+.strategy-preview-empty {
+  color: #64748b;
+}
+.strategy-password-disabled {
+  padding: 0.65rem 0.75rem;
+  border-radius: 8px;
+  border: 1px dashed #cbd5e1;
+  background: #f8fafc;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: #64748b;
+}
+.strategy-password-panel {
+  padding: 0.75rem 0.85rem;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+}
+.strategy-password-help {
+  margin-top: 0.55rem;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: #64748b;
+}
 .credential-msg {
   margin: 0.5rem 0 0;
   font-size: 0.8125rem;
@@ -971,6 +1574,22 @@ onMounted(() => {
   background: #dbeafe;
   border-color: #93c5fd;
   color: #1e40af;
+}
+.btn-strategy {
+  padding: 0.4rem 0.9rem;
+  background: #f8fafc;
+  color: #334155;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.btn-strategy:hover {
+  background: #eef2ff;
+  border-color: #c7d2fe;
+  color: #4338ca;
 }
 .btn-primary {
   display: inline-flex;
@@ -1103,6 +1722,9 @@ onMounted(() => {
 .card-meta.count {
   font-size: 0.75rem;
   color: #94a3b8;
+}
+.card-meta.strategy.enabled {
+  color: #166534;
 }
 
 /* 弹窗 */

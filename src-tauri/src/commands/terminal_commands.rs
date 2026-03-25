@@ -1,6 +1,7 @@
 use crate::config::{app_settings_config_path, ssh_config_get_host_config, AppSettingsConfig};
 use crate::credentials::{AuthMethod, CredentialKey, CredentialManager};
 use crate::env::{EnvService, EnvironmentSource};
+use serde::Deserialize;
 use std::collections::HashMap;
 #[cfg(unix)]
 use std::ffi::CString;
@@ -16,6 +17,7 @@ use uuid::Uuid;
 
 const HOST_SHELL_CHUNK_EVENT: &str = "host-shell-chunk";
 const HOST_SHELL_END_EVENT: &str = "host-shell-end";
+const NODE_TERMINAL_SUDO_PROMPT: &str = "__KUBE_FLOW_SUDO_PROMPT__";
 
 #[cfg(windows)]
 fn apply_no_window(cmd: &mut Command) {
@@ -54,6 +56,123 @@ impl Drop for SshAskpassGuard {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeTerminalStepType {
+    Ssh,
+    SwitchUser,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeTerminalStepRequest {
+    pub r#type: NodeTerminalStepType,
+    pub user: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostShellBootstrapRequest {
+    pub kind: String,
+    pub host: String,
+    pub steps: Vec<NodeTerminalStepRequest>,
+    pub credential_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct HostShellAutomation {
+    command: String,
+    sudo_password: Option<String>,
+    sudo_prompt: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct HostShellAutomationState {
+    sudo_password: Option<String>,
+    sudo_prompt: Option<String>,
+    password_sent: bool,
+}
+
+impl HostShellAutomationState {
+    fn new(plan: HostShellAutomation) -> Self {
+        Self {
+            sudo_password: plan.sudo_password,
+            sudo_prompt: plan.sudo_prompt,
+            password_sent: false,
+        }
+    }
+
+    fn process_output(&mut self, chunk: &[u8]) -> (Vec<u8>, Option<Vec<u8>>) {
+        let mut output = String::from_utf8_lossy(chunk).into_owned();
+        let mut password_input = None;
+        if let (Some(prompt), Some(password)) = (&self.sudo_prompt, &self.sudo_password) {
+            if output.contains(prompt) {
+                output = output.replace(prompt, "");
+                if !self.password_sent {
+                    self.password_sent = true;
+                    password_input = Some(format!("{}\n", password).into_bytes());
+                }
+            }
+        }
+        (output.into_bytes(), password_input)
+    }
+}
+
+fn shell_single_quote(input: &str) -> String {
+    format!("'{}'", input.replace('\'', "'\"'\"'"))
+}
+
+fn compile_node_terminal_steps(
+    host: &str,
+    steps: &[NodeTerminalStepRequest],
+) -> Result<(String, bool), String> {
+    if steps.is_empty() {
+        return Err("节点终端策略至少需要一个步骤".to_string());
+    }
+
+    let compiled = steps
+        .iter()
+        .rev()
+        .try_fold(None::<String>, |next, step| {
+        let user = step.user.trim();
+        if user.is_empty() {
+            return Err("节点终端步骤缺少 user".to_string());
+        }
+        let command = match step.r#type {
+            NodeTerminalStepType::Ssh => {
+                let ssh_cmd = format!("exec ssh {}@{}", user, host);
+                if let Some(next_cmd) = next {
+                    format!("ssh {}@{} -t {}", user, host, shell_single_quote(&next_cmd))
+                } else {
+                    ssh_cmd
+                }
+            }
+            NodeTerminalStepType::SwitchUser => {
+                let sudo_prompt = shell_single_quote(NODE_TERMINAL_SUDO_PROMPT);
+                if let Some(next_cmd) = next {
+                    format!(
+                        "sudo -S -p {} su - {} -c {}",
+                        sudo_prompt,
+                        user,
+                        shell_single_quote(&next_cmd)
+                    )
+                } else {
+                    format!("sudo -S -p {} su - {}", sudo_prompt, user)
+                }
+            }
+        };
+            Ok::<Option<String>, String>(Some(command))
+        })?;
+
+    let needs_password = steps
+        .iter()
+        .any(|step| matches!(step.r#type, NodeTerminalStepType::SwitchUser));
+
+    compiled
+        .map(|command| (format!("{}\n", command), needs_password))
+        .ok_or_else(|| "节点终端策略无法生成可执行命令".to_string())
 }
 
 pub struct HostShellSession {
@@ -133,6 +252,27 @@ fn build_local_shell_command() -> Command {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
         let mut cmd = Command::new(shell);
         cmd.args(["-il"]);
+        cmd.env("TERM", "xterm-256color")
+            .env("LANG", "C.UTF-8")
+            .env("LC_CTYPE", "C.UTF-8");
+        apply_no_window(&mut cmd);
+        cmd
+    }
+}
+
+fn build_local_command(command: &str) -> Command {
+    #[cfg(windows)]
+    {
+        let mut cmd = Command::new("cmd.exe");
+        cmd.args(["/C", command]);
+        apply_no_window(&mut cmd);
+        cmd
+    }
+
+    #[cfg(not(windows))]
+    {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-lc", command]);
         cmd.env("TERM", "xterm-256color")
             .env("LANG", "C.UTF-8")
             .env("LC_CTYPE", "C.UTF-8");
@@ -222,6 +362,7 @@ fn resize_pty(file: &std::fs::File, cols: u16, rows: u16) -> Result<(), String> 
 fn build_remote_shell_command(
     tunnel: &crate::env::SshTunnel,
     manager: &CredentialManager,
+    remote_cmd_override: Option<&str>,
 ) -> Result<(Command, Option<SshAskpassGuard>), String> {
     let ssh_host = &tunnel.ssh_host;
     let _host_config = ssh_config_get_host_config(ssh_host)
@@ -233,10 +374,11 @@ fn build_remote_shell_command(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let remote_cmd = "export TERM=\"${TERM:-xterm-256color}\"; \
+    let default_remote_cmd = "export TERM=\"${TERM:-xterm-256color}\"; \
 export LANG=\"${LANG:-C.UTF-8}\"; \
 export LC_CTYPE=\"${LC_CTYPE:-$LANG}\"; \
 if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi";
+    let remote_cmd = remote_cmd_override.unwrap_or(default_remote_cmd);
 
     #[cfg(unix)]
     {
@@ -269,11 +411,53 @@ if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi";
     Ok((cmd, None))
 }
 
+fn resolve_host_shell_automation(
+    bootstrap: Option<HostShellBootstrapRequest>,
+    manager: &CredentialManager,
+) -> Result<Option<HostShellAutomation>, String> {
+    let Some(bootstrap) = bootstrap else {
+        return Ok(None);
+    };
+    if bootstrap.kind != "node_terminal" {
+        return Err("unsupported host shell bootstrap kind".to_string());
+    }
+
+    let host = bootstrap.host.trim();
+    if host.is_empty() {
+        return Err("节点终端策略缺少 host".to_string());
+    }
+
+    let (command, needs_password) = compile_node_terminal_steps(host, &bootstrap.steps)?;
+
+    let sudo_password = if needs_password {
+        let credential_id = bootstrap.credential_id.unwrap_or_default();
+        if credential_id.trim().is_empty() {
+            None
+        } else {
+            let settings = load_settings()?;
+            manager.get(&CredentialKey::new(credential_id), &settings.security)?
+        }
+    } else {
+        None
+    };
+
+    Ok(Some(HostShellAutomation {
+        command,
+        sudo_password,
+        sudo_prompt: if needs_password {
+            Some(NODE_TERMINAL_SUDO_PROMPT.to_string())
+        } else {
+            None
+        },
+    }))
+}
+
 async fn run_host_shell_process(
     app: AppHandle,
     stream_id: String,
     mut cmd: Command,
     _askpass_guard: Option<SshAskpassGuard>,
+    automation: Option<HostShellAutomation>,
     store: Arc<HostShellStore>,
 ) {
     cmd.kill_on_drop(true);
@@ -360,6 +544,7 @@ async fn run_host_shell_process(
             #[cfg(unix)]
             let task: tokio::task::JoinHandle<Option<String>> = tokio::spawn(async move {
                 let mut read_buf = [0u8; 4096];
+                let mut automation = automation.map(HostShellAutomationState::new);
 
                 loop {
                     tokio::select! {
@@ -378,11 +563,22 @@ async fn run_host_shell_process(
                             match result {
                                 Ok(0) => break None,
                                 Ok(n) => {
-                                    if app_clone.emit(HOST_SHELL_CHUNK_EVENT, serde_json::json!({
+                                    let (output_chunk, password_input) = if let Some(state) = automation.as_mut() {
+                                        state.process_output(&read_buf[..n])
+                                    } else {
+                                        (read_buf[..n].to_vec(), None)
+                                    };
+                                    if !output_chunk.is_empty() && app_clone.emit(HOST_SHELL_CHUNK_EVENT, serde_json::json!({
                                         "stream_id": stream_id_clone,
-                                        "chunk_bytes": &read_buf[..n]
+                                        "chunk_bytes": output_chunk
                                     })).is_err() {
                                         break Some("emit pty chunk failed".to_string());
+                                    }
+                                    if let Some(password_input) = password_input {
+                                        if let Err(e) = writer.write_all(&password_input).await {
+                                            break Some(format!("automation password write failed: {}", e));
+                                        }
+                                        let _ = writer.flush().await;
                                     }
                                 }
                                 Err(e) => break Some(format!("pty read failed: {}", e)),
@@ -403,6 +599,7 @@ async fn run_host_shell_process(
             let task: tokio::task::JoinHandle<Option<String>> = tokio::spawn(async move {
                 let mut stdout_buf = [0u8; 4096];
                 let mut stderr_buf = [0u8; 4096];
+                let mut automation = automation.map(HostShellAutomationState::new);
 
                 loop {
                     tokio::select! {
@@ -430,11 +627,22 @@ async fn run_host_shell_process(
                                     }
                                 }
                                 Ok(n) => {
-                                    if app_clone.emit(HOST_SHELL_CHUNK_EVENT, serde_json::json!({
+                                    let (output_chunk, password_input) = if let Some(state) = automation.as_mut() {
+                                        state.process_output(&stdout_buf[..n])
+                                    } else {
+                                        (stdout_buf[..n].to_vec(), None)
+                                    };
+                                    if !output_chunk.is_empty() && app_clone.emit(HOST_SHELL_CHUNK_EVENT, serde_json::json!({
                                         "stream_id": stream_id_clone,
-                                        "chunk_bytes": &stdout_buf[..n]
+                                        "chunk_bytes": output_chunk
                                     })).is_err() {
                                         break Some("emit stdout chunk failed".to_string());
+                                    }
+                                    if let Some(password_input) = password_input {
+                                        if let Err(e) = stdin.write_all(&password_input).await {
+                                            break Some(format!("automation password write failed: {}", e));
+                                        }
+                                        let _ = stdin.flush().await;
                                     }
                                 }
                                 Err(e) => break Some(format!("stdout read failed: {}", e)),
@@ -455,11 +663,22 @@ async fn run_host_shell_process(
                                     }
                                 }
                                 Ok(n) => {
-                                    if app_clone.emit(HOST_SHELL_CHUNK_EVENT, serde_json::json!({
+                                    let (output_chunk, password_input) = if let Some(state) = automation.as_mut() {
+                                        state.process_output(&stderr_buf[..n])
+                                    } else {
+                                        (stderr_buf[..n].to_vec(), None)
+                                    };
+                                    if !output_chunk.is_empty() && app_clone.emit(HOST_SHELL_CHUNK_EVENT, serde_json::json!({
                                         "stream_id": stream_id_clone,
-                                        "chunk_bytes": &stderr_buf[..n]
+                                        "chunk_bytes": output_chunk
                                     })).is_err() {
                                         break Some("emit stderr chunk failed".to_string());
+                                    }
+                                    if let Some(password_input) = password_input {
+                                        if let Err(e) = stdin.write_all(&password_input).await {
+                                            break Some(format!("automation password write failed: {}", e));
+                                        }
+                                        let _ = stdin.flush().await;
                                     }
                                 }
                                 Err(e) => break Some(format!("stderr read failed: {}", e)),
@@ -513,6 +732,7 @@ pub async fn host_shell_start(
     manager: State<'_, CredentialManager>,
     store: State<'_, Arc<HostShellStore>>,
     env_id: String,
+    bootstrap: Option<HostShellBootstrapRequest>,
 ) -> Result<String, String> {
     let env = EnvService::list()
         .map_err(|e| e.to_string())?
@@ -524,12 +744,19 @@ pub async fn host_shell_start(
     let stream_id_clone = stream_id.clone();
     let app_handle = app.clone();
     let store_clone = store.inner().clone();
+    let automation = resolve_host_shell_automation(bootstrap, &manager)?;
+    let bootstrap_command = automation.as_ref().map(|item| item.command.as_str());
 
     match env.source {
         EnvironmentSource::LocalKubeconfig => {
-            let cmd = build_local_shell_command();
+            let cmd = if let Some(command) = bootstrap_command {
+                build_local_command(command)
+            } else {
+                build_local_shell_command()
+            };
+            let automation_plan = automation.clone();
             tokio::spawn(async move {
-                run_host_shell_process(app_handle, stream_id_clone, cmd, None, store_clone).await;
+                run_host_shell_process(app_handle, stream_id_clone, cmd, None, automation_plan, store_clone).await;
             });
         }
         EnvironmentSource::SshTunnel => {
@@ -540,9 +767,18 @@ pub async fn host_shell_start(
             let tunnel = EnvService::get_ssh_tunnel(&tunnel_id)
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| format!("未找到隧道配置: {}", tunnel_id))?;
-            let (cmd, askpass_guard) = build_remote_shell_command(&tunnel, &manager)?;
+            let (cmd, askpass_guard) =
+                build_remote_shell_command(&tunnel, &manager, bootstrap_command)?;
             tokio::spawn(async move {
-                run_host_shell_process(app_handle, stream_id_clone, cmd, askpass_guard, store_clone).await;
+                run_host_shell_process(
+                    app_handle,
+                    stream_id_clone,
+                    cmd,
+                    askpass_guard,
+                    automation,
+                    store_clone,
+                )
+                .await;
             });
         }
     }

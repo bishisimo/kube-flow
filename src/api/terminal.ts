@@ -1,7 +1,21 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export function hostShellStart(envId: string): Promise<string> {
-  return invoke("host_shell_start", { envId });
+export type NodeTerminalStepType = "ssh" | "switch_user";
+
+export interface NodeTerminalStep {
+  type: NodeTerminalStepType;
+  user: string;
+}
+
+export interface HostShellBootstrap {
+  kind: "node_terminal";
+  host: string;
+  steps: NodeTerminalStep[];
+  credentialId?: string | null;
+}
+
+export function hostShellStart(envId: string, bootstrap?: HostShellBootstrap | null): Promise<string> {
+  return invoke("host_shell_start", { envId, bootstrap: bootstrap ?? null });
 }
 
 export function hostShellStdin(streamId: string, data: number[]): Promise<void> {

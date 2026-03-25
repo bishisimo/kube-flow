@@ -1,26 +1,45 @@
 import { ref } from "vue";
+import type { HostShellBootstrap, NodeTerminalStep } from "../api/terminal";
 
 const STORAGE_KEY = "kube-flow:node-terminal-strategies";
+
+export type NodeTerminalStepType = "ssh" | "switch_user";
+
+export interface NodeTerminalStepConfig {
+  id: string;
+  type: NodeTerminalStepType;
+  user: string;
+}
 
 export interface NodeTerminalStrategy {
   envId: string;
   enabled: boolean;
   nodeAddressTemplate: string;
-  switchUser: string;
-  switchPassword: string;
-  commandTemplate: string;
+  steps: NodeTerminalStepConfig[];
+  hasSavedPassword: boolean;
 }
 
 const strategies = ref<Record<string, NodeTerminalStrategy>>(loadStrategies());
+
+function createStep(type: NodeTerminalStepType, user = "root"): NodeTerminalStepConfig {
+  return {
+    id: `step-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    type,
+    user,
+  };
+}
+
+function defaultSteps(): NodeTerminalStepConfig[] {
+  return [createStep("ssh", "root")];
+}
 
 function defaultStrategy(envId: string): NodeTerminalStrategy {
   return {
     envId,
     enabled: false,
     nodeAddressTemplate: "{node}",
-    switchUser: "root",
-    switchPassword: "",
-    commandTemplate: "ssh {user}@{host}",
+    steps: defaultSteps(),
+    hasSavedPassword: false,
   };
 }
 
@@ -35,13 +54,11 @@ function loadStrategies(): Record<string, NodeTerminalStrategy> {
         envId,
         {
           ...defaultStrategy(envId),
-          ...strategy,
           envId,
           enabled: Boolean(strategy?.enabled),
           nodeAddressTemplate: strategy?.nodeAddressTemplate?.trim() || "{node}",
-          switchUser: strategy?.switchUser?.trim() || "root",
-          switchPassword: typeof strategy?.switchPassword === "string" ? strategy.switchPassword : "",
-          commandTemplate: strategy?.commandTemplate?.trim() || "ssh {user}@{host}",
+          steps: sanitizeSteps(strategy?.steps),
+          hasSavedPassword: Boolean(strategy?.hasSavedPassword),
         },
       ])
     );
@@ -73,8 +90,41 @@ export function setNodeTerminalStrategy(envId: string, patch: Partial<NodeTermin
   persist();
 }
 
+export function nodeTerminalSwitchUserCredentialId(envId: string): string {
+  return `node-terminal-strategy:switch-user:${envId}`;
+}
+
+export function createNodeTerminalStep(type: NodeTerminalStepType, user = "root"): NodeTerminalStepConfig {
+  return createStep(type, user);
+}
+
 function renderTemplate(template: string, vars: Record<string, string>): string {
   return template.replace(/\{(\w+)\}/g, (_all, key: string) => vars[key] ?? "");
+}
+
+function sanitizeSteps(steps: NodeTerminalStepConfig[] | undefined): NodeTerminalStepConfig[] {
+  const normalized = (steps ?? [])
+    .map((step, index) => {
+      if (step.type !== "ssh" && step.type !== "switch_user") return null;
+      return {
+        id: step.id || `step-${index}`,
+        type: step.type,
+        user: step.user?.trim() || "root",
+      } satisfies NodeTerminalStepConfig;
+    })
+    .filter((item): item is NodeTerminalStepConfig => item !== null);
+  return normalized.length ? normalized : defaultSteps();
+}
+
+function compilePreviewCommand(host: string, steps: NodeTerminalStepConfig[]): string {
+  return sanitizeSteps(steps)
+    .map((step) =>
+      step.type === "ssh"
+        ? `ssh ${step.user}@${host}`
+        : `sudo su - ${step.user}`
+    )
+    .join("\n")
+    .trim();
 }
 
 export function buildNodeTerminalCommand(
@@ -85,18 +135,41 @@ export function buildNodeTerminalCommand(
   const host = renderTemplate(strategy.nodeAddressTemplate || "{node}", {
     node: nodeName,
     host: nodeName,
-    user: strategy.switchUser,
-    password: strategy.switchPassword,
   }).trim();
   if (!host) return null;
-  const command = renderTemplate(strategy.commandTemplate || "ssh {user}@{host}", {
-    node: nodeName,
-    host,
-    user: strategy.switchUser,
-    password: strategy.switchPassword,
-  }).trim();
+  const command = compilePreviewCommand(host, strategy.steps);
   if (!command) return null;
   return { host, command };
+}
+
+function toLaunchSteps(steps: NodeTerminalStepConfig[]): NodeTerminalStep[] {
+  return sanitizeSteps(steps).map((step) => ({
+    type: step.type,
+    user: step.user,
+  }));
+}
+
+export function strategyNeedsSwitchUserPassword(
+  strategy: NodeTerminalStrategy | null | undefined
+): boolean {
+  return Boolean(strategy?.steps.some((step) => step.type === "switch_user"));
+}
+
+export function buildNodeTerminalLaunch(
+  strategy: NodeTerminalStrategy | null | undefined,
+  nodeName: string
+): HostShellBootstrap | null {
+  const target = buildNodeTerminalCommand(strategy, nodeName);
+  if (!strategy || !target) return null;
+  return {
+    kind: "node_terminal",
+    host: target.host,
+    steps: toLaunchSteps(strategy.steps),
+    credentialId:
+      !strategyNeedsSwitchUserPassword(strategy) || !strategy.hasSavedPassword
+        ? null
+        : nodeTerminalSwitchUserCredentialId(strategy.envId),
+  };
 }
 
 export function useNodeTerminalStrategyStore() {
@@ -105,5 +178,9 @@ export function useNodeTerminalStrategyStore() {
     getNodeTerminalStrategy,
     setNodeTerminalStrategy,
     buildNodeTerminalCommand,
+    buildNodeTerminalLaunch,
+    nodeTerminalSwitchUserCredentialId,
+    createNodeTerminalStep,
+    strategyNeedsSwitchUserPassword,
   };
 }

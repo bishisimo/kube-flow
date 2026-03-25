@@ -56,6 +56,11 @@ export function credentialExists(tunnelId: string): Promise<boolean> {
   return invoke("credential_exists", { tunnelId });
 }
 
+/** 读取持久化后端中的凭证内容；不存在时返回 null。 */
+export function credentialGet(tunnelId: string): Promise<string | null> {
+  return invoke("credential_get", { tunnelId });
+}
+
 /** 列出持久化后端中所有已保存凭证摘要（不含密码）。 */
 export function credentialList(): Promise<CredentialInfo[]> {
   return invoke("credential_list");

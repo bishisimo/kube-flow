@@ -160,38 +160,55 @@ function toggle() {
         :class="{ active: currentId === e.id }"
         @click="setCurrent(e.id)"
       >
-        <div class="item-main">
-          <div class="item-topline">
-            <span class="name" :title="e.display_name">{{ e.display_name }}</span>
-            <span v-if="currentId === e.id" class="item-current-badge">当前</span>
+        <div class="item-topline">
+          <div class="item-title-wrap">
+            <span class="name" :class="{ 'name-current': currentId === e.id }" :title="e.display_name">
+              {{ e.display_name }}
+            </span>
           </div>
-          <div class="item-meta-row">
+          <div class="item-top-actions">
             <span class="meta-chip soft">{{ sourceLabel(e.source) }}</span>
-            <span class="meta-chip" :class="`meta-chip-${getState(e.id)}`">{{ statusLabel(e.id) }}</span>
-          </div>
-          <div
-            class="item-context"
-            :title="e.source === 'ssh_tunnel' ? remoteKubeconfigLabel(e) : contextLabel(e)"
-          >
-            {{ e.source === "ssh_tunnel" ? remoteKubeconfigLabel(e) : contextLabel(e) }}
+            <span
+              class="env-item-status-wrap"
+              @mouseenter="onStatusEnter($event, e.id)"
+              @mouseleave="onStatusLeave"
+            >
+              <span
+                class="status-icon"
+                :class="{
+                  'status-disconnected': getState(e.id) === 'disconnected',
+                  'status-connecting': getState(e.id) === 'connecting',
+                  'status-ready': getState(e.id) === 'connected' || getState(e.id) === 'error',
+                }"
+                :aria-label="statusLabel(e.id)"
+              />
+            </span>
+            <button
+              type="button"
+              class="close"
+              title="关闭"
+              @click.stop="closeEnv(e.id)"
+            >
+              ×
+            </button>
           </div>
         </div>
-        <div class="item-actions">
-          <span
-            class="env-item-status-wrap"
-            @mouseenter="onStatusEnter($event, e.id)"
-            @mouseleave="onStatusLeave"
+        <div
+          class="item-context"
+          :title="e.source === 'ssh_tunnel' ? remoteKubeconfigLabel(e) : contextLabel(e)"
+        >
+          {{ e.source === "ssh_tunnel" ? remoteKubeconfigLabel(e) : contextLabel(e) }}
+        </div>
+        <div class="item-actions-row">
+          <button
+            v-if="props.onOpenTerminal"
+            type="button"
+            class="item-action-btn primary"
+            title="打开终端"
+            @click.stop="props.onOpenTerminal(e.id)"
           >
-            <span
-              class="status-icon"
-              :class="{
-                'status-disconnected': getState(e.id) === 'disconnected',
-                'status-connecting': getState(e.id) === 'connecting',
-                'status-ready': getState(e.id) === 'connected' || getState(e.id) === 'error',
-              }"
-              :aria-label="statusLabel(e.id)"
-            />
-          </span>
+            终端
+          </button>
           <button
             v-if="getState(e.id) === 'disconnected' && props.onReconnect"
             type="button"
@@ -200,23 +217,6 @@ function toggle() {
             @click.stop="props.onReconnect(e.id)"
           >
             重连
-          </button>
-          <button
-            v-if="props.onOpenTerminal"
-            type="button"
-            class="item-action-btn"
-            title="打开终端"
-            @click.stop="props.onOpenTerminal(e.id)"
-          >
-            终端
-          </button>
-          <button
-            type="button"
-            class="close"
-            title="关闭"
-            @click.stop="closeEnv(e.id)"
-          >
-            ×
           </button>
         </div>
       </li>
@@ -242,8 +242,8 @@ function toggle() {
 
 <style scoped>
 .env-bar {
-  width: 200px;
-  min-width: 200px;
+  width: 236px;
+  min-width: 236px;
   border-right: 1px solid var(--border-color, #e0e0e0);
   background: var(--sidebar-bg, #fafafa);
   display: flex;
@@ -285,11 +285,10 @@ function toggle() {
 }
 .item {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+  flex-direction: column;
   padding: 0.7rem 0.75rem;
   cursor: pointer;
-  gap: 0.65rem;
+  gap: 0.5rem;
   border: 1px solid #e2e8f0;
   border-radius: 12px;
   background: #fff;
@@ -306,55 +305,55 @@ function toggle() {
     #eff6ff;
   box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.08);
 }
-.item-main {
-  flex: 1;
+.item-topline {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.65rem;
   min-width: 0;
 }
-.item-topline {
+.item-title-wrap {
   display: flex;
   align-items: center;
   gap: 0.45rem;
   min-width: 0;
+  flex: 1;
+}
+.item-top-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-shrink: 0;
 }
 .item .name {
   flex: 1;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-size: 0.89rem;
   font-weight: 700;
   color: #0f172a;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  white-space: normal;
+  word-break: break-word;
 }
 .item-context {
-  margin-top: 0.34rem;
   font-size: 0.76rem;
   color: #64748b;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.item-actions {
+.item-actions-row {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
-  flex-shrink: 0;
-}
-.item-meta-row {
-  display: flex;
-  align-items: center;
+  gap: 0.45rem;
   flex-wrap: wrap;
-  gap: 0.35rem;
-  margin-top: 0.4rem;
 }
-.item-current-badge {
-  padding: 0.14rem 0.45rem;
-  border-radius: 999px;
-  background: #1d4ed8;
-  color: #fff;
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.02em;
+.name-current {
+  color: #166534;
 }
 .meta-chip {
   display: inline-flex;
@@ -370,19 +369,6 @@ function toggle() {
 .meta-chip.soft {
   background: #eef2ff;
   color: #4338ca;
-}
-.meta-chip-connected,
-.meta-chip-error {
-  background: #ecfdf5;
-  color: #15803d;
-}
-.meta-chip-connecting {
-  background: #e0f2fe;
-  color: #0369a1;
-}
-.meta-chip-disconnected {
-  background: #fef2f2;
-  color: #dc2626;
 }
 .env-item-status-wrap {
   position: relative;
@@ -412,31 +398,42 @@ function toggle() {
 }
 .btn-reconnect-small {
   flex-shrink: 0;
-  padding: 0.15rem 0.5rem;
-  font-size: 0.7rem;
-  background: #b45309;
-  color: #fff;
-  border: none;
-  border-radius: 3px;
+  padding: 0.28rem 0.7rem;
+  font-size: 0.72rem;
+  background: #fff7ed;
+  color: #b45309;
+  border: 1px solid #fdba74;
+  border-radius: 999px;
   cursor: pointer;
 }
 .btn-reconnect-small:hover {
-  background: #92400e;
+  background: #ffedd5;
+  border-color: #fb923c;
 }
 .item-action-btn {
   flex-shrink: 0;
-  padding: 0.18rem 0.45rem;
-  font-size: 0.7rem;
+  padding: 0.28rem 0.75rem;
+  font-size: 0.72rem;
   border: 1px solid #cbd5e1;
   background: #fff;
   color: #475569;
   border-radius: 999px;
   cursor: pointer;
 }
+.item-action-btn.primary {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1d4ed8;
+}
 .item-action-btn:hover {
   border-color: #94a3b8;
   color: #0f172a;
   background: #f8fafc;
+}
+.item-action-btn.primary:hover {
+  border-color: #93c5fd;
+  color: #1d4ed8;
+  background: #dbeafe;
 }
 .close {
   flex-shrink: 0;

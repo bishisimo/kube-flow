@@ -115,6 +115,7 @@ pub fn run() {
             commands::credential_commands::credential_save,
             commands::credential_commands::credential_delete,
             commands::credential_commands::credential_exists,
+            commands::credential_commands::credential_get,
             commands::credential_commands::credential_list,
             commands::credential_commands::credential_cache_only,
             // Stronghold 状态机

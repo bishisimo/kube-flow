@@ -25,9 +25,6 @@ import {
   type ResourceSnapshotItem,
 } from "../stores/resourceSnapshots";
 import { ensureAutoSnapshotSettingLoaded } from "../stores/appSettings";
-import { useEnvStore } from "../stores/env";
-import { useShellStore } from "../stores/shell";
-import { buildNodeTerminalCommand, getNodeTerminalStrategy } from "../stores/nodeTerminalStrategy";
 import { useStrongholdAuthStore } from "../stores/strongholdAuth";
 
 const DRAWER_WIDTH_KEY = "kube-flow:drawer-width";
@@ -76,8 +73,6 @@ const snapshotSaving = ref(false);
 const viewingSnapshot = ref<ResourceSnapshotItem | null>(null);
 const showManagedFields = ref(false);
 const { monacoTheme } = useYamlMonacoTheme();
-const { environments } = useEnvStore();
-const { pendingOpen, requestSwitchToShell } = useShellStore();
 const strongholdAuth = useStrongholdAuthStore();
 
 
@@ -107,10 +102,6 @@ const snapshotResourceRef = computed(() =>
 
 const genericSnapshots = computed(() => listResourceSnapshotsByCategory(snapshotResourceRef.value, "all"));
 const currentSnapshotSummary = computed(() => summarizeResourceYaml(resolveCurrentDraftYaml() || rawYaml.value));
-const currentEnv = computed(() => environments.value.find((env) => env.id === props.envId) ?? null);
-const canOpenNodeTerminal = computed(
-  () => Boolean(props.envId && props.resource?.kind === "Node" && getNodeTerminalStrategy(props.envId)?.enabled)
-);
 
 function resolveCurrentDraftYaml(): string {
   if (props.resource?.kind === "ConfigMap" || props.resource?.kind === "Secret") {
@@ -128,30 +119,6 @@ function getInitialDrawerWidth(): number {
     }
   } catch {}
   return DRAWER_DEFAULT;
-}
-
-function openNodeTerminal() {
-  if (!props.envId || !props.resource || props.resource.kind !== "Node") return;
-  const env = currentEnv.value;
-  if (!env) {
-    editError.value = "未找到当前环境，无法打开节点终端。";
-    return;
-  }
-  const strategy = getNodeTerminalStrategy(props.envId);
-  const target = buildNodeTerminalCommand(strategy, props.resource.name);
-  if (!target) {
-    editError.value = "请先在设置的 SSH 隧道页配置当前环境的节点终端切换策略。";
-    return;
-  }
-  pendingOpen.value = {
-    kind: "host",
-    envId: props.envId,
-    envName: env.display_name,
-    hostLabel: `${env.display_name} / ${props.resource.name}`,
-    bootstrapCommands: [target.command],
-  };
-  requestSwitchToShell();
-  emit("close");
 }
 
 async function handleStrongholdLocked(message: string, onConfirmed: () => void): Promise<boolean> {
@@ -443,16 +410,7 @@ watch(
         </header>
         <div v-if="props.resource" class="drawer-toolbar">
           <div class="toolbar-head">
-            <button
-              v-if="resource?.kind === 'Node'"
-              type="button"
-              class="btn-secondary-inline"
-              :disabled="!canOpenNodeTerminal"
-              @click="openNodeTerminal"
-            >
-              打开节点终端
-            </button>
-            <template v-else-if="activeTab === 'edit' && rawYaml">
+            <template v-if="activeTab === 'edit' && rawYaml">
               <button
                 type="button"
                 class="btn-primary toolbar-apply"
@@ -1004,24 +962,6 @@ watch(
 }
 .btn-primary:disabled {
   opacity: 0.6;
-  cursor: not-allowed;
-}
-.btn-secondary-inline {
-  padding: 0.55rem 0.95rem;
-  border: 1px solid #cbd5e1;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.92);
-  color: #334155;
-  font-size: 0.8125rem;
-  font-weight: 600;
-  cursor: pointer;
-}
-.btn-secondary-inline:hover:not(:disabled) {
-  border-color: #93c5fd;
-  color: #1d4ed8;
-}
-.btn-secondary-inline:disabled {
-  opacity: 0.55;
   cursor: not-allowed;
 }
 .yaml-scroll {

@@ -131,14 +131,16 @@ async function startHostSessionStream(sessionId: string): Promise<boolean> {
   const session = sessions.value.find((item) => item.id === sessionId);
   if (!session) return false;
   try {
-    const streamId = await hostShellStart(session.envId);
+    const streamId = await hostShellStart(session.envId, session.nodeTerminalLaunch ?? null);
     updateSession(sessionId, {
       streamId,
       status: "connected",
       error: undefined,
       hostLabel: session.hostLabel || `${session.envName} 主机`,
     });
-    scheduleHostBootstrap(streamId, session.bootstrapCommands);
+    if (!session.nodeTerminalLaunch) {
+      scheduleHostBootstrap(streamId, session.bootstrapCommands);
+    }
     clearReconnectState(sessionId);
     return true;
   } catch (e) {
@@ -323,6 +325,7 @@ async function openHostConnectionWithBootstrap(
   envName: string,
   hostLabel?: string,
   bootstrapCommands?: string[],
+  nodeTerminalLaunch?: import("../api/terminal").HostShellBootstrap | null,
   existingSessionId?: string
 ) {
   const nextHostLabel = hostLabel || `${envName} 主机`;
@@ -334,6 +337,7 @@ async function openHostConnectionWithBootstrap(
       envName,
       hostLabel: nextHostLabel,
       bootstrapCommands,
+      nodeTerminalLaunch: nodeTerminalLaunch ?? null,
     });
   if (existingSessionId) {
     updateSession(id, {
@@ -344,14 +348,23 @@ async function openHostConnectionWithBootstrap(
     });
   }
   try {
-    const streamId = await hostShellStart(envId);
+    const streamId = await hostShellStart(envId, nodeTerminalLaunch ?? null);
     updateSession(id, { streamId, status: "connected", error: undefined });
-    scheduleHostBootstrap(streamId, bootstrapCommands);
+    if (!nodeTerminalLaunch) {
+      scheduleHostBootstrap(streamId, bootstrapCommands);
+    }
     clearReconnectState(id);
   } catch (e) {
     const msg = extractErrorMessage(e);
     const isStrongholdRequired = await handleStrongholdLocked(msg, () => {
-      void openHostConnectionWithBootstrap(envId, envName, hostLabel, bootstrapCommands, id);
+      void openHostConnectionWithBootstrap(
+        envId,
+        envName,
+        hostLabel,
+        bootstrapCommands,
+        nodeTerminalLaunch,
+        id
+      );
     });
     if (isStrongholdRequired) {
       updateSession(id, {
@@ -374,7 +387,8 @@ async function handlePendingOpen() {
       pending.envId,
       pending.envName,
       pending.hostLabel,
-      pending.bootstrapCommands
+      pending.bootstrapCommands,
+      pending.nodeTerminalLaunch ?? null
     );
     return;
   }

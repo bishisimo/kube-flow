@@ -2,6 +2,7 @@
  * 终端中心会话状态：统一维护 Pod / 主机会话。
  */
 import { ref, computed } from "vue";
+import type { HostShellBootstrap } from "../api/terminal";
 
 export interface ShellSession {
   id: string;
@@ -16,6 +17,7 @@ export interface ShellSession {
   error?: string;
   hostLabel?: string;
   bootstrapCommands?: string[];
+  nodeTerminalLaunch?: HostShellBootstrap | null;
   /** 从 Workload 打开时，用于 Pod 切换器 */
   workloadKind?: string;
   workloadName?: string;
@@ -32,6 +34,7 @@ export const pendingOpen = ref<{
   namespace?: string;
   hostLabel?: string;
   bootstrapCommands?: string[];
+  nodeTerminalLaunch?: HostShellBootstrap | null;
   /** 直连 Pod 时必填 */
   podName?: string;
   container?: string;

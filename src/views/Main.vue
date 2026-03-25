@@ -17,6 +17,10 @@ import { useStrongholdAuthStore } from "../stores/strongholdAuth";
 import { useShellStore } from "../stores/shell";
 import { useLogCenterStore } from "../stores/logCenter";
 import { useOrchestratorStore } from "../stores/orchestrator";
+import {
+  buildNodeTerminalLaunch,
+  getNodeTerminalStrategy,
+} from "../stores/nodeTerminalStrategy";
 import { effectiveContext } from "../api/env";
 import {
   kubeGetResource,
@@ -582,11 +586,14 @@ const CLUSTER_SCOPED_KINDS: Set<ResourceKind> = new Set([
   "clusterrolebindings",
 ]);
 
-const selectedResource = ref<{
+type SelectedResourceRef = {
   kind: string;
   name: string;
   namespace: string | null;
-} | null>(null);
+  nodeName: string | null;
+};
+
+const selectedResource = ref<SelectedResourceRef | null>(null);
 const detailDrawerVisible = ref(false);
 const detailDrawerInitialTab = ref<string | null>(null);
 const changeImageModalVisible = ref(false);
@@ -641,10 +648,15 @@ function selectResourceFromRow(row: Record<string, unknown>) {
   if (!kindLabel) return null;
   const isCluster = CLUSTER_SCOPED_KINDS.has(selectedKind.value);
   const envDefaultNs = currentEnv.value ? defaultNamespace(currentEnv.value) : null;
+  const nodeName =
+    kindLabel === "Pod"
+      ? typeof row.node === "string" && row.node !== "-" ? row.node : null
+      : null;
   return {
     kind: kindLabel,
     name,
     namespace: isCluster ? null : ((row.ns as string) ?? envDefaultNs ?? "default"),
+    nodeName,
   };
 }
 
@@ -736,6 +748,45 @@ function openPodLogs() {
 }
 
 const SHELL_WORKLOAD_KINDS = new Set(["Pod", "Deployment", "StatefulSet", "DaemonSet"]);
+const NODE_TERMINAL_RESOURCE_KINDS = new Set(["Node", "Pod"]);
+
+const nodeTerminalTargetName = computed(() => {
+  const resource = selectedResource.value;
+  if (!resource) return "";
+  if (resource.kind === "Node") return resource.name;
+  if (resource.kind === "Pod") return resource.nodeName?.trim() ?? "";
+  return "";
+});
+
+const nodeTerminalMenuLabel = computed(() => {
+  if (selectedResource.value?.kind === "Pod") return "打开所在节点终端";
+  return "打开节点终端";
+});
+
+const nodeTerminalDisabledReason = computed(() => {
+  const resource = selectedResource.value;
+  if (!resource || !NODE_TERMINAL_RESOURCE_KINDS.has(resource.kind)) return "";
+  if (!currentId.value || !currentEnv.value) return "当前未定位到环境，无法打开节点终端。";
+  const strategy = getNodeTerminalStrategy(currentId.value);
+  if (!strategy?.enabled) {
+    return "当前环境还没有启用节点终端切换策略，请先到环境管理中的终端策略里配置。";
+  }
+  if (!nodeTerminalTargetName.value) {
+    return resource.kind === "Pod"
+      ? "当前 Pod 尚未调度到节点，暂时无法打开所在节点终端。"
+      : "未找到节点信息，无法打开节点终端。";
+  }
+  return "";
+});
+
+const canOpenNodeTerminal = computed(
+  () =>
+    Boolean(
+      selectedResource.value &&
+        NODE_TERMINAL_RESOURCE_KINDS.has(selectedResource.value.kind) &&
+        !nodeTerminalDisabledReason.value
+    )
+);
 
 function openPodShell() {
   const r = selectedResource.value;
@@ -759,6 +810,26 @@ function openPodShell() {
       workloadName: r.name,
     };
   }
+  requestSwitchToShell();
+  closeActionMenu();
+}
+
+async function openNodeTerminalFromMenu() {
+  const resource = selectedResource.value;
+  const env = currentEnv.value;
+  const envId = currentId.value;
+  const nodeName = nodeTerminalTargetName.value;
+  if (!resource || !env || !envId || !nodeName) return;
+  const strategy = getNodeTerminalStrategy(envId);
+  const target = buildNodeTerminalLaunch(strategy, nodeName);
+  if (!target) return;
+  pendingOpen.value = {
+    kind: "host",
+    envId,
+    envName: env.display_name,
+    hostLabel: `${env.display_name} / ${nodeName}`,
+    nodeTerminalLaunch: target,
+  };
   requestSwitchToShell();
   closeActionMenu();
 }
@@ -1071,7 +1142,7 @@ function openBatchDeleteConfirm() {
   const resources = tableRows.value
     .filter((row) => selectedRowKeys.value.has(getRowKey(row)))
     .map((row) => selectResourceFromRow(row))
-    .filter((r): r is { kind: string; name: string; namespace: string | null } => r !== null);
+    .filter((r): r is SelectedResourceRef => r !== null);
   if (resources.length === 0) return;
   deleteConfirmResources.value = resources;
   deleteConfirmError.value = null;
@@ -2883,6 +2954,21 @@ onUnmounted(() => {
                 <span class="action-menu-sub">进入容器执行命令与排障</span>
               </span>
             </button>
+            <button
+              v-if="selectedResource && NODE_TERMINAL_RESOURCE_KINDS.has(selectedResource.kind)"
+              type="button"
+              class="action-menu-item"
+              :class="{ 'action-menu-item-disabled': !canOpenNodeTerminal }"
+              :disabled="!canOpenNodeTerminal"
+              :title="nodeTerminalDisabledReason || nodeTerminalMenuLabel"
+              @click="openNodeTerminalFromMenu"
+            >
+              <span class="action-menu-icon" aria-hidden="true">🖥</span>
+              <span class="action-menu-text">
+                <span class="action-menu-main">{{ nodeTerminalMenuLabel }}</span>
+                <span class="action-menu-sub">通过环境入口快速切换到目标节点主机</span>
+              </span>
+            </button>
           </div>
           <div class="action-menu-section">
             <div class="action-menu-section-title">编辑与变更</div>
@@ -3361,6 +3447,17 @@ onUnmounted(() => {
 .action-menu-item:hover {
   background: #f1f5f9;
   color: #2563eb;
+}
+.action-menu-item-disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+.action-menu-item-disabled:hover {
+  background: none;
+  color: #334155;
+}
+.action-menu-item-disabled:hover .action-menu-sub {
+  color: #94a3b8;
 }
 .action-menu-section-danger {
   border-left: 2px solid #fecaca;
