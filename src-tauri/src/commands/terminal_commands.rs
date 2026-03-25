@@ -22,7 +22,6 @@ const NODE_TERMINAL_SUDO_PROMPT: &str = "__KUBE_FLOW_SUDO_PROMPT__";
 
 #[cfg(windows)]
 fn apply_no_window(cmd: &mut Command) {
-    use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
     cmd.creation_flags(CREATE_NO_WINDOW);
 }
@@ -34,6 +33,9 @@ fn apply_no_window(_: &mut Command) {}
 struct SshAskpassGuard {
     path: std::path::PathBuf,
 }
+
+#[cfg(not(unix))]
+struct SshAskpassGuard;
 
 #[cfg(unix)]
 impl SshAskpassGuard {
@@ -859,7 +861,10 @@ async fn run_host_shell_process(
                     stream_id.clone(),
                     HostShellSession {
                         stdin_tx,
+                        #[cfg(unix)]
                         resize_tx: Some(resize_tx),
+                        #[cfg(not(unix))]
+                        resize_tx: None,
                         abort_handle,
                     },
                 )
@@ -908,6 +913,11 @@ pub async fn host_shell_start(
 
     match env.source {
         EnvironmentSource::LocalKubeconfig => {
+            #[cfg(windows)]
+            {
+                return Err("Windows 仅支持通过 SSH 打开主机 Shell，不支持本地环境 Shell。".to_string());
+            }
+
             let cmd = if let Some(command) = bootstrap_command {
                 build_local_command(command)
             } else {
