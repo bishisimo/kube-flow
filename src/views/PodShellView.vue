@@ -12,6 +12,7 @@ import {
 } from "../api/kube";
 import { hostShellStart, hostShellStdin, hostShellStop } from "../api/terminal";
 import { useStrongholdAuthStore } from "../stores/strongholdAuth";
+import { useAppSettingsStore } from "../stores/appSettings";
 import PodShellTerminal from "../components/PodShellTerminal.vue";
 
 const {
@@ -27,6 +28,7 @@ const {
 } = useShellStore();
 const { environments } = useEnvStore();
 const strongholdAuth = useStrongholdAuthStore();
+const { terminalInstanceCacheLimit, ensureAppSettingsLoaded } = useAppSettingsStore();
 
 const sessionRailCollapsed = ref(false);
 const podOptions = ref<PodItem[]>([]);
@@ -37,6 +39,7 @@ const reconnectAttemptMap = ref<Record<string, number>>({});
 const reconnectTimerMap = new Map<string, ReturnType<typeof setTimeout>>();
 const reconnectingSessionIds = new Set<string>();
 const suppressEndStreamIds = new Set<string>();
+const terminalActivationOrder = ref<string[]>([]);
 
 const RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000, 15000];
 const MAX_RECONNECT_ATTEMPTS = RECONNECT_DELAYS_MS.length;
@@ -71,6 +74,22 @@ const currentSessionContextName = computed(() => {
   if (!session) return "";
   if (session.kind === "host") return session.hostLabel || `${session.envName} 主机`;
   return session.podName || "Pod";
+});
+
+const hasMountedTerminalSession = computed(() => sessions.value.some((session) => Boolean(session.streamId)));
+const visibleTerminalSessions = computed(() => {
+  const limit = Math.max(1, terminalInstanceCacheLimit.value || 6);
+  const connected = sessions.value.filter((session) => Boolean(session.streamId));
+  if (!connected.length) return [];
+  const order = terminalActivationOrder.value;
+  const rank = new Map<string, number>();
+  order.forEach((id, index) => rank.set(id, index));
+  const sorted = [...connected].sort((a, b) => {
+    const aRank = rank.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+    const bRank = rank.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+    return aRank - bRank;
+  });
+  return sorted.slice(0, limit);
 });
 
 function sessionBadge(session: (typeof sessions.value)[number]): string {
@@ -121,6 +140,13 @@ function clearReconnectState(sessionId: string) {
     reconnectTimerMap.delete(sessionId);
   }
   reconnectingSessionIds.delete(sessionId);
+}
+
+function touchTerminalSession(sessionId: string | null) {
+  if (!sessionId) return;
+  const next = terminalActivationOrder.value.filter((id) => id !== sessionId);
+  next.unshift(sessionId);
+  terminalActivationOrder.value = next;
 }
 
 function markStreamSuppressEnd(streamId: string | null) {
@@ -605,6 +631,7 @@ watch(pendingOpen, (pending) => {
 watch(
   () => currentSession.value,
   async (session) => {
+    touchTerminalSession(session?.id ?? null);
     if (!session) {
       podOptions.value = [];
       containerOptions.value = [];
@@ -625,6 +652,18 @@ watch(
 );
 
 watch(
+  () => sessions.value.map((session) => `${session.id}:${session.streamId ?? ""}`).join("|"),
+  () => {
+    const activeIds = new Set(sessions.value.filter((session) => Boolean(session.streamId)).map((session) => session.id));
+    terminalActivationOrder.value = terminalActivationOrder.value.filter((id) => activeIds.has(id));
+    if (currentSession.value?.streamId) {
+      touchTerminalSession(currentSession.value.id);
+    }
+  },
+  { immediate: true }
+);
+
+watch(
   () => hostEntryOptions.value.map((item) => item.id).join(","),
   () => {
     if (!hostEntryEnvId.value || !hostEntryOptions.value.some((item) => item.id === hostEntryEnvId.value)) {
@@ -635,6 +674,7 @@ watch(
 );
 
 onMounted(() => {
+  void ensureAppSettingsLoaded();
   if (pendingOpen.value) void handlePendingOpen();
 });
 
@@ -762,14 +802,19 @@ onUnmounted(() => {
           </button>
         </div>
 
-        <PodShellTerminal
-          v-if="currentSession.streamId"
-          :stream-id="currentSession.streamId"
-          :mode="currentSession.kind"
-          @end="onTerminalEnd(currentSession.id, $event)"
-        />
+        <div v-if="hasMountedTerminalSession" class="terminal-stack">
+          <PodShellTerminal
+            v-for="session in visibleTerminalSessions"
+            v-show="session.id === currentSession.id && session.streamId"
+            :key="`${session.id}:${session.streamId}`"
+            :stream-id="session.streamId"
+            :mode="session.kind"
+            :active="session.id === currentSession.id"
+            @end="onTerminalEnd(session.id, $event)"
+          />
+        </div>
 
-        <div v-else class="terminal-loading">
+        <div v-if="!currentSession.streamId" class="terminal-loading">
           <p>
             {{ currentSession.status === "reconnecting" ? "正在恢复终端连接…" : "正在建立终端连接…" }}
           </p>
@@ -1196,6 +1241,16 @@ onUnmounted(() => {
 .terminal-stage :deep(.pod-shell-terminal) {
   border-radius: 0 0 20px 20px;
   background: #0f172a;
+}
+
+.terminal-stack {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.terminal-stack :deep(.pod-shell-terminal) {
+  flex: 1;
 }
 
 .terminal-loading,

@@ -12,6 +12,7 @@ const props = defineProps<{
   namespace: string | null;
   workloadKind: string;
   workloadName: string;
+  sessionId?: string;
 }>();
 
 const pods = ref<PodItem[]>([]);
@@ -154,6 +155,7 @@ watch(selectedPod, () => {
         :env-id="props.envId"
         :namespace="props.namespace ?? 'default'"
         :pod-name="selectedPod"
+        :session-id="props.sessionId"
         :external-containers="containers"
         :external-container="selectedContainer"
         :external-containers-loading="containersLoading"

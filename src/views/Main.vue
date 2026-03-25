@@ -4,6 +4,11 @@ import * as jsYaml from "js-yaml";
 import { useEnvStore } from "../stores/env";
 import EnvBar from "../components/EnvBar.vue";
 import { RESOURCE_GROUPS, RESOURCE_KINDS_FLAT, type ResourceKind } from "../constants/resourceKinds";
+import {
+  fetchResourceList,
+  resourceIsClusterScoped,
+  resourceSupportsWatch,
+} from "../resources/resourceRegistry";
 
 const RESOURCE_KINDS = RESOURCE_KINDS_FLAT;
 import ResourceDetailDrawer from "../components/ResourceDetailDrawer.vue";
@@ -26,38 +31,10 @@ import {
   kubeGetResource,
   kubeGetPodContainers,
   kubeListNamespaces,
+  kubeListServices,
   kubeStartWatch,
   kubeStopWatch,
   type NamespaceItem,
-  kubeListNodes,
-  kubeListPods,
-  kubeListDeployments,
-  kubeListReplicaSets,
-  kubeListJobs,
-  kubeListCronJobs,
-  kubeListServices,
-  kubeListStatefulSets,
-  kubeListDaemonSets,
-  kubeListConfigMaps,
-  kubeListSecrets,
-  kubeListServiceAccounts,
-  kubeListPersistentVolumeClaims,
-  kubeListPersistentVolumes,
-  kubeListStorageClasses,
-  kubeListEndpoints,
-  kubeListEndpointSlices,
-  kubeListIngresses,
-  kubeListIngressClasses,
-  kubeListNetworkPolicies,
-  kubeListResourceQuotas,
-  kubeListLimitRanges,
-  kubeListPriorityClasses,
-  kubeListHorizontalPodAutoscalers,
-  kubeListPodDisruptionBudgets,
-  kubeListRoles,
-  kubeListRoleBindings,
-  kubeListClusterRoles,
-  kubeListClusterRoleBindings,
   type PodItem,
   type DeploymentItem,
   type ReplicaSetItem,
@@ -310,10 +287,52 @@ const sortBy = ref<string>("creationTime");
 const sortOrder = ref<"asc" | "desc">("desc");
 const viewSessionId = ref(0);
 const latestListRequestId = ref(0);
-const activeWatchToken = ref("");
+const activeWatchTokens = ref<Record<string, string>>({});
+const activeWatchViews = ref<Record<string, { kind: ResourceKind; namespace: string | null; labelSelector: string | null }>>({});
+
+type ResourceCacheEntry = {
+  envId: string;
+  kind: ResourceKind;
+  namespace: string | null;
+  labelSelector: string | null;
+  items: unknown[];
+  updatedAt: number;
+};
+
+const namespaceCache = new Map<string, NamespaceItem[]>();
+const resourceCache = new Map<string, ResourceCacheEntry>();
 
 function nextToken(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function buildResourceCacheKey(
+  envId: string,
+  kind: ResourceKind,
+  namespace: string | null,
+  labelSelector: string | null
+): string {
+  return `${envId}::${kind}::${namespace ?? ALL_NAMESPACES_SENTINEL}::${labelSelector ?? ""}`;
+}
+
+function setWatchToken(envId: string, token: string) {
+  activeWatchTokens.value = { ...activeWatchTokens.value, [envId]: token };
+}
+
+function setWatchView(envId: string, kind: ResourceKind, namespace: string | null, labelSelector: string | null) {
+  activeWatchViews.value = {
+    ...activeWatchViews.value,
+    [envId]: { kind, namespace, labelSelector },
+  };
+}
+
+function clearWatchToken(envId: string) {
+  const next = { ...activeWatchTokens.value };
+  delete next[envId];
+  activeWatchTokens.value = next;
+  const nextViews = { ...activeWatchViews.value };
+  delete nextViews[envId];
+  activeWatchViews.value = nextViews;
 }
 
 function clearResourceCollections() {
@@ -349,6 +368,129 @@ function clearResourceCollections() {
   podDisruptionBudgets.value = [];
 }
 
+function setResourceItems(kind: ResourceKind, items: unknown[]) {
+  switch (kind) {
+    case "namespaces":
+      namespaceOptions.value = items as NamespaceItem[];
+      break;
+    case "nodes":
+      nodes.value = items as NodeItem[];
+      break;
+    case "pods":
+      pods.value = items as PodItem[];
+      break;
+    case "deployments":
+      deployments.value = items as DeploymentItem[];
+      break;
+    case "services":
+      services.value = items as ServiceItem[];
+      break;
+    case "statefulsets":
+      statefulSets.value = items as StatefulSetItem[];
+      break;
+    case "configmaps":
+      configMaps.value = items as ConfigMapItem[];
+      break;
+    case "secrets":
+      secrets.value = items as SecretItem[];
+      break;
+    case "serviceaccounts":
+      serviceAccounts.value = items as ServiceAccountItem[];
+      break;
+    case "roles":
+      roles.value = items as RoleItem[];
+      break;
+    case "rolebindings":
+      roleBindings.value = items as RoleBindingItem[];
+      break;
+    case "clusterroles":
+      clusterRoles.value = items as ClusterRoleItem[];
+      break;
+    case "clusterrolebindings":
+      clusterRoleBindings.value = items as ClusterRoleBindingItem[];
+      break;
+    case "daemonsets":
+      daemonSets.value = items as DaemonSetItem[];
+      break;
+    case "persistentvolumeclaims":
+      persistentVolumeClaims.value = items as PersistentVolumeClaimItem[];
+      break;
+    case "persistentvolumes":
+      persistentVolumes.value = items as PersistentVolumeItem[];
+      break;
+    case "storageclasses":
+      storageClasses.value = items as StorageClassItem[];
+      break;
+    case "endpoints":
+      endpoints.value = items as EndpointsItem[];
+      break;
+    case "endpointslices":
+      endpointSlices.value = items as EndpointSliceItem[];
+      break;
+    case "replicasets":
+      replicaSets.value = items as ReplicaSetItem[];
+      break;
+    case "jobs":
+      jobs.value = items as JobItem[];
+      break;
+    case "cronjobs":
+      cronJobs.value = items as CronJobItem[];
+      break;
+    case "ingresses":
+      ingresses.value = items as IngressItem[];
+      break;
+    case "ingressclasses":
+      ingressClasses.value = items as IngressClassItem[];
+      break;
+    case "networkpolicies":
+      networkPolicies.value = items as NetworkPolicyItem[];
+      break;
+    case "resourcequotas":
+      resourceQuotas.value = items as ResourceQuotaItem[];
+      break;
+    case "limitranges":
+      limitRanges.value = items as LimitRangeItem[];
+      break;
+    case "priorityclasses":
+      priorityClasses.value = items as PriorityClassItem[];
+      break;
+    case "horizontalpodautoscalers":
+      horizontalPodAutoscalers.value = items as HorizontalPodAutoscalerItem[];
+      break;
+    case "poddisruptionbudgets":
+      podDisruptionBudgets.value = items as PodDisruptionBudgetItem[];
+      break;
+  }
+}
+
+function cacheCurrentView(envId: string, kind: ResourceKind, namespace: string | null, labelSelector: string | null, items: unknown[]) {
+  resourceCache.set(buildResourceCacheKey(envId, kind, namespace, labelSelector), {
+    envId,
+    kind,
+    namespace,
+    labelSelector,
+    items: [...items],
+    updatedAt: Date.now(),
+  });
+}
+
+function applyCachedView(envId: string, kind: ResourceKind, namespace: string | null, labelSelector: string | null): boolean {
+  const cachedNamespaces = namespaceCache.get(envId);
+  const entry = resourceCache.get(buildResourceCacheKey(envId, kind, namespace, labelSelector));
+  if (!cachedNamespaces && !entry) return false;
+  clearResourceCollections();
+  if (cachedNamespaces) {
+    namespaceOptions.value = [...cachedNamespaces];
+  }
+  if (entry) {
+    setResourceItems(kind, [...entry.items]);
+  }
+  envSwitching.value = false;
+  listLoading.value = false;
+  listError.value = null;
+  return true;
+}
+
 function resetTransientWorkbenchState() {
   selectedResource.value = null;
   detailDrawerVisible.value = false;
@@ -368,9 +510,7 @@ function resetTransientWorkbenchState() {
 
 function beginEnvSwitch(nextEnvId: string | null) {
   viewSessionId.value += 1;
-  activeWatchToken.value = "";
   resetTransientWorkbenchState();
-  clearResourceCollections();
   listError.value = null;
   listLoading.value = !!nextEnvId;
   envSwitching.value = !!nextEnvId;
@@ -385,15 +525,6 @@ function isStaleView(envId: string, sessionId: number, requestId?: number): bool
   if (typeof requestId === "number" && latestListRequestId.value !== requestId) return true;
   return false;
 }
-
-/** 当前支持 Watch 的资源类型 */
-const WATCH_SUPPORTED_KINDS: Set<ResourceKind> = new Set([
-  "namespaces",
-  "nodes",
-  "pods",
-  "deployments",
-  "services",
-]);
 
 function onDocClick(e: MouseEvent) {
   const target = e.target as Node;
@@ -451,7 +582,7 @@ const podNodeOptions = computed(() => {
 });
 
 const selectedKindLabel = computed(() => RESOURCE_KINDS.find((k) => k.id === selectedKind.value)?.label ?? selectedKind.value);
-const nsSelectionDisabled = computed(() => CLUSTER_SCOPED_KINDS.has(selectedKind.value));
+const nsSelectionDisabled = computed(() => resourceIsClusterScoped(selectedKind.value));
 
 const favoriteNamespaces = ref<Set<string>>(new Set());
 const recentNamespaces = ref<string[]>([]);
@@ -577,17 +708,6 @@ const API_KIND_TO_ID: Record<string, ResourceKind> = Object.fromEntries(
 ) as Record<string, ResourceKind>;
 
 /** 集群级资源，无需 namespace */
-const CLUSTER_SCOPED_KINDS: Set<ResourceKind> = new Set([
-  "namespaces",
-  "nodes",
-  "persistentvolumes",
-  "storageclasses",
-  "ingressclasses",
-  "priorityclasses",
-  "clusterroles",
-  "clusterrolebindings",
-]);
-
 type SelectedResourceRef = {
   kind: string;
   name: string;
@@ -669,7 +789,7 @@ function selectResourceFromRow(row: Record<string, unknown>) {
   if (!name) return null;
   const kindLabel = RESOURCE_KINDS.find((k) => k.id === selectedKind.value)?.label ?? "";
   if (!kindLabel) return null;
-  const isCluster = CLUSTER_SCOPED_KINDS.has(selectedKind.value);
+  const isCluster = resourceIsClusterScoped(selectedKind.value);
   const envDefaultNs = currentEnv.value ? defaultNamespace(currentEnv.value) : null;
   const nodeName =
     kindLabel === "Pod"
@@ -687,7 +807,7 @@ function selectResourceFromRow(row: Record<string, unknown>) {
 function getRowKey(row: Record<string, unknown>): string {
   const name = row.name as string | undefined;
   if (!name) return "";
-  const isCluster = CLUSTER_SCOPED_KINDS.has(selectedKind.value);
+  const isCluster = resourceIsClusterScoped(selectedKind.value);
   const envDefaultNs = currentEnv.value ? defaultNamespace(currentEnv.value) : null;
   return isCluster ? name : `${(row.ns as string) ?? envDefaultNs ?? "default"}/${name}`;
 }
@@ -1701,18 +1821,23 @@ function compareForSort(a: unknown, b: unknown, order: "asc" | "desc"): number {
   return order === "asc" ? cmp : -cmp;
 }
 
+function compareCreationTime(a: unknown, b: unknown, order: "asc" | "desc"): number {
+  const da = a === "-" || !a ? "" : String(a);
+  const db = b === "-" || !b ? "" : String(b);
+  const cmp = da.localeCompare(db);
+  return order === "asc" ? cmp : -cmp;
+}
+
 function sortRows<T extends Record<string, unknown>>(rows: T[], by: string, order: "asc" | "desc"): T[] {
   if (!by || !rows.length) return rows;
   return [...rows].sort((a, b) => {
-    const va = a[by];
-    const vb = b[by];
-    if (by === "creationTime") {
-      const da = va === "-" || !va ? "" : String(va);
-      const db = vb === "-" || !vb ? "" : String(vb);
-      const cmp = da.localeCompare(db);
-      return order === "asc" ? cmp : -cmp;
-    }
-    return compareForSort(va, vb, order);
+    const primary =
+      by === "creationTime"
+        ? compareCreationTime(a[by], b[by], order)
+        : compareForSort(a[by], b[by], order);
+    if (primary !== 0) return primary;
+
+    return compareForSort(a.name, b.name, "desc");
   });
 }
 
@@ -1778,7 +1903,7 @@ function clearFilterChip(id: ActiveFilterChip["id"]) {
   else if (id === "node") nodeFilter.value = "all";
   else if (id === "podIp") podIpFilter.value = "";
   else if (id === "label") labelSelector.value = "";
-  if (watchEnabled.value && WATCH_SUPPORTED_KINDS.has(selectedKind.value)) applyWatch();
+  if (watchEnabled.value && resourceSupportsWatch(selectedKind.value)) applyWatch();
   else loadList();
 }
 
@@ -1787,7 +1912,7 @@ function clearAllFilters() {
   nodeFilter.value = "all";
   podIpFilter.value = "";
   labelSelector.value = "";
-  if (watchEnabled.value && WATCH_SUPPORTED_KINDS.has(selectedKind.value)) applyWatch();
+  if (watchEnabled.value && resourceSupportsWatch(selectedKind.value)) applyWatch();
   else loadList();
 }
 
@@ -2064,11 +2189,13 @@ async function loadList() {
   }
   const requestId = ++latestListRequestId.value;
   const sessionId = viewSessionId.value;
-  listLoading.value = true;
-  listError.value = null;
-  if (getState(id) !== "connected") setConnecting(id);
   const ns = selectedNamespace.value ?? ALL_NAMESPACES_SENTINEL;
   const labelSel = labelSelector.value.trim() || null;
+  const namespaceKey = selectedKind.value === "namespaces" || selectedKind.value === "nodes" ? null : ns;
+  const hasCache = applyCachedView(id, selectedKind.value, namespaceKey, labelSel);
+  listLoading.value = !hasCache;
+  listError.value = null;
+  if (getState(id) !== "connected") setConnecting(id);
   try {
     await touchEnv(id);
     if (isStaleView(id, sessionId, requestId)) return;
@@ -2076,248 +2203,23 @@ async function loadList() {
     if (isStaleView(id, sessionId, requestId)) return;
     const nextNamespaces = await kubeListNamespaces(id, labelSel);
     if (isStaleView(id, sessionId, requestId)) return;
+    namespaceCache.set(id, [...nextNamespaces]);
     const applyResult = () => {
       clearResourceCollections();
       namespaceOptions.value = nextNamespaces;
       envSwitching.value = false;
+      listLoading.value = false;
     };
-    switch (selectedKind.value) {
-      case "namespaces":
-        applyResult();
-        break;
-      case "nodes":
-        {
-          const items = await kubeListNodes(id, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          nodes.value = items;
-        }
-        break;
-      case "pods":
-        {
-          const items = await kubeListPods(id, ns ?? null, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          pods.value = items;
-        }
-        break;
-      case "deployments":
-        {
-          const items = await kubeListDeployments(id, ns ?? null, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          deployments.value = items;
-        }
-        break;
-      case "services":
-        {
-          const items = await kubeListServices(id, ns ?? null, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          services.value = items;
-        }
-        break;
-      case "statefulsets":
-        {
-          const items = await kubeListStatefulSets(id, ns ?? null, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          statefulSets.value = items;
-        }
-        break;
-      case "configmaps":
-        {
-          const items = await kubeListConfigMaps(id, ns ?? null, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          configMaps.value = items;
-        }
-        break;
-      case "secrets":
-        {
-          const items = await kubeListSecrets(id, ns ?? null, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          secrets.value = items;
-        }
-        break;
-      case "serviceaccounts":
-        {
-          const items = await kubeListServiceAccounts(id, ns ?? null, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          serviceAccounts.value = items;
-        }
-        break;
-      case "roles":
-        {
-          const items = await kubeListRoles(id, ns ?? null, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          roles.value = items;
-        }
-        break;
-      case "rolebindings":
-        {
-          const items = await kubeListRoleBindings(id, ns ?? null, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          roleBindings.value = items;
-        }
-        break;
-      case "clusterroles":
-        {
-          const items = await kubeListClusterRoles(id, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          clusterRoles.value = items;
-        }
-        break;
-      case "clusterrolebindings":
-        {
-          const items = await kubeListClusterRoleBindings(id, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          clusterRoleBindings.value = items;
-        }
-        break;
-      case "daemonsets":
-        {
-          const items = await kubeListDaemonSets(id, ns ?? null, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          daemonSets.value = items;
-        }
-        break;
-      case "persistentvolumeclaims":
-        {
-          const items = await kubeListPersistentVolumeClaims(id, ns ?? null, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          persistentVolumeClaims.value = items;
-        }
-        break;
-      case "persistentvolumes":
-        {
-          const items = await kubeListPersistentVolumes(id, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          persistentVolumes.value = items;
-        }
-        break;
-      case "storageclasses":
-        {
-          const items = await kubeListStorageClasses(id, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          storageClasses.value = items;
-        }
-        break;
-      case "endpoints":
-        {
-          const items = await kubeListEndpoints(id, ns ?? null, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          endpoints.value = items;
-        }
-        break;
-      case "endpointslices":
-        {
-          const items = await kubeListEndpointSlices(id, ns ?? null, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          endpointSlices.value = items;
-        }
-        break;
-      case "replicasets":
-        {
-          const items = await kubeListReplicaSets(id, ns ?? null, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          replicaSets.value = items;
-        }
-        break;
-      case "jobs":
-        {
-          const items = await kubeListJobs(id, ns ?? null, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          jobs.value = items;
-        }
-        break;
-      case "cronjobs":
-        {
-          const items = await kubeListCronJobs(id, ns ?? null, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          cronJobs.value = items;
-        }
-        break;
-      case "ingresses":
-        {
-          const items = await kubeListIngresses(id, ns ?? null, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          ingresses.value = items;
-        }
-        break;
-      case "ingressclasses":
-        {
-          const items = await kubeListIngressClasses(id, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          ingressClasses.value = items;
-        }
-        break;
-      case "networkpolicies":
-        {
-          const items = await kubeListNetworkPolicies(id, ns ?? null, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          networkPolicies.value = items;
-        }
-        break;
-      case "resourcequotas":
-        {
-          const items = await kubeListResourceQuotas(id, ns ?? null, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          resourceQuotas.value = items;
-        }
-        break;
-      case "limitranges":
-        {
-          const items = await kubeListLimitRanges(id, ns ?? null, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          limitRanges.value = items;
-        }
-        break;
-      case "priorityclasses":
-        {
-          const items = await kubeListPriorityClasses(id, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          priorityClasses.value = items;
-        }
-        break;
-      case "horizontalpodautoscalers":
-        {
-          const items = await kubeListHorizontalPodAutoscalers(id, ns ?? null, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          horizontalPodAutoscalers.value = items;
-        }
-        break;
-      case "poddisruptionbudgets":
-        {
-          const items = await kubeListPodDisruptionBudgets(id, ns ?? null, labelSel);
-          if (isStaleView(id, sessionId, requestId)) return;
-          applyResult();
-          podDisruptionBudgets.value = items;
-        }
-        break;
-    }
+    const targetNamespace =
+      selectedKind.value === "namespaces" || resourceIsClusterScoped(selectedKind.value) ? null : ns;
+    const items =
+      selectedKind.value === "namespaces"
+        ? nextNamespaces
+        : await fetchResourceList(selectedKind.value, id, targetNamespace, labelSel);
+    if (isStaleView(id, sessionId, requestId)) return;
+    applyResult();
+    setResourceItems(selectedKind.value, items);
+    cacheCurrentView(id, selectedKind.value, targetNamespace, labelSel, items);
     if (isStaleView(id, sessionId, requestId)) return;
     setConnected(id);
   } catch (e: unknown) {
@@ -2429,7 +2331,7 @@ watch(
   [currentId, selectedNamespace, selectedKind],
   () => {
     const id = currentId.value;
-    if (watchEnabled.value && WATCH_SUPPORTED_KINDS.has(selectedKind.value)) {
+    if (watchEnabled.value && resourceSupportsWatch(selectedKind.value)) {
       applyWatch();
     } else {
       if (id) kubeStopWatch(id).catch(() => {});
@@ -2444,18 +2346,21 @@ function applyWatch() {
   if (!id) return;
   const sessionId = viewSessionId.value;
   const watchToken = nextToken("watch");
-  activeWatchToken.value = watchToken;
-  listLoading.value = true;
+  const ns =
+    selectedKind.value === "namespaces" || selectedKind.value === "nodes" || resourceIsClusterScoped(selectedKind.value)
+      ? null
+      : (selectedNamespace.value ?? ALL_NAMESPACES_SENTINEL);
+  const labelSel = labelSelector.value.trim() || null;
+  const hasCache = applyCachedView(id, selectedKind.value, ns, labelSel);
+  setWatchToken(id, watchToken);
+  setWatchView(id, selectedKind.value, ns, labelSel);
+  listLoading.value = !hasCache;
   listError.value = null;
   envSwitching.value = false;
-  if (!namespaceOptions.value.length) void refreshNamespaceOptions();
+  if (!namespaceCache.has(id)) void refreshNamespaceOptions();
   kubeStopWatch(id).catch(() => {});
-  if (watchEnabled.value && WATCH_SUPPORTED_KINDS.has(selectedKind.value)) {
-    const ns =
-      selectedKind.value === "namespaces" || selectedKind.value === "nodes"
-        ? null
-        : (selectedNamespace.value ?? ALL_NAMESPACES_SENTINEL);
-    kubeStartWatch(id, selectedKind.value, ns, labelSelector.value.trim() || null, watchToken).catch(async (e) => {
+  if (watchEnabled.value && resourceSupportsWatch(selectedKind.value)) {
+    kubeStartWatch(id, selectedKind.value, ns, labelSel, watchToken).catch(async (e) => {
       if (isStaleView(id, sessionId)) return;
       const msg = extractErrorMessage(e);
       const isStrongholdRequired = await strongholdAuth.checkAndHandle(
@@ -2475,6 +2380,7 @@ function applyWatch() {
         setConnecting(id);
         return;
       }
+      clearWatchToken(id);
       listError.value = msg;
       if (isConnectionError(msg)) setDisconnected(id, msg);
     });
@@ -2485,13 +2391,16 @@ watch(watchEnabled, () => {
   const id = currentId.value;
   if (!id) return;
   if (watchEnabled.value) {
-    if (WATCH_SUPPORTED_KINDS.has(selectedKind.value)) {
+    if (resourceSupportsWatch(selectedKind.value)) {
       applyWatch();
     } else {
       loadList();
     }
   } else {
-    kubeStopWatch(id).catch(() => {});
+    for (const env of openedEnvs.value) {
+      kubeStopWatch(env.id).catch(() => {});
+      clearWatchToken(env.id);
+    }
     loadList();
   }
 });
@@ -2505,25 +2414,45 @@ onMounted(async () => {
     (ev) => {
       const payload = ev.payload;
       if (!payload) return;
-      if (payload.envId !== currentId.value) return;
-      if (payload.watchToken !== activeWatchToken.value) return;
+      const envId = payload.envId;
+      if (!envId) return;
+      if (payload.watchToken !== activeWatchTokens.value[envId]) return;
       if (payload?.error) {
-        listError.value = payload.error;
-        const id = currentId.value;
-        if (id && isConnectionError(payload.error)) setDisconnected(id, payload.error);
+        if (envId === currentId.value) {
+          listError.value = payload.error;
+          if (isConnectionError(payload.error)) setDisconnected(envId, payload.error);
+        }
         return;
       }
+      const kind = payload?.kind;
+      const items = payload?.items ?? [];
+      if (!kind) return;
+      const watchView = activeWatchViews.value[envId];
+      if (!watchView) return;
+      const resourceKind = watchView.kind;
+      const namespace = watchView.namespace;
+      const labelSel = watchView.labelSelector;
+      if (resourceKind === "namespaces") {
+        namespaceCache.set(envId, [...(items as NamespaceItem[])]);
+      }
+      cacheCurrentView(envId, resourceKind, namespace, labelSel, items);
+      if (
+        envId !== currentId.value ||
+        resourceKind !== selectedKind.value ||
+        namespace !== (selectedKind.value === "namespaces" || selectedKind.value === "nodes" || resourceIsClusterScoped(selectedKind.value)
+          ? null
+          : (selectedNamespace.value ?? ALL_NAMESPACES_SENTINEL)) ||
+        labelSel !== (labelSelector.value.trim() || null)
+      ) return;
       listError.value = null;
       listLoading.value = false;
       envSwitching.value = false;
       clearResourceCollections();
-      const kind = payload?.kind;
-      const items = payload?.items ?? [];
-      if (kind === "namespaces") namespaceOptions.value = items as NamespaceItem[];
-      else if (kind === "nodes") nodes.value = items as NodeItem[];
-      else if (kind === "pods") pods.value = items as PodItem[];
-      else if (kind === "deployments") deployments.value = items as DeploymentItem[];
-      else if (kind === "services") services.value = items as ServiceItem[];
+      const cachedNamespaces = namespaceCache.get(envId);
+      if (cachedNamespaces) {
+        namespaceOptions.value = [...cachedNamespaces];
+      }
+      setResourceItems(resourceKind, items);
     }
   );
 });
@@ -2531,7 +2460,10 @@ onUnmounted(() => {
   document.removeEventListener("click", onDocClick);
   unlistenConnection?.();
   unlistenWatch?.();
-  if (currentId.value) kubeStopWatch(currentId.value).catch(() => {});
+  for (const env of openedEnvs.value) {
+    kubeStopWatch(env.id).catch(() => {});
+    clearWatchToken(env.id);
+  }
 });
 </script>
 
@@ -2782,7 +2714,7 @@ onUnmounted(() => {
               </div>
               <div class="toolbar-actions">
                 <button
-                  v-if="currentId && WATCH_SUPPORTED_KINDS.has(selectedKind)"
+                  v-if="currentId && resourceSupportsWatch(selectedKind)"
                   type="button"
                   class="btn-watch"
                   :class="{ active: watchEnabled }"
@@ -2836,7 +2768,7 @@ onUnmounted(() => {
                   placeholder="Label 筛选，如 app=nginx"
                   autocomplete="off"
                   title="K8s label selector，如 app=nginx 或 env in (prod,staging)"
-                  @keyup.enter="watchEnabled && WATCH_SUPPORTED_KINDS.has(selectedKind) ? applyWatch() : loadList()"
+                  @keyup.enter="watchEnabled && resourceSupportsWatch(selectedKind) ? applyWatch() : loadList()"
                 />
               </div>
               <div v-if="selectedKind === 'pods' || selectedKind === 'services'" class="toolbar-filters-secondary">

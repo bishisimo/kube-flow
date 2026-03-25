@@ -460,6 +460,20 @@ async fn run_watch(
         "services" => run_watch_services(app, client, env_id, ns, label_selector, watch_token).await,
         "namespaces" => run_watch_namespaces(app, client, env_id, label_selector, watch_token).await,
         "nodes" => run_watch_nodes(app, client, env_id, label_selector, watch_token).await,
+        "statefulsets" => run_watch_statefulsets(app, client, env_id, ns, label_selector, watch_token).await,
+        "configmaps" => run_watch_configmaps(app, client, env_id, ns, label_selector, watch_token).await,
+        "secrets" => run_watch_secrets(app, client, env_id, ns, label_selector, watch_token).await,
+        "serviceaccounts" => run_watch_serviceaccounts(app, client, env_id, ns, label_selector, watch_token).await,
+        "roles" => run_watch_roles(app, client, env_id, ns, label_selector, watch_token).await,
+        "rolebindings" => run_watch_rolebindings(app, client, env_id, ns, label_selector, watch_token).await,
+        "clusterroles" => run_watch_clusterroles(app, client, env_id, label_selector, watch_token).await,
+        "clusterrolebindings" => run_watch_clusterrolebindings(app, client, env_id, label_selector, watch_token).await,
+        "daemonsets" => run_watch_daemonsets(app, client, env_id, ns, label_selector, watch_token).await,
+        "persistentvolumeclaims" => run_watch_persistentvolumeclaims(app, client, env_id, ns, label_selector, watch_token).await,
+        "persistentvolumes" => run_watch_persistentvolumes(app, client, env_id, label_selector, watch_token).await,
+        "storageclasses" => run_watch_storageclasses(app, client, env_id, label_selector, watch_token).await,
+        "endpoints" => run_watch_endpoints(app, client, env_id, ns, label_selector, watch_token).await,
+        "endpointslices" => run_watch_endpointslices(app, client, env_id, ns, label_selector, watch_token).await,
         _ => {
             let _ = app.emit(
                 WATCH_EVENT,
@@ -766,5 +780,357 @@ async fn run_watch_nodes(
         if app.emit(WATCH_EVENT, payload).is_err() {
             break;
         }
+    }
+}
+
+async fn run_watch_statefulsets(
+    app: AppHandle,
+    client: Client,
+    env_id: String,
+    ns: Option<String>,
+    label_selector: Option<String>,
+    watch_token: String,
+) {
+    let all_namespaces = ns.as_deref() == Some(ALL_NAMESPACES_SENTINEL);
+    let ns = ns.unwrap_or_else(|| "default".to_string());
+    let api: Api<StatefulSet> = if all_namespaces { Api::all(client.clone()) } else { Api::namespaced(client.clone(), &ns) };
+    let mut config = WatcherConfig::default();
+    if let Some(ref sel) = label_selector { config = config.labels(sel); }
+    let mut stream = Box::pin(watcher(api, config));
+    let mut items: HashMap<String, StatefulSetItem> = HashMap::new();
+    while let Some(ev) = stream.next().await {
+        match ev {
+            Ok(kube::runtime::watcher::Event::Applied(obj)) => { items.insert(obj.name_any(), statefulset_to_item(obj, &ns)); }
+            Ok(kube::runtime::watcher::Event::Deleted(obj)) => { items.remove(&obj.name_any()); }
+            Ok(kube::runtime::watcher::Event::Restarted(objs)) => {
+                items.clear();
+                for obj in objs { items.insert(obj.name_any(), statefulset_to_item(obj, &ns)); }
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                debug_log::log_list_err("statefulsets/watch", Some(&env_id), &msg, LogLevel::Error);
+                let _ = app.emit(WATCH_EVENT, serde_json::json!({ "envId": env_id, "watchToken": watch_token, "error": msg }));
+                break;
+            }
+        }
+        let payload = serde_json::json!({ "envId": env_id, "watchToken": watch_token, "kind": "statefulsets", "items": items.values().cloned().collect::<Vec<_>>() });
+        if app.emit(WATCH_EVENT, payload).is_err() { break; }
+    }
+}
+
+async fn run_watch_configmaps(app: AppHandle, client: Client, env_id: String, ns: Option<String>, label_selector: Option<String>, watch_token: String) {
+    let all_namespaces = ns.as_deref() == Some(ALL_NAMESPACES_SENTINEL);
+    let ns = ns.unwrap_or_else(|| "default".to_string());
+    let api: Api<ConfigMap> = if all_namespaces { Api::all(client.clone()) } else { Api::namespaced(client.clone(), &ns) };
+    let mut config = WatcherConfig::default();
+    if let Some(ref sel) = label_selector { config = config.labels(sel); }
+    let mut stream = Box::pin(watcher(api, config));
+    let mut items: HashMap<String, ConfigMapItem> = HashMap::new();
+    while let Some(ev) = stream.next().await {
+        match ev {
+            Ok(kube::runtime::watcher::Event::Applied(obj)) => { items.insert(obj.name_any(), configmap_to_item(obj, &ns)); }
+            Ok(kube::runtime::watcher::Event::Deleted(obj)) => { items.remove(&obj.name_any()); }
+            Ok(kube::runtime::watcher::Event::Restarted(objs)) => { items.clear(); for obj in objs { items.insert(obj.name_any(), configmap_to_item(obj, &ns)); } }
+            Err(e) => {
+                let msg = e.to_string();
+                debug_log::log_list_err("configmaps/watch", Some(&env_id), &msg, LogLevel::Error);
+                let _ = app.emit(WATCH_EVENT, serde_json::json!({ "envId": env_id, "watchToken": watch_token, "error": msg }));
+                break;
+            }
+        }
+        let payload = serde_json::json!({ "envId": env_id, "watchToken": watch_token, "kind": "configmaps", "items": items.values().cloned().collect::<Vec<_>>() });
+        if app.emit(WATCH_EVENT, payload).is_err() { break; }
+    }
+}
+
+async fn run_watch_secrets(app: AppHandle, client: Client, env_id: String, ns: Option<String>, label_selector: Option<String>, watch_token: String) {
+    let all_namespaces = ns.as_deref() == Some(ALL_NAMESPACES_SENTINEL);
+    let ns = ns.unwrap_or_else(|| "default".to_string());
+    let api: Api<Secret> = if all_namespaces { Api::all(client.clone()) } else { Api::namespaced(client.clone(), &ns) };
+    let mut config = WatcherConfig::default();
+    if let Some(ref sel) = label_selector { config = config.labels(sel); }
+    let mut stream = Box::pin(watcher(api, config));
+    let mut items: HashMap<String, SecretItem> = HashMap::new();
+    while let Some(ev) = stream.next().await {
+        match ev {
+            Ok(kube::runtime::watcher::Event::Applied(obj)) => { items.insert(obj.name_any(), secret_to_item(obj, &ns)); }
+            Ok(kube::runtime::watcher::Event::Deleted(obj)) => { items.remove(&obj.name_any()); }
+            Ok(kube::runtime::watcher::Event::Restarted(objs)) => { items.clear(); for obj in objs { items.insert(obj.name_any(), secret_to_item(obj, &ns)); } }
+            Err(e) => {
+                let msg = e.to_string();
+                debug_log::log_list_err("secrets/watch", Some(&env_id), &msg, LogLevel::Error);
+                let _ = app.emit(WATCH_EVENT, serde_json::json!({ "envId": env_id, "watchToken": watch_token, "error": msg }));
+                break;
+            }
+        }
+        let payload = serde_json::json!({ "envId": env_id, "watchToken": watch_token, "kind": "secrets", "items": items.values().cloned().collect::<Vec<_>>() });
+        if app.emit(WATCH_EVENT, payload).is_err() { break; }
+    }
+}
+
+async fn run_watch_serviceaccounts(app: AppHandle, client: Client, env_id: String, ns: Option<String>, label_selector: Option<String>, watch_token: String) {
+    let all_namespaces = ns.as_deref() == Some(ALL_NAMESPACES_SENTINEL);
+    let ns = ns.unwrap_or_else(|| "default".to_string());
+    let api: Api<ServiceAccount> = if all_namespaces { Api::all(client.clone()) } else { Api::namespaced(client.clone(), &ns) };
+    let mut config = WatcherConfig::default();
+    if let Some(ref sel) = label_selector { config = config.labels(sel); }
+    let mut stream = Box::pin(watcher(api, config));
+    let mut items: HashMap<String, ServiceAccountItem> = HashMap::new();
+    while let Some(ev) = stream.next().await {
+        match ev {
+            Ok(kube::runtime::watcher::Event::Applied(obj)) => { items.insert(obj.name_any(), serviceaccount_to_item(obj, &ns)); }
+            Ok(kube::runtime::watcher::Event::Deleted(obj)) => { items.remove(&obj.name_any()); }
+            Ok(kube::runtime::watcher::Event::Restarted(objs)) => { items.clear(); for obj in objs { items.insert(obj.name_any(), serviceaccount_to_item(obj, &ns)); } }
+            Err(e) => {
+                let msg = e.to_string();
+                debug_log::log_list_err("serviceaccounts/watch", Some(&env_id), &msg, LogLevel::Error);
+                let _ = app.emit(WATCH_EVENT, serde_json::json!({ "envId": env_id, "watchToken": watch_token, "error": msg }));
+                break;
+            }
+        }
+        let payload = serde_json::json!({ "envId": env_id, "watchToken": watch_token, "kind": "serviceaccounts", "items": items.values().cloned().collect::<Vec<_>>() });
+        if app.emit(WATCH_EVENT, payload).is_err() { break; }
+    }
+}
+
+async fn run_watch_roles(app: AppHandle, client: Client, env_id: String, ns: Option<String>, label_selector: Option<String>, watch_token: String) {
+    let all_namespaces = ns.as_deref() == Some(ALL_NAMESPACES_SENTINEL);
+    let ns = ns.unwrap_or_else(|| "default".to_string());
+    let api: Api<Role> = if all_namespaces { Api::all(client.clone()) } else { Api::namespaced(client.clone(), &ns) };
+    let mut config = WatcherConfig::default();
+    if let Some(ref sel) = label_selector { config = config.labels(sel); }
+    let mut stream = Box::pin(watcher(api, config));
+    let mut items: HashMap<String, RoleItem> = HashMap::new();
+    while let Some(ev) = stream.next().await {
+        match ev {
+            Ok(kube::runtime::watcher::Event::Applied(obj)) => { items.insert(obj.name_any(), role_to_item(obj, &ns)); }
+            Ok(kube::runtime::watcher::Event::Deleted(obj)) => { items.remove(&obj.name_any()); }
+            Ok(kube::runtime::watcher::Event::Restarted(objs)) => { items.clear(); for obj in objs { items.insert(obj.name_any(), role_to_item(obj, &ns)); } }
+            Err(e) => {
+                let msg = e.to_string();
+                debug_log::log_list_err("roles/watch", Some(&env_id), &msg, LogLevel::Error);
+                let _ = app.emit(WATCH_EVENT, serde_json::json!({ "envId": env_id, "watchToken": watch_token, "error": msg }));
+                break;
+            }
+        }
+        let payload = serde_json::json!({ "envId": env_id, "watchToken": watch_token, "kind": "roles", "items": items.values().cloned().collect::<Vec<_>>() });
+        if app.emit(WATCH_EVENT, payload).is_err() { break; }
+    }
+}
+
+async fn run_watch_rolebindings(app: AppHandle, client: Client, env_id: String, ns: Option<String>, label_selector: Option<String>, watch_token: String) {
+    let all_namespaces = ns.as_deref() == Some(ALL_NAMESPACES_SENTINEL);
+    let ns = ns.unwrap_or_else(|| "default".to_string());
+    let api: Api<RoleBinding> = if all_namespaces { Api::all(client.clone()) } else { Api::namespaced(client.clone(), &ns) };
+    let mut config = WatcherConfig::default();
+    if let Some(ref sel) = label_selector { config = config.labels(sel); }
+    let mut stream = Box::pin(watcher(api, config));
+    let mut items: HashMap<String, RoleBindingItem> = HashMap::new();
+    while let Some(ev) = stream.next().await {
+        match ev {
+            Ok(kube::runtime::watcher::Event::Applied(obj)) => { items.insert(obj.name_any(), rolebinding_to_item(obj, &ns)); }
+            Ok(kube::runtime::watcher::Event::Deleted(obj)) => { items.remove(&obj.name_any()); }
+            Ok(kube::runtime::watcher::Event::Restarted(objs)) => { items.clear(); for obj in objs { items.insert(obj.name_any(), rolebinding_to_item(obj, &ns)); } }
+            Err(e) => {
+                let msg = e.to_string();
+                debug_log::log_list_err("rolebindings/watch", Some(&env_id), &msg, LogLevel::Error);
+                let _ = app.emit(WATCH_EVENT, serde_json::json!({ "envId": env_id, "watchToken": watch_token, "error": msg }));
+                break;
+            }
+        }
+        let payload = serde_json::json!({ "envId": env_id, "watchToken": watch_token, "kind": "rolebindings", "items": items.values().cloned().collect::<Vec<_>>() });
+        if app.emit(WATCH_EVENT, payload).is_err() { break; }
+    }
+}
+
+async fn run_watch_clusterroles(app: AppHandle, client: Client, env_id: String, label_selector: Option<String>, watch_token: String) {
+    let api: Api<ClusterRole> = Api::all(client.clone());
+    let mut config = WatcherConfig::default();
+    if let Some(ref sel) = label_selector { config = config.labels(sel); }
+    let mut stream = Box::pin(watcher(api, config));
+    let mut items: HashMap<String, ClusterRoleItem> = HashMap::new();
+    while let Some(ev) = stream.next().await {
+        match ev {
+            Ok(kube::runtime::watcher::Event::Applied(obj)) => { items.insert(obj.name_any(), clusterrole_to_item(obj)); }
+            Ok(kube::runtime::watcher::Event::Deleted(obj)) => { items.remove(&obj.name_any()); }
+            Ok(kube::runtime::watcher::Event::Restarted(objs)) => { items.clear(); for obj in objs { items.insert(obj.name_any(), clusterrole_to_item(obj)); } }
+            Err(e) => {
+                let msg = e.to_string();
+                debug_log::log_list_err("clusterroles/watch", Some(&env_id), &msg, LogLevel::Error);
+                let _ = app.emit(WATCH_EVENT, serde_json::json!({ "envId": env_id, "watchToken": watch_token, "error": msg }));
+                break;
+            }
+        }
+        let payload = serde_json::json!({ "envId": env_id, "watchToken": watch_token, "kind": "clusterroles", "items": items.values().cloned().collect::<Vec<_>>() });
+        if app.emit(WATCH_EVENT, payload).is_err() { break; }
+    }
+}
+
+async fn run_watch_clusterrolebindings(app: AppHandle, client: Client, env_id: String, label_selector: Option<String>, watch_token: String) {
+    let api: Api<ClusterRoleBinding> = Api::all(client.clone());
+    let mut config = WatcherConfig::default();
+    if let Some(ref sel) = label_selector { config = config.labels(sel); }
+    let mut stream = Box::pin(watcher(api, config));
+    let mut items: HashMap<String, ClusterRoleBindingItem> = HashMap::new();
+    while let Some(ev) = stream.next().await {
+        match ev {
+            Ok(kube::runtime::watcher::Event::Applied(obj)) => { items.insert(obj.name_any(), clusterrolebinding_to_item(obj)); }
+            Ok(kube::runtime::watcher::Event::Deleted(obj)) => { items.remove(&obj.name_any()); }
+            Ok(kube::runtime::watcher::Event::Restarted(objs)) => { items.clear(); for obj in objs { items.insert(obj.name_any(), clusterrolebinding_to_item(obj)); } }
+            Err(e) => {
+                let msg = e.to_string();
+                debug_log::log_list_err("clusterrolebindings/watch", Some(&env_id), &msg, LogLevel::Error);
+                let _ = app.emit(WATCH_EVENT, serde_json::json!({ "envId": env_id, "watchToken": watch_token, "error": msg }));
+                break;
+            }
+        }
+        let payload = serde_json::json!({ "envId": env_id, "watchToken": watch_token, "kind": "clusterrolebindings", "items": items.values().cloned().collect::<Vec<_>>() });
+        if app.emit(WATCH_EVENT, payload).is_err() { break; }
+    }
+}
+
+async fn run_watch_daemonsets(app: AppHandle, client: Client, env_id: String, ns: Option<String>, label_selector: Option<String>, watch_token: String) {
+    let all_namespaces = ns.as_deref() == Some(ALL_NAMESPACES_SENTINEL);
+    let ns = ns.unwrap_or_else(|| "default".to_string());
+    let api: Api<DaemonSet> = if all_namespaces { Api::all(client.clone()) } else { Api::namespaced(client.clone(), &ns) };
+    let mut config = WatcherConfig::default();
+    if let Some(ref sel) = label_selector { config = config.labels(sel); }
+    let mut stream = Box::pin(watcher(api, config));
+    let mut items: HashMap<String, DaemonSetItem> = HashMap::new();
+    while let Some(ev) = stream.next().await {
+        match ev {
+            Ok(kube::runtime::watcher::Event::Applied(obj)) => { items.insert(obj.name_any(), daemonset_to_item(obj, &ns)); }
+            Ok(kube::runtime::watcher::Event::Deleted(obj)) => { items.remove(&obj.name_any()); }
+            Ok(kube::runtime::watcher::Event::Restarted(objs)) => { items.clear(); for obj in objs { items.insert(obj.name_any(), daemonset_to_item(obj, &ns)); } }
+            Err(e) => {
+                let msg = e.to_string();
+                debug_log::log_list_err("daemonsets/watch", Some(&env_id), &msg, LogLevel::Error);
+                let _ = app.emit(WATCH_EVENT, serde_json::json!({ "envId": env_id, "watchToken": watch_token, "error": msg }));
+                break;
+            }
+        }
+        let payload = serde_json::json!({ "envId": env_id, "watchToken": watch_token, "kind": "daemonsets", "items": items.values().cloned().collect::<Vec<_>>() });
+        if app.emit(WATCH_EVENT, payload).is_err() { break; }
+    }
+}
+
+async fn run_watch_persistentvolumeclaims(app: AppHandle, client: Client, env_id: String, ns: Option<String>, label_selector: Option<String>, watch_token: String) {
+    let all_namespaces = ns.as_deref() == Some(ALL_NAMESPACES_SENTINEL);
+    let ns = ns.unwrap_or_else(|| "default".to_string());
+    let api: Api<PersistentVolumeClaim> = if all_namespaces { Api::all(client.clone()) } else { Api::namespaced(client.clone(), &ns) };
+    let mut config = WatcherConfig::default();
+    if let Some(ref sel) = label_selector { config = config.labels(sel); }
+    let mut stream = Box::pin(watcher(api, config));
+    let mut items: HashMap<String, PersistentVolumeClaimItem> = HashMap::new();
+    while let Some(ev) = stream.next().await {
+        match ev {
+            Ok(kube::runtime::watcher::Event::Applied(obj)) => { items.insert(obj.name_any(), pvc_to_item(obj, &ns)); }
+            Ok(kube::runtime::watcher::Event::Deleted(obj)) => { items.remove(&obj.name_any()); }
+            Ok(kube::runtime::watcher::Event::Restarted(objs)) => { items.clear(); for obj in objs { items.insert(obj.name_any(), pvc_to_item(obj, &ns)); } }
+            Err(e) => {
+                let msg = e.to_string();
+                debug_log::log_list_err("persistentvolumeclaims/watch", Some(&env_id), &msg, LogLevel::Error);
+                let _ = app.emit(WATCH_EVENT, serde_json::json!({ "envId": env_id, "watchToken": watch_token, "error": msg }));
+                break;
+            }
+        }
+        let payload = serde_json::json!({ "envId": env_id, "watchToken": watch_token, "kind": "persistentvolumeclaims", "items": items.values().cloned().collect::<Vec<_>>() });
+        if app.emit(WATCH_EVENT, payload).is_err() { break; }
+    }
+}
+
+async fn run_watch_persistentvolumes(app: AppHandle, client: Client, env_id: String, label_selector: Option<String>, watch_token: String) {
+    let api: Api<PersistentVolume> = Api::all(client.clone());
+    let mut config = WatcherConfig::default();
+    if let Some(ref sel) = label_selector { config = config.labels(sel); }
+    let mut stream = Box::pin(watcher(api, config));
+    let mut items: HashMap<String, PersistentVolumeItem> = HashMap::new();
+    while let Some(ev) = stream.next().await {
+        match ev {
+            Ok(kube::runtime::watcher::Event::Applied(obj)) => { items.insert(obj.name_any(), pv_to_item(obj)); }
+            Ok(kube::runtime::watcher::Event::Deleted(obj)) => { items.remove(&obj.name_any()); }
+            Ok(kube::runtime::watcher::Event::Restarted(objs)) => { items.clear(); for obj in objs { items.insert(obj.name_any(), pv_to_item(obj)); } }
+            Err(e) => {
+                let msg = e.to_string();
+                debug_log::log_list_err("persistentvolumes/watch", Some(&env_id), &msg, LogLevel::Error);
+                let _ = app.emit(WATCH_EVENT, serde_json::json!({ "envId": env_id, "watchToken": watch_token, "error": msg }));
+                break;
+            }
+        }
+        let payload = serde_json::json!({ "envId": env_id, "watchToken": watch_token, "kind": "persistentvolumes", "items": items.values().cloned().collect::<Vec<_>>() });
+        if app.emit(WATCH_EVENT, payload).is_err() { break; }
+    }
+}
+
+async fn run_watch_storageclasses(app: AppHandle, client: Client, env_id: String, label_selector: Option<String>, watch_token: String) {
+    let api: Api<StorageClass> = Api::all(client.clone());
+    let mut config = WatcherConfig::default();
+    if let Some(ref sel) = label_selector { config = config.labels(sel); }
+    let mut stream = Box::pin(watcher(api, config));
+    let mut items: HashMap<String, StorageClassItem> = HashMap::new();
+    while let Some(ev) = stream.next().await {
+        match ev {
+            Ok(kube::runtime::watcher::Event::Applied(obj)) => { items.insert(obj.name_any(), storageclass_to_item(obj)); }
+            Ok(kube::runtime::watcher::Event::Deleted(obj)) => { items.remove(&obj.name_any()); }
+            Ok(kube::runtime::watcher::Event::Restarted(objs)) => { items.clear(); for obj in objs { items.insert(obj.name_any(), storageclass_to_item(obj)); } }
+            Err(e) => {
+                let msg = e.to_string();
+                debug_log::log_list_err("storageclasses/watch", Some(&env_id), &msg, LogLevel::Error);
+                let _ = app.emit(WATCH_EVENT, serde_json::json!({ "envId": env_id, "watchToken": watch_token, "error": msg }));
+                break;
+            }
+        }
+        let payload = serde_json::json!({ "envId": env_id, "watchToken": watch_token, "kind": "storageclasses", "items": items.values().cloned().collect::<Vec<_>>() });
+        if app.emit(WATCH_EVENT, payload).is_err() { break; }
+    }
+}
+
+async fn run_watch_endpoints(app: AppHandle, client: Client, env_id: String, ns: Option<String>, label_selector: Option<String>, watch_token: String) {
+    let all_namespaces = ns.as_deref() == Some(ALL_NAMESPACES_SENTINEL);
+    let ns = ns.unwrap_or_else(|| "default".to_string());
+    let api: Api<Endpoints> = if all_namespaces { Api::all(client.clone()) } else { Api::namespaced(client.clone(), &ns) };
+    let mut config = WatcherConfig::default();
+    if let Some(ref sel) = label_selector { config = config.labels(sel); }
+    let mut stream = Box::pin(watcher(api, config));
+    let mut items: HashMap<String, EndpointsItem> = HashMap::new();
+    while let Some(ev) = stream.next().await {
+        match ev {
+            Ok(kube::runtime::watcher::Event::Applied(obj)) => { items.insert(obj.name_any(), endpoints_to_item(obj, &ns)); }
+            Ok(kube::runtime::watcher::Event::Deleted(obj)) => { items.remove(&obj.name_any()); }
+            Ok(kube::runtime::watcher::Event::Restarted(objs)) => { items.clear(); for obj in objs { items.insert(obj.name_any(), endpoints_to_item(obj, &ns)); } }
+            Err(e) => {
+                let msg = e.to_string();
+                debug_log::log_list_err("endpoints/watch", Some(&env_id), &msg, LogLevel::Error);
+                let _ = app.emit(WATCH_EVENT, serde_json::json!({ "envId": env_id, "watchToken": watch_token, "error": msg }));
+                break;
+            }
+        }
+        let payload = serde_json::json!({ "envId": env_id, "watchToken": watch_token, "kind": "endpoints", "items": items.values().cloned().collect::<Vec<_>>() });
+        if app.emit(WATCH_EVENT, payload).is_err() { break; }
+    }
+}
+
+async fn run_watch_endpointslices(app: AppHandle, client: Client, env_id: String, ns: Option<String>, label_selector: Option<String>, watch_token: String) {
+    let all_namespaces = ns.as_deref() == Some(ALL_NAMESPACES_SENTINEL);
+    let ns = ns.unwrap_or_else(|| "default".to_string());
+    let api: Api<EndpointSlice> = if all_namespaces { Api::all(client.clone()) } else { Api::namespaced(client.clone(), &ns) };
+    let mut config = WatcherConfig::default();
+    if let Some(ref sel) = label_selector { config = config.labels(sel); }
+    let mut stream = Box::pin(watcher(api, config));
+    let mut items: HashMap<String, EndpointSliceItem> = HashMap::new();
+    while let Some(ev) = stream.next().await {
+        match ev {
+            Ok(kube::runtime::watcher::Event::Applied(obj)) => { items.insert(obj.name_any(), endpointslice_to_item(obj, &ns)); }
+            Ok(kube::runtime::watcher::Event::Deleted(obj)) => { items.remove(&obj.name_any()); }
+            Ok(kube::runtime::watcher::Event::Restarted(objs)) => { items.clear(); for obj in objs { items.insert(obj.name_any(), endpointslice_to_item(obj, &ns)); } }
+            Err(e) => {
+                let msg = e.to_string();
+                debug_log::log_list_err("endpointslices/watch", Some(&env_id), &msg, LogLevel::Error);
+                let _ = app.emit(WATCH_EVENT, serde_json::json!({ "envId": env_id, "watchToken": watch_token, "error": msg }));
+                break;
+            }
+        }
+        let payload = serde_json::json!({ "envId": env_id, "watchToken": watch_token, "kind": "endpointslices", "items": items.values().cloned().collect::<Vec<_>>() });
+        if app.emit(WATCH_EVENT, payload).is_err() { break; }
     }
 }

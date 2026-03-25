@@ -18,9 +18,13 @@ import { useYamlTheme, useYamlMonacoTheme, YAML_THEMES } from "../stores/yamlThe
 import {
   appSettingsGetAutoSnapshotEnabled,
   appSettingsGetAutoSnapshotLimitPerResource,
+  appSettingsGetLogActiveStreamLimit,
+  appSettingsGetTerminalInstanceCacheLimit,
   appSettingsGetSshTunnelMode,
   appSettingsSetAutoSnapshotEnabled,
   appSettingsSetAutoSnapshotLimitPerResource,
+  appSettingsSetLogActiveStreamLimit,
+  appSettingsSetTerminalInstanceCacheLimit,
   appSettingsSetSshTunnelMode,
   type TunnelMappingMode,
 } from "../api/config";
@@ -56,7 +60,7 @@ const CATEGORIES: { id: CategoryId; label: string; icon: string }[] = [
 const { themeId } = useYamlTheme();
 const { monacoTheme } = useYamlMonacoTheme();
 const { triggerLogRefresh } = useLogStore();
-const { autoSnapshotEnabled, autoSnapshotLimitPerResource } = useAppSettingsStore();
+const { autoSnapshotEnabled, autoSnapshotLimitPerResource, terminalInstanceCacheLimit, logActiveStreamLimit } = useAppSettingsStore();
 const { loadEnvironments } = useEnvStore();
 const activeCategory = ref<CategoryId>("appearance");
 const currentLevel = ref<string>("off");
@@ -66,6 +70,8 @@ const currentLogTailLines = ref(100);
 const currentSshTunnelMode = ref<TunnelMappingMode>("ssh");
 const currentAutoSnapshotEnabled = ref(true);
 const currentAutoSnapshotLimitPerResource = ref(10);
+const currentTerminalInstanceCacheLimit = ref(6);
+const currentLogActiveStreamLimit = ref(3);
 const saving = ref(false);
 const message = ref<string | null>(null);
 const yamlThemePreview = `apiVersion: apps/v1
@@ -122,12 +128,14 @@ const tempStrongholdPath = ref("");
 
 async function load() {
   try {
-    const [level, settings, sshMode, autoSnapshot, autoSnapshotLimit] = await Promise.all([
+    const [level, settings, sshMode, autoSnapshot, autoSnapshotLimit, terminalCacheLimit, activeLogLimit] = await Promise.all([
       logGetLevel(),
       logGetDisplaySettings(),
       appSettingsGetSshTunnelMode(),
       appSettingsGetAutoSnapshotEnabled(),
       appSettingsGetAutoSnapshotLimitPerResource(),
+      appSettingsGetTerminalInstanceCacheLimit(),
+      appSettingsGetLogActiveStreamLimit(),
     ]);
     currentLevel.value = level;
     currentOrder.value = settings.order;
@@ -136,10 +144,16 @@ async function load() {
     currentSshTunnelMode.value = sshMode;
     currentAutoSnapshotEnabled.value = autoSnapshot;
     currentAutoSnapshotLimitPerResource.value = Math.max(0, Math.floor(autoSnapshotLimit || 0));
+    currentTerminalInstanceCacheLimit.value = Math.min(20, Math.max(1, Math.floor(terminalCacheLimit || 6)));
+    currentLogActiveStreamLimit.value = Math.min(12, Math.max(1, Math.floor(activeLogLimit || 3)));
     autoSnapshotEnabled.value = autoSnapshot;
     autoSnapshotLimitPerResource.value = currentAutoSnapshotLimitPerResource.value;
+    terminalInstanceCacheLimit.value = currentTerminalInstanceCacheLimit.value;
+    logActiveStreamLimit.value = currentLogActiveStreamLimit.value;
   } catch {
     currentLevel.value = "off";
+    currentTerminalInstanceCacheLimit.value = 6;
+    currentLogActiveStreamLimit.value = 3;
   }
   await loadEnvironments().catch(() => {});
 }
@@ -311,6 +325,38 @@ async function saveAutoSnapshotLimitPerResource(limit: number) {
   }
 }
 
+async function saveTerminalInstanceCacheLimit(limit: number) {
+  const normalized = Math.min(20, Math.max(1, Math.floor(Number.isFinite(limit) ? limit : 6)));
+  currentTerminalInstanceCacheLimit.value = normalized;
+  saving.value = true;
+  message.value = null;
+  try {
+    await appSettingsSetTerminalInstanceCacheLimit(normalized);
+    terminalInstanceCacheLimit.value = normalized;
+    message.value = "已保存";
+  } catch (e) {
+    message.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function saveLogActiveStreamLimit(limit: number) {
+  const normalized = Math.min(12, Math.max(1, Math.floor(Number.isFinite(limit) ? limit : 3)));
+  currentLogActiveStreamLimit.value = normalized;
+  saving.value = true;
+  message.value = null;
+  try {
+    await appSettingsSetLogActiveStreamLimit(normalized);
+    logActiveStreamLimit.value = normalized;
+    message.value = "已保存";
+  } catch (e) {
+    message.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    saving.value = false;
+  }
+}
+
 async function saveLevel(level: LogLevel) {
   saving.value = true;
   message.value = null;
@@ -450,6 +496,41 @@ onMounted(() => {
             {{ message }}
           </p>
         </section>
+
+        <section class="card">
+          <h2 class="card-title">终端工作流</h2>
+          <p class="card-desc">控制终端中心在前端保留多少个最近活跃的终端实例，用来平衡切换体验和内存占用。</p>
+          <div class="setting-row">
+            <div class="setting-copy">
+              <div class="setting-title">终端实例缓存数量</div>
+              <div class="setting-desc">默认 6 个。终端中心会保留最近活跃的终端实例屏幕历史，超出后仅回收前端实例，不会关闭会话本身。</div>
+            </div>
+            <div class="setting-input-wrap">
+              <input
+                v-model.number="currentTerminalInstanceCacheLimit"
+                type="number"
+                min="1"
+                max="20"
+                step="1"
+                class="setting-number-input"
+                :disabled="saving"
+                @blur="saveTerminalInstanceCacheLimit(currentTerminalInstanceCacheLimit)"
+              />
+              <button
+                type="button"
+                class="level-btn"
+                :disabled="saving"
+                @click="saveTerminalInstanceCacheLimit(currentTerminalInstanceCacheLimit)"
+              >
+                保存数量
+              </button>
+            </div>
+          </div>
+          <p v-if="message" class="message" :class="{ error: message !== '已保存' }">
+            <span v-if="message === '已保存'" class="message-icon">✓</span>
+            {{ message }}
+          </p>
+        </section>
       </template>
 
       <!-- 调试 -->
@@ -533,6 +614,41 @@ onMounted(() => {
                 @click="saveLogTailLines(currentLogTailLines)"
               >
                 保存行数
+              </button>
+            </div>
+          </div>
+          <p v-if="message" class="message" :class="{ error: message !== '已保存' }">
+            <span v-if="message === '已保存'" class="message-icon">✓</span>
+            {{ message }}
+          </p>
+        </section>
+
+        <section class="card">
+          <h2 class="card-title">日志中心</h2>
+          <p class="card-desc">控制日志中心同时保活的实时 follow 日志流数量。超出上限的会话会保留已加载内容，但暂停实时流。</p>
+          <div class="setting-row">
+            <div class="setting-copy">
+              <div class="setting-title">活跃日志流数量</div>
+              <div class="setting-desc">默认 3 个。最近活跃的日志会话会优先保留实时 follow，切换回来时会自动恢复。</div>
+            </div>
+            <div class="setting-input-wrap">
+              <input
+                v-model.number="currentLogActiveStreamLimit"
+                type="number"
+                min="1"
+                max="12"
+                step="1"
+                class="setting-number-input"
+                :disabled="saving"
+                @blur="saveLogActiveStreamLimit(currentLogActiveStreamLimit)"
+              />
+              <button
+                type="button"
+                class="level-btn"
+                :disabled="saving"
+                @click="saveLogActiveStreamLimit(currentLogActiveStreamLimit)"
+              >
+                保存数量
               </button>
             </div>
           </div>

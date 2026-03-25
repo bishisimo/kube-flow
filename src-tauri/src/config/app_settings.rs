@@ -100,6 +100,12 @@ pub struct AppSettingsConfig {
     /// 每个资源自动快照数量上限；默认 10，仅作用于自动快照。0 表示不自动淘汰。
     #[serde(default = "default_auto_snapshot_limit_per_resource")]
     pub auto_snapshot_limit_per_resource: u32,
+    /// 终端中心前端缓存的终端实例数量上限；默认 6。
+    #[serde(default = "default_terminal_instance_cache_limit")]
+    pub terminal_instance_cache_limit: u32,
+    /// 日志中心允许同时保活的实时日志流数量上限；默认 3。
+    #[serde(default = "default_log_active_stream_limit")]
+    pub log_active_stream_limit: u32,
     /// 凭证存储与安全设置。
     #[serde(default)]
     pub security: SecurityConfig,
@@ -115,6 +121,14 @@ fn default_log_tail_lines() -> u32 {
 
 fn default_auto_snapshot_limit_per_resource() -> u32 {
     10
+}
+
+fn default_terminal_instance_cache_limit() -> u32 {
+    6
+}
+
+fn default_log_active_stream_limit() -> u32 {
+    3
 }
 
 impl AppSettingsConfig {
@@ -185,6 +199,22 @@ impl AppSettingsConfig {
         self.auto_snapshot_limit_per_resource = limit;
     }
 
+    pub fn terminal_instance_cache_limit(&self) -> u32 {
+        self.terminal_instance_cache_limit.clamp(1, 20)
+    }
+
+    pub fn set_terminal_instance_cache_limit(&mut self, limit: u32) {
+        self.terminal_instance_cache_limit = limit.clamp(1, 20);
+    }
+
+    pub fn log_active_stream_limit(&self) -> u32 {
+        self.log_active_stream_limit.clamp(1, 12)
+    }
+
+    pub fn set_log_active_stream_limit(&mut self, limit: u32) {
+        self.log_active_stream_limit = limit.clamp(1, 12);
+    }
+
 }
 
 /// 日志显示顺序：asc=正序（旧→新），desc=倒序（新→旧）。
@@ -253,6 +283,10 @@ struct AppSettingsFile {
     auto_snapshot_enabled: bool,
     #[serde(default = "default_auto_snapshot_limit_per_resource")]
     auto_snapshot_limit_per_resource: u32,
+    #[serde(default = "default_terminal_instance_cache_limit")]
+    terminal_instance_cache_limit: u32,
+    #[serde(default = "default_log_active_stream_limit")]
+    log_active_stream_limit: u32,
     #[serde(default)]
     security: SecurityConfig,
 }
@@ -291,6 +325,8 @@ impl AppSettingsConfig {
             },
             auto_snapshot_enabled: file.auto_snapshot_enabled,
             auto_snapshot_limit_per_resource: file.auto_snapshot_limit_per_resource,
+            terminal_instance_cache_limit: file.terminal_instance_cache_limit,
+            log_active_stream_limit: file.log_active_stream_limit,
             security: file.security,
         })
     }
@@ -307,6 +343,8 @@ impl AppSettingsConfig {
             default_ssh_tunnel_mode: self.default_ssh_tunnel_mode.clone(),
             auto_snapshot_enabled: self.auto_snapshot_enabled,
             auto_snapshot_limit_per_resource: self.auto_snapshot_limit_per_resource,
+            terminal_instance_cache_limit: self.terminal_instance_cache_limit,
+            log_active_stream_limit: self.log_active_stream_limit,
             security: self.security.clone(),
         };
         let content = toml::to_string_pretty(&file).map_err(ConfigError::TomlSer)?;

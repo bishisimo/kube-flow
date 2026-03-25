@@ -11,6 +11,7 @@ import {
 import { logGetDisplaySettings, type LogDisplayOrder } from "../api/log";
 import { useLogStore } from "../stores/log";
 import { useStrongholdAuthStore } from "../stores/strongholdAuth";
+import { registerLogStreamSession, unregisterLogStreamSession } from "../stores/logStreamManager";
 
 const props = withDefaults(
   defineProps<{
@@ -22,11 +23,13 @@ const props = withDefaults(
     externalContainer?: string;
     /** 外部容器列表加载中（仅当 externalContainers 时有效） */
     externalContainersLoading?: boolean;
+    sessionId?: string;
   }>(),
   {
     externalContainers: undefined,
     externalContainer: undefined,
     externalContainersLoading: false,
+    sessionId: "",
   }
 );
 
@@ -60,6 +63,7 @@ const timestamps = ref(false);
 const previousLogs = ref(false);
 const follow = ref(true);
 const streamId = ref<string | null>(null);
+const streamAllowed = ref(true);
 const searchQuery = ref("");
 const excludeQuery = ref("");
 const currentMatchIndex = ref(0);
@@ -281,7 +285,7 @@ async function loadLogs() {
 }
 
 async function startFollow() {
-  if (!props.envId || !props.namespace || !props.podName || !effectiveContainer.value) return;
+  if (!streamAllowed.value || !props.envId || !props.namespace || !props.podName || !effectiveContainer.value) return;
   await stopFollow();
   loading.value = true;
   error.value = null;
@@ -377,6 +381,19 @@ watch(follow, async (on) => {
   }
 });
 
+watch(
+  () => streamAllowed.value,
+  async (allowed) => {
+    if (!allowed) {
+      await stopFollow();
+      return;
+    }
+    if (follow.value && props.envId && props.namespace && props.podName && effectiveContainer.value && !streamId.value) {
+      await startFollow();
+    }
+  }
+);
+
 watch(searchQuery, () => {
   currentMatchIndex.value = 0;
 });
@@ -408,11 +425,21 @@ watch(logRefreshTrigger, () => {
 });
 
 onUnmounted(() => {
+  if (props.sessionId) {
+    unregisterLogStreamSession(props.sessionId);
+  }
   stopFollow();
 });
 
 onMounted(() => {
   loadDisplaySettings();
+  if (props.sessionId) {
+    registerLogStreamSession(props.sessionId, {
+      setStreamAllowed: async (allowed) => {
+        streamAllowed.value = allowed;
+      },
+    });
+  }
 });
 
 let unlistenChunk: (() => void) | null = null;

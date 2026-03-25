@@ -4,6 +4,8 @@ import LogView from "./LogView.vue";
 import PodLogPanel from "../components/PodLogPanel.vue";
 import WorkloadLogPanel from "../components/WorkloadLogPanel.vue";
 import { useLogCenterStore } from "../stores/logCenter";
+import { useAppSettingsStore } from "../stores/appSettings";
+import { setLogStreamActiveLimit, touchLogStreamSession } from "../stores/logStreamManager";
 
 const {
   sessions,
@@ -15,6 +17,7 @@ const {
   closeSession,
   setCurrentSession,
 } = useLogCenterStore();
+const { ensureAppSettingsLoaded, logActiveStreamLimit } = useAppSettingsStore();
 
 const activePane = ref<"resource" | "debug">("resource");
 const sessionRailCollapsed = ref(false);
@@ -160,7 +163,18 @@ watch(
   }
 );
 
+watch(
+  () => [currentSession.value?.id ?? "", compareSession.value?.id ?? "", logActiveStreamLimit.value] as const,
+  ([currentId, compareId, limit]) => {
+    setLogStreamActiveLimit(limit);
+    if (currentId) touchLogStreamSession(currentId);
+    if (compareId) touchLogStreamSession(compareId);
+  },
+  { immediate: true }
+);
+
 onMounted(() => {
+  void ensureAppSettingsLoaded();
   if (pendingLogOpen.value) handlePendingOpen();
   window.addEventListener("click", handleDocumentClick);
 });
@@ -285,6 +299,7 @@ onBeforeUnmount(() => {
               <WorkloadLogPanel
                 v-if="currentSession.kind === 'workload'"
                 :key="currentSession.id"
+                :session-id="currentSession.id"
                 :env-id="currentSession.envId"
                 :namespace="currentSession.namespace"
                 :workload-kind="currentSession.workloadKind || ''"
@@ -294,6 +309,7 @@ onBeforeUnmount(() => {
               <PodLogPanel
                 v-else
                 :key="currentSession.id"
+                :session-id="currentSession.id"
                 :env-id="currentSession.envId"
                 :namespace="currentSession.namespace"
                 :pod-name="currentSession.podName || ''"
@@ -311,6 +327,7 @@ onBeforeUnmount(() => {
               <WorkloadLogPanel
                 v-if="compareSession.kind === 'workload'"
                 :key="compareSession.id"
+                :session-id="compareSession.id"
                 :env-id="compareSession.envId"
                 :namespace="compareSession.namespace"
                 :workload-kind="compareSession.workloadKind || ''"
@@ -320,6 +337,7 @@ onBeforeUnmount(() => {
               <PodLogPanel
                 v-else
                 :key="compareSession.id"
+                :session-id="compareSession.id"
                 :env-id="compareSession.envId"
                 :namespace="compareSession.namespace"
                 :pod-name="compareSession.podName || ''"

@@ -28,3 +28,19 @@ export function appSettingsGetAutoSnapshotLimitPerResource(): Promise<number> {
 export function appSettingsSetAutoSnapshotLimitPerResource(limit: number): Promise<void> {
   return invoke("app_settings_set_auto_snapshot_limit_per_resource", { limit });
 }
+
+export function appSettingsGetTerminalInstanceCacheLimit(): Promise<number> {
+  return invoke("app_settings_get_terminal_instance_cache_limit");
+}
+
+export function appSettingsSetTerminalInstanceCacheLimit(limit: number): Promise<void> {
+  return invoke("app_settings_set_terminal_instance_cache_limit", { limit });
+}
+
+export function appSettingsGetLogActiveStreamLimit(): Promise<number> {
+  return invoke("app_settings_get_log_active_stream_limit");
+}
+
+export function appSettingsSetLogActiveStreamLimit(limit: number): Promise<void> {
+  return invoke("app_settings_set_log_active_stream_limit", { limit });
+}

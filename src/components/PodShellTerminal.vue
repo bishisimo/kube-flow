@@ -10,6 +10,7 @@ import "@xterm/xterm/css/xterm.css";
 const props = defineProps<{
   streamId: string | null;
   mode?: "pod" | "host";
+  active?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -28,6 +29,7 @@ let pendingInputBytes: number[] = [];
 const inputEncoder = new TextEncoder();
 let lastResizeCols = 0;
 let lastResizeRows = 0;
+let listenerSetupSeq = 0;
 const INPUT_FLUSH_MS = 8;
 
 function clearInputBuffer() {
@@ -80,6 +82,10 @@ function sanitizeTerminalInput(text: string): string {
     .replace(/\uFEFF/g, "");
 }
 
+function resetTerminalView() {
+  terminal?.reset();
+}
+
 function initTerminal() {
   if (!terminalRef.value) return;
   terminal = new Terminal({
@@ -129,6 +135,7 @@ function trySendResize() {
 }
 
 async function setupListeners() {
+  const seq = ++listenerSetupSeq;
   unlistenChunk?.();
   unlistenEnd?.();
   unlistenChunk = null;
@@ -138,7 +145,7 @@ async function setupListeners() {
   const chunkEvent = props.mode === "host" ? "host-shell-chunk" : "pod-exec-chunk";
   const endEvent = props.mode === "host" ? "host-shell-end" : "pod-exec-end";
 
-  unlistenChunk = await listen<{
+  const nextUnlistenChunk = await listen<{
     stream_id: string;
     chunk_bytes: number[];
   }>(
@@ -149,7 +156,12 @@ async function setupListeners() {
     }
   );
 
-  unlistenEnd = await listen<{ stream_id: string; error?: string }>(
+  if (seq !== listenerSetupSeq) {
+    nextUnlistenChunk();
+    return;
+  }
+
+  const nextUnlistenEnd = await listen<{ stream_id: string; error?: string }>(
     endEvent,
     (ev) => {
       if (ev.payload?.stream_id === props.streamId) {
@@ -160,6 +172,15 @@ async function setupListeners() {
       }
     }
   );
+
+  if (seq !== listenerSetupSeq) {
+    nextUnlistenChunk();
+    nextUnlistenEnd();
+    return;
+  }
+
+  unlistenChunk = nextUnlistenChunk;
+  unlistenEnd = nextUnlistenEnd;
 }
 
 function fitAndResize() {
@@ -174,6 +195,7 @@ watch(
     clearInputBuffer();
     lastResizeCols = 0;
     lastResizeRows = 0;
+    resetTerminalView();
     await setupListeners();
     if (id) {
       // RAF 确保新布局完成后再 fit
@@ -182,8 +204,17 @@ watch(
   }
 );
 
+watch(
+  () => props.active,
+  (active) => {
+    if (!active || !props.streamId) return;
+    requestAnimationFrame(fitAndResize);
+  }
+);
+
 onMounted(async () => {
   initTerminal();
+  resetTerminalView();
   await setupListeners();
   if (props.streamId) {
     trySendResize();
@@ -191,6 +222,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  listenerSetupSeq += 1;
   clearInputBuffer();
   unlistenChunk?.();
   unlistenEnd?.();
