@@ -3247,15 +3247,15 @@ onUnmounted(() => {
             当前组合：{{ podDebugNamespaces.join(" + ") }}，{{ podDebugProcessMode === "main" ? "默认进入容器主进程" : `按指定 PID ${podDebugPidInput || "..." } 进入` }}。
           </p>
           <p v-if="podDebugError" class="form-error">{{ podDebugError }}</p>
-          <div class="sync-orchestrator-actions">
-            <button type="button" class="btn-secondary-outline" @click="closePodDebugModal">取消</button>
+          <div class="pod-debug-actions">
+            <button type="button" class="btn-secondary-outline pod-debug-cancel-btn" @click="closePodDebugModal">取消</button>
             <button
               type="button"
-              class="btn-primary"
+              class="btn-primary pod-debug-primary-btn"
               :disabled="podDebugLoading || !podDebugSelectedContainer || !!podDebugError || (podDebugProcessMode === 'pid' && !podDebugPidInput.trim())"
               @click="confirmOpenPodDebug"
             >
-              打开调试终端
+              进入调试终端
             </button>
           </div>
         </div>
@@ -4340,10 +4340,52 @@ onUnmounted(() => {
   font-size: 0.8rem;
   color: #475569;
 }
+.pod-debug-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-top: 0.9rem;
+}
+.pod-debug-cancel-btn {
+  padding: 0.6rem 0.95rem;
+  border-radius: 12px;
+}
+.pod-debug-primary-btn {
+  min-width: 12.5rem;
+  min-height: 3rem;
+  padding: 0.8rem 1.4rem;
+  border: none;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+  color: #fff;
+  font-size: 0.92rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  box-shadow: 0 14px 28px rgba(37, 99, 235, 0.22);
+}
+.pod-debug-primary-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 16px 30px rgba(37, 99, 235, 0.26);
+}
+.pod-debug-primary-btn:disabled {
+  background: linear-gradient(135deg, #93c5fd 0%, #60a5fa 100%);
+  color: rgba(255, 255, 255, 0.96);
+  box-shadow: none;
+  opacity: 0.72;
+}
 @media (max-width: 640px) {
   .pod-debug-grid,
   .pod-debug-option-grid {
     grid-template-columns: 1fr;
+  }
+  .pod-debug-actions {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+  .pod-debug-cancel-btn,
+  .pod-debug-primary-btn {
+    width: 100%;
   }
 }
 .loading-state {

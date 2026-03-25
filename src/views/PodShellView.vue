@@ -130,6 +130,30 @@ function isLikelyConnectionError(message?: string): boolean {
   ].some((k) => m.includes(k));
 }
 
+function isNonRetryableTerminalError(message?: string): boolean {
+  if (!message) return false;
+  const m = message.toLowerCase();
+  return [
+    "未能解析容器 pid",
+    "尚未运行",
+    "缺少有效 containerid",
+    "未找到容器",
+    "unsupported",
+    "节点终端策略",
+    "至少需要一个步骤",
+    "缺少 host",
+    "缺少 user",
+    "permission denied",
+    "operation not permitted",
+    "no such file or directory",
+    "not found",
+    "invalid",
+    "shell exited with status 1",
+    "shell exited with status 126",
+    "shell exited with status 127",
+  ].some((k) => m.includes(k));
+}
+
 function clearReconnectState(sessionId: string) {
   const next = { ...reconnectAttemptMap.value };
   delete next[sessionId];
@@ -243,6 +267,15 @@ async function tryReconnectSession(sessionId: string, resetClient: boolean): Pro
 function scheduleReconnect(sessionId: string, reason?: string) {
   const session = sessions.value.find((item) => item.id === sessionId);
   if (!session || reconnectTimerMap.has(sessionId)) return;
+  if (isNonRetryableTerminalError(reason)) {
+    updateSession(sessionId, {
+      streamId: null,
+      status: "error",
+      error: reason ?? "终端启动失败",
+    });
+    clearReconnectState(sessionId);
+    return;
+  }
   const attempt = (reconnectAttemptMap.value[sessionId] ?? 0) + 1;
   reconnectAttemptMap.value = { ...reconnectAttemptMap.value, [sessionId]: attempt };
   if (attempt > MAX_RECONNECT_ATTEMPTS) {
@@ -600,6 +633,15 @@ function onTerminalEnd(sessionId: string, payload: { streamId: string; error?: s
   const session = sessions.value.find((item) => item.id === sessionId);
   if (!session) return;
   if (session.streamId && session.streamId !== payload.streamId) return;
+  if (isNonRetryableTerminalError(payload.error)) {
+    updateSession(sessionId, {
+      streamId: null,
+      status: "error",
+      error: payload.error ?? "终端启动失败",
+    });
+    clearReconnectState(sessionId);
+    return;
+  }
   updateSession(sessionId, {
     streamId: null,
     status: "reconnecting",

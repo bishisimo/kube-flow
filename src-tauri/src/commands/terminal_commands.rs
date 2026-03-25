@@ -151,6 +151,10 @@ fn build_pod_nsenter_command(
     pid: Option<u32>,
     namespaces: &[PodDebugNamespace],
 ) -> String {
+    let interactive_shell = "export TERM=\"${TERM:-xterm-256color}\"; \
+export LANG=\"${LANG:-C.UTF-8}\"; \
+export LC_CTYPE=\"${LC_CTYPE:-$LANG}\"; \
+if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi";
     let mut flags = Vec::new();
     for ns in namespaces {
         let flag = match ns {
@@ -170,7 +174,12 @@ fn build_pod_nsenter_command(
         flags.join(" ")
     };
     if let Some(target_pid) = pid {
-        return format!("exec nsenter -t {} {} sh -l", target_pid, ns_flags);
+        return format!(
+            "exec nsenter -t {} {} /bin/sh -lc {}",
+            target_pid,
+            ns_flags,
+            shell_single_quote(interactive_shell)
+        );
     }
     let container_id = container_id.unwrap_or_default();
     format!(
@@ -189,9 +198,10 @@ if [ -z \"$PID\" ]; then \
   echo '未能解析容器 PID，请确认节点已安装 crictl/docker/nerdctl 且当前用户有权限。' >&2; \
   exit 1; \
 fi; \
-exec nsenter -t \"$PID\" {flags} sh -l",
+exec nsenter -t \"$PID\" {flags} /bin/sh -lc {shell_cmd}",
         cid = shell_single_quote(container_id),
         flags = ns_flags,
+        shell_cmd = shell_single_quote(interactive_shell),
     )
 }
 
