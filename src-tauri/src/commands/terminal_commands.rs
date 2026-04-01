@@ -153,7 +153,7 @@ fn build_pod_nsenter_command(
     pid: Option<u32>,
     namespaces: &[PodDebugNamespace],
 ) -> String {
-    let interactive_shell = "export TERM=\"${TERM:-xterm-256color}\"; \
+    let interactive_shell = "export TERM=\"xterm-256color\"; \
 export LANG=\"${LANG:-C.UTF-8}\"; \
 export LC_CTYPE=\"${LC_CTYPE:-$LANG}\"; \
 if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi";
@@ -524,8 +524,11 @@ fn build_remote_shell_command(
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    cmd.env("TERM", "xterm-256color")
+        .env("LANG", "C.UTF-8")
+        .env("LC_CTYPE", "C.UTF-8");
 
-    let default_remote_cmd = "export TERM=\"${TERM:-xterm-256color}\"; \
+    let default_remote_cmd = "export TERM=\"xterm-256color\"; \
 export LANG=\"${LANG:-C.UTF-8}\"; \
 export LC_CTYPE=\"${LC_CTYPE:-$LANG}\"; \
 if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi";

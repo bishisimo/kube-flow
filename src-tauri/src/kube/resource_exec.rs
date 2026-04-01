@@ -99,7 +99,7 @@ pub async fn run_pod_exec(
     let command: Vec<String> = vec![
         "/bin/sh".into(),
         "-c".into(),
-        "export TERM=\"${TERM:-xterm-256color}\"; \
+        "export TERM=\"xterm-256color\"; \
 export LANG=\"${LANG:-C.UTF-8}\"; \
 export LC_CTYPE=\"${LC_CTYPE:-$LANG}\"; \
 if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi"
