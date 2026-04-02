@@ -22,6 +22,11 @@ use k8s_openapi::api::storage::v1::StorageClass;
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use serde::Serialize;
 
+#[path = "workload_pod_rollup.rs"]
+mod workload_pod_rollup;
+
+pub use workload_pod_rollup::{compute_workload_pod_rollup, WorkloadPodRollup};
+
 fn int_or_string_to_str(q: &IntOrString) -> String {
     match q {
         IntOrString::Int(i) => i.to_string(),
@@ -107,6 +112,8 @@ pub struct DeploymentItem {
     pub creation_time: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label_selector: Option<String>,
+    #[serde(default)]
+    pub pod_rollup: WorkloadPodRollup,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -136,6 +143,8 @@ pub struct StatefulSetItem {
     pub creation_time: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label_selector: Option<String>,
+    #[serde(default)]
+    pub pod_rollup: WorkloadPodRollup,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -239,6 +248,8 @@ pub struct DaemonSetItem {
     pub creation_time: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label_selector: Option<String>,
+    #[serde(default)]
+    pub pod_rollup: WorkloadPodRollup,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -608,6 +619,17 @@ pub async fn list_pods_using_pvc(
     Ok(items)
 }
 
+/// 列出 namespace 内 Pod 对象（用于工作负载 Pod 态势聚合）。
+async fn list_pod_objects(
+    client: &Client,
+    namespace: &str,
+    label_selector: Option<&str>,
+) -> Result<Vec<Pod>, ResourceError> {
+    let api: Api<Pod> = Api::namespaced(client.clone(), namespace);
+    let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
+    Ok(list.items)
+}
+
 /// 列出指定 namespace 的 Deployments。
 pub async fn list_deployments(
     client: &Client,
@@ -617,6 +639,7 @@ pub async fn list_deployments(
     let ns = namespace.unwrap_or("default");
     let api: Api<Deployment> = Api::namespaced(client.clone(), ns);
     let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
+    let pod_objects = list_pod_objects(client, ns, label_selector).await?;
     let items = list
         .items
         .into_iter()
@@ -624,6 +647,12 @@ pub async fn list_deployments(
             let replicas = d.spec.as_ref().and_then(|s| s.replicas);
             let ready = d.status.as_ref().and_then(|s| s.ready_replicas);
             let label_selector = d.spec.as_ref().map(|s| &s.selector).and_then(|sel| label_selector_to_string(Some(sel)));
+            let wns = d.metadata.namespace.as_deref().unwrap_or(ns);
+            let pod_rollup = d
+                .spec
+                .as_ref()
+                .map(|s| compute_workload_pod_rollup(&pod_objects, wns, &s.selector))
+                .unwrap_or_default();
             DeploymentItem {
                 name: d.metadata.name.unwrap_or_default(),
                 namespace: d.metadata.namespace.unwrap_or_else(|| ns.to_string()),
@@ -631,6 +660,7 @@ pub async fn list_deployments(
                 ready: ready.or(Some(0)),
                 creation_time: format_creation_time(d.metadata.creation_timestamp.as_ref()),
                 label_selector,
+                pod_rollup,
             }
         })
         .collect();
@@ -771,6 +801,7 @@ pub async fn list_stateful_sets(
     let ns = namespace.unwrap_or("default");
     let api: Api<StatefulSet> = Api::namespaced(client.clone(), ns);
     let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
+    let pod_objects = list_pod_objects(client, ns, label_selector).await?;
     let items = list
         .items
         .into_iter()
@@ -778,6 +809,12 @@ pub async fn list_stateful_sets(
             let replicas = s.spec.as_ref().and_then(|sp| sp.replicas);
             let ready = s.status.and_then(|st| st.ready_replicas);
             let label_selector = s.spec.as_ref().map(|sp| &sp.selector).and_then(|sel| label_selector_to_string(Some(sel)));
+            let wns = s.metadata.namespace.as_deref().unwrap_or(ns);
+            let pod_rollup = s
+                .spec
+                .as_ref()
+                .map(|sp| compute_workload_pod_rollup(&pod_objects, wns, &sp.selector))
+                .unwrap_or_default();
             StatefulSetItem {
                 name: s.metadata.name.unwrap_or_default(),
                 namespace: s.metadata.namespace.unwrap_or_else(|| ns.to_string()),
@@ -785,6 +822,7 @@ pub async fn list_stateful_sets(
                 ready: ready.or(Some(0)),
                 creation_time: format_creation_time(s.metadata.creation_timestamp.as_ref()),
                 label_selector,
+                pod_rollup,
             }
         })
         .collect();
@@ -996,6 +1034,7 @@ pub async fn list_daemon_sets(
     let ns = namespace.unwrap_or("default");
     let api: Api<DaemonSet> = Api::namespaced(client.clone(), ns);
     let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
+    let pod_objects = list_pod_objects(client, ns, label_selector).await?;
     let items = list
         .items
         .into_iter()
@@ -1003,6 +1042,12 @@ pub async fn list_daemon_sets(
             let desired = d.status.as_ref().map(|s| s.desired_number_scheduled);
             let ready = d.status.map(|s| s.number_ready);
             let label_selector = d.spec.as_ref().map(|s| &s.selector).and_then(|sel| label_selector_to_string(Some(sel)));
+            let wns = d.metadata.namespace.as_deref().unwrap_or(ns);
+            let pod_rollup = d
+                .spec
+                .as_ref()
+                .map(|s| compute_workload_pod_rollup(&pod_objects, wns, &s.selector))
+                .unwrap_or_default();
             DaemonSetItem {
                 name: d.metadata.name.unwrap_or_default(),
                 namespace: d.metadata.namespace.unwrap_or_else(|| ns.to_string()),
@@ -1010,6 +1055,7 @@ pub async fn list_daemon_sets(
                 ready: ready.or(Some(0)),
                 creation_time: format_creation_time(d.metadata.creation_timestamp.as_ref()),
                 label_selector,
+                pod_rollup,
             }
         })
         .collect();

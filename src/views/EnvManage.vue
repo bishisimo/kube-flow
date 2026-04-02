@@ -31,7 +31,7 @@ import { kubeRemoveClient } from "../api/kube";
 import { credentialExists, credentialSave, credentialDelete } from "../api/credential";
 
 const emit = defineEmits<{ (e: "use-env"): void }>();
-const { openEnv, removeEnv: storeRemoveEnv } = useEnvStore();
+const { openEnv, removeEnv: storeRemoveEnv, loadEnvironments: syncStoreEnvironments } = useEnvStore();
 const { pendingOpen, requestSwitchToShell } = useShellStore();
 const strongholdAuth = useStrongholdAuthStore();
 const environments = ref<Environment[]>([]);
@@ -52,6 +52,8 @@ const newSshHost = ref("");
 const newRemoteKubeconfigPath = ref("~/.kube/config");
 const newLocalPort = ref("");
 const newSshIdleProtection = ref(false);
+const newPasswordInput = ref("");
+const newShowPassword = ref(false);
 const createLoading = ref(false);
 const createError = ref("");
 const newTags = ref<string[]>([]);
@@ -116,6 +118,16 @@ async function handleStrongholdLocked(message: string, onConfirmed: () => void):
   return strongholdAuth.checkAndHandle(message, onConfirmed, {
     title: "解锁终端策略凭证",
     description: "保存或清除切换用户密码需要访问凭证存储，请先输入 Stronghold 主密码解锁。",
+  });
+}
+
+async function handleEnvCredentialStrongholdLocked(
+  message: string,
+  onConfirmed: () => void
+): Promise<boolean> {
+  return strongholdAuth.checkAndHandle(message, onConfirmed, {
+    title: "解锁环境凭证",
+    description: "保存或清除环境 SSH 密码需要访问凭证存储，请先输入 Stronghold 主密码解锁。",
   });
 }
 
@@ -197,6 +209,7 @@ async function loadList() {
     const [envs, tunnels] = await Promise.all([envList(), envListSshTunnels()]);
     environments.value = envs;
     sshTunnels.value = tunnels;
+    await syncStoreEnvironments();
   } finally {
     listLoading.value = false;
   }
@@ -220,6 +233,8 @@ async function openNewModal() {
   newRemoteKubeconfigPath.value = "~/.kube/config";
   newLocalPort.value = "";
   newSshIdleProtection.value = false;
+  newPasswordInput.value = "";
+  newShowPassword.value = false;
   newTags.value = [];
   newTagDraft.value = "";
   try {
@@ -232,6 +247,8 @@ async function openNewModal() {
 
 function closeNewModal() {
   showNewModal.value = false;
+  newPasswordInput.value = "";
+  newShowPassword.value = false;
 }
 
 async function discoverContexts() {
@@ -295,7 +312,7 @@ async function doCreate() {
         createError.value = "本地端口需为 1–65535 的整数";
         return;
       }
-      await envCreateSshWithHost(
+      const createdEnv = await envCreateSshWithHost(
         newDisplayName.value.trim(),
         newSshHost.value.trim(),
         newRemoteKubeconfigPath.value.trim() || "~/.kube/config",
@@ -304,6 +321,37 @@ async function doCreate() {
         newTags.value,
         newSshIdleProtection.value ? true : null
       );
+      const password = newPasswordInput.value;
+      const tunnelId = createdEnv.ssh_tunnel_id;
+      const finishCreate = async () => {
+        if (password && tunnelId) {
+          await credentialSave(tunnelId, password);
+        }
+        await loadList();
+        closeNewModal();
+      };
+      try {
+        await finishCreate();
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : String(e);
+        const isStrongholdRequired = await handleEnvCredentialStrongholdLocked(message, () => {
+          createLoading.value = true;
+          void finishCreate()
+            .catch((retryError: unknown) => {
+              createError.value =
+                retryError instanceof Error ? retryError.message : String(retryError);
+            })
+            .finally(() => {
+              createLoading.value = false;
+            });
+        });
+        if (isStrongholdRequired) {
+          createError.value = "需要先解锁 Stronghold，解锁后会自动继续保存密码并完成创建。";
+          return;
+        }
+        throw e;
+      }
+      return;
     }
     await loadList();
     closeNewModal();
@@ -334,11 +382,7 @@ async function openEditModal(env: Environment) {
   if (env.source === "ssh_tunnel" && env.ssh_tunnel_id) {
     editTunnelId.value = env.ssh_tunnel_id;
     try {
-      const [tunnels, hosts] = await Promise.all([
-        envListSshTunnels(),
-        envListSshConfigHosts(),
-        credentialExists(env.ssh_tunnel_id).then((v) => { editCredentialExists.value = v; }),
-      ]);
+      const [tunnels, hosts] = await Promise.all([envListSshTunnels(), envListSshConfigHosts()]);
       sshConfigHosts.value = hosts;
       const tunnel = tunnels.find((t) => t.id === env.ssh_tunnel_id);
       if (tunnel) {
@@ -347,6 +391,15 @@ async function openEditModal(env: Environment) {
         editLocalPort.value = tunnel.local_port != null ? String(tunnel.local_port) : "";
       } else if (hosts.length) {
         editSshHost.value = hosts[0];
+      }
+      try {
+        editCredentialExists.value = await credentialExists(env.ssh_tunnel_id);
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : String(e);
+        const isStrongholdRequired = await handleEnvCredentialStrongholdLocked(message, () => {
+          void openEditModal(env);
+        });
+        if (!isStrongholdRequired) throw e;
       }
     } catch {
       const hosts = await envListSshConfigHosts();
@@ -368,8 +421,19 @@ async function handleSavePassword() {
     editPasswordInput.value = "";
     editShowPasswordInput.value = false;
     editPasswordMsg.value = { type: "ok", text: "密码已保存到安全存储" };
-  } catch (e) {
-    editPasswordMsg.value = { type: "err", text: String(e) };
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    const isStrongholdRequired = await handleEnvCredentialStrongholdLocked(message, () => {
+      void handleSavePassword();
+    });
+    if (isStrongholdRequired) {
+      editPasswordMsg.value = {
+        type: "err",
+        text: "需要先解锁 Stronghold，解锁后会自动继续保存。",
+      };
+      return;
+    }
+    editPasswordMsg.value = { type: "err", text: message };
   } finally {
     editPasswordLoading.value = false;
   }
@@ -383,8 +447,19 @@ async function handleDeletePassword() {
     await credentialDelete(editTunnelId.value);
     editCredentialExists.value = false;
     editPasswordMsg.value = { type: "ok", text: "密码已清除" };
-  } catch (e) {
-    editPasswordMsg.value = { type: "err", text: String(e) };
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    const isStrongholdRequired = await handleEnvCredentialStrongholdLocked(message, () => {
+      void handleDeletePassword();
+    });
+    if (isStrongholdRequired) {
+      editPasswordMsg.value = {
+        type: "err",
+        text: "需要先解锁 Stronghold，解锁后会自动继续清除。",
+      };
+      return;
+    }
+    editPasswordMsg.value = { type: "err", text: message };
   } finally {
     editPasswordLoading.value = false;
   }
@@ -809,6 +884,24 @@ onMounted(() => {
               <input v-model="newSshIdleProtection" type="checkbox" />
               <span>启用空闲保护</span>
             </label>
+            <label>SSH 认证密码（可选）</label>
+            <div class="password-row">
+              <input
+                :type="newShowPassword ? 'text' : 'password'"
+                v-model="newPasswordInput"
+                class="password-input"
+                placeholder="创建后自动保存到安全存储"
+                autocomplete="new-password"
+              />
+              <button
+                type="button"
+                class="toggle-vis"
+                :title="newShowPassword ? '隐藏' : '显示'"
+                @click="newShowPassword = !newShowPassword"
+              >
+                {{ newShowPassword ? "🙈" : "👁" }}
+              </button>
+            </div>
             <label>标签</label>
             <div class="tag-input-wrap">
               <span v-for="t in newTags" :key="t" class="tag-chip removable">
@@ -823,7 +916,7 @@ onMounted(() => {
                 @keydown="onNewTagKeydown"
               />
             </div>
-            <p class="form-hint">选择本机 ~/.ssh/config 中的 Host，建立隧道后使用远程主机上的 kubeconfig；留空则自动分配端口，或填写 1–65535 指定固定端口。映射方式在设置中统一配置。</p>
+            <p class="form-hint">选择本机 ~/.ssh/config 中的 Host，建立隧道后使用远程主机上的 kubeconfig；留空则自动分配端口，或填写 1–65535 指定固定端口。若填写 SSH 密码，创建成功后会一并保存到当前凭证存储后端。</p>
           </div>
           <p v-if="createError" class="form-error">{{ createError }}</p>
           <div class="modal-actions">

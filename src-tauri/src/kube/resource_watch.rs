@@ -5,14 +5,14 @@ use crate::config::LogLevel;
 use crate::debug_log;
 use crate::env::EnvService;
 use crate::kube::resources::{
-    format_creation_time, label_selector_to_string, SubjectRef,
+    compute_workload_pod_rollup, format_creation_time, label_selector_to_string, SubjectRef,
     ClusterRoleBindingItem, ClusterRoleItem, ConfigMapItem, DaemonSetItem, DeploymentItem,
     EndpointSliceItem, EndpointsItem, NamespaceItem, NodeItem, PersistentVolumeClaimItem,
     PersistentVolumeItem, PodItem, RoleBindingItem, RoleItem, SecretItem, ServiceAccountItem,
-    ServiceItem, StatefulSetItem, StorageClassItem,
+    ServiceItem, StatefulSetItem, StorageClassItem, WorkloadPodRollup,
 };
 use crate::kube::KubeClientStore;
-use futures::StreamExt;
+use futures::stream::{self, StreamExt};
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, StatefulSet};
 use k8s_openapi::api::core::v1::{
     ConfigMap, Endpoints, Namespace, Node, PersistentVolume, PersistentVolumeClaim, Pod, Secret,
@@ -21,9 +21,8 @@ use k8s_openapi::api::core::v1::{
 use k8s_openapi::api::discovery::v1::EndpointSlice;
 use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding, Role, RoleBinding};
 use k8s_openapi::api::storage::v1::StorageClass;
-use kube::api::ResourceExt;
 use kube::runtime::watcher::{watcher, Config as WatcherConfig};
-use kube::{Api, Client};
+use kube::{api::ResourceExt, Api, Client};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -118,7 +117,7 @@ fn pod_to_item(p: Pod, ns: &str) -> PodItem {
     }
 }
 
-fn deployment_to_item(d: Deployment, ns: &str) -> DeploymentItem {
+fn deployment_to_item(d: Deployment, ns: &str, pod_rollup: WorkloadPodRollup) -> DeploymentItem {
     let replicas = d.spec.as_ref().and_then(|s| s.replicas);
     let ready = d.status.as_ref().and_then(|s| s.ready_replicas);
     let label_selector = d.spec.as_ref().map(|s| &s.selector).and_then(|sel| label_selector_to_string(Some(sel)));
@@ -129,6 +128,7 @@ fn deployment_to_item(d: Deployment, ns: &str) -> DeploymentItem {
         ready: ready.or(Some(0)),
         creation_time: format_creation_time(d.metadata.creation_timestamp.as_ref()),
         label_selector,
+        pod_rollup,
     }
 }
 
@@ -199,7 +199,7 @@ fn node_to_item(n: Node) -> NodeItem {
 }
 
 #[allow(dead_code)]
-fn statefulset_to_item(s: StatefulSet, ns: &str) -> StatefulSetItem {
+fn statefulset_to_item(s: StatefulSet, ns: &str, pod_rollup: WorkloadPodRollup) -> StatefulSetItem {
     let replicas = s.spec.as_ref().and_then(|sp| sp.replicas);
     let ready = s.status.and_then(|st| st.ready_replicas);
     let label_selector = s.spec.as_ref().map(|sp| &sp.selector).and_then(|sel| label_selector_to_string(Some(sel)));
@@ -210,6 +210,7 @@ fn statefulset_to_item(s: StatefulSet, ns: &str) -> StatefulSetItem {
         ready: ready.or(Some(0)),
         creation_time: format_creation_time(s.metadata.creation_timestamp.as_ref()),
         label_selector,
+        pod_rollup,
     }
 }
 
@@ -322,7 +323,7 @@ fn clusterrolebinding_to_item(r: ClusterRoleBinding) -> ClusterRoleBindingItem {
 }
 
 #[allow(dead_code)]
-fn daemonset_to_item(d: DaemonSet, ns: &str) -> DaemonSetItem {
+fn daemonset_to_item(d: DaemonSet, ns: &str, pod_rollup: WorkloadPodRollup) -> DaemonSetItem {
     let desired = d.status.as_ref().map(|s| s.desired_number_scheduled);
     let ready = d.status.map(|s| s.number_ready);
     let label_selector = d.spec.as_ref().map(|s| &s.selector).and_then(|sel| label_selector_to_string(Some(sel)));
@@ -333,6 +334,7 @@ fn daemonset_to_item(d: DaemonSet, ns: &str) -> DaemonSetItem {
         ready: ready.or(Some(0)),
         creation_time: format_creation_time(d.metadata.creation_timestamp.as_ref()),
         label_selector,
+        pod_rollup,
     }
 }
 
@@ -549,6 +551,18 @@ async fn run_watch_pods(
     }
 }
 
+fn workload_watch_cache_key<R: ResourceExt>(obj: &R, all_namespaces: bool, fallback_ns: &str) -> String {
+    if all_namespaces {
+        format!(
+            "{}/{}",
+            obj.namespace().unwrap_or_else(|| fallback_ns.to_string()),
+            obj.name_any()
+        )
+    } else {
+        obj.name_any()
+    }
+}
+
 async fn run_watch_deployments(
     app: AppHandle,
     client: Client,
@@ -559,46 +573,100 @@ async fn run_watch_deployments(
 ) {
     let all_namespaces = ns.as_deref() == Some(ALL_NAMESPACES_SENTINEL);
     let ns = ns.unwrap_or_else(|| "default".to_string());
-    let api: Api<Deployment> = if all_namespaces {
+    let dep_api: Api<Deployment> = if all_namespaces {
         Api::all(client.clone())
     } else {
         Api::namespaced(client.clone(), &ns)
     };
-    let mut config = WatcherConfig::default();
+    let pod_api: Api<Pod> = if all_namespaces {
+        Api::all(client.clone())
+    } else {
+        Api::namespaced(client.clone(), &ns)
+    };
+    let mut dep_config = WatcherConfig::default();
+    let mut pod_config = WatcherConfig::default();
     if let Some(ref sel) = label_selector {
-        config = config.labels(sel);
+        dep_config = dep_config.labels(sel);
+        pod_config = pod_config.labels(sel);
     }
-    let mut stream = Box::pin(watcher(api, config));
-    let mut items: HashMap<String, DeploymentItem> = HashMap::new();
 
-    while let Some(ev) = stream.next().await {
-        match ev {
-            Ok(kube::runtime::watcher::Event::Applied(obj)) => {
-                let key = obj.name_any();
-                items.insert(key, deployment_to_item(obj, &ns));
-            }
-            Ok(kube::runtime::watcher::Event::Deleted(obj)) => {
-                items.remove(&obj.name_any());
-            }
-            Ok(kube::runtime::watcher::Event::Restarted(objs)) => {
-                items.clear();
-                for obj in objs {
-                    let key = obj.name_any();
-                    items.insert(key, deployment_to_item(obj, &ns));
+    enum DepOrPod {
+        Dep(Result<kube::runtime::watcher::Event<Deployment>, kube::runtime::watcher::Error>),
+        Pod(Result<kube::runtime::watcher::Event<Pod>, kube::runtime::watcher::Error>),
+    }
+
+    let dep_stream = watcher(dep_api, dep_config).map(DepOrPod::Dep);
+    let pod_stream = watcher(pod_api, pod_config).map(DepOrPod::Pod);
+    let mut merged = Box::pin(stream::select(dep_stream, pod_stream));
+
+    let mut deps: HashMap<String, Deployment> = HashMap::new();
+    let mut pods: HashMap<String, Pod> = HashMap::new();
+
+    while let Some(branch) = merged.next().await {
+        let mut fatal: Option<String> = None;
+        match branch {
+            DepOrPod::Dep(Ok(ev)) => match ev {
+                kube::runtime::watcher::Event::Applied(obj) => {
+                    let key = workload_watch_cache_key(&obj, all_namespaces, &ns);
+                    deps.insert(key, obj);
                 }
-            }
-            Err(e) => {
-                let msg = e.to_string();
-                debug_log::log_list_err("deployments/watch", Some(&env_id), &msg, LogLevel::Error);
-                let _ = app.emit(WATCH_EVENT, serde_json::json!({
-                    "envId": env_id,
-                    "watchToken": watch_token,
-                    "error": msg
-                }));
-                break;
+                kube::runtime::watcher::Event::Deleted(obj) => {
+                    let key = workload_watch_cache_key(&obj, all_namespaces, &ns);
+                    deps.remove(&key);
+                }
+                kube::runtime::watcher::Event::Restarted(list) => {
+                    deps.clear();
+                    for obj in list {
+                        let key = workload_watch_cache_key(&obj, all_namespaces, &ns);
+                        deps.insert(key, obj);
+                    }
+                }
+            },
+            DepOrPod::Pod(Ok(ev)) => match ev {
+                kube::runtime::watcher::Event::Applied(obj) => {
+                    let key = workload_watch_cache_key(&obj, all_namespaces, &ns);
+                    pods.insert(key, obj);
+                }
+                kube::runtime::watcher::Event::Deleted(obj) => {
+                    let key = workload_watch_cache_key(&obj, all_namespaces, &ns);
+                    pods.remove(&key);
+                }
+                kube::runtime::watcher::Event::Restarted(list) => {
+                    pods.clear();
+                    for obj in list {
+                        let key = workload_watch_cache_key(&obj, all_namespaces, &ns);
+                        pods.insert(key, obj);
+                    }
+                }
+            },
+            DepOrPod::Dep(Err(e)) | DepOrPod::Pod(Err(e)) => {
+                fatal = Some(e.to_string());
             }
         }
-        let list: Vec<DeploymentItem> = items.values().cloned().collect();
+
+        if let Some(msg) = fatal {
+            debug_log::log_list_err("deployments/watch", Some(&env_id), &msg, LogLevel::Error);
+            let _ = app.emit(WATCH_EVENT, serde_json::json!({
+                "envId": env_id,
+                "watchToken": watch_token,
+                "error": msg
+            }));
+            break;
+        }
+
+        let pod_vec: Vec<Pod> = pods.values().cloned().collect();
+        let list: Vec<DeploymentItem> = deps
+            .values()
+            .map(|d| {
+                let wns = d.metadata.namespace.as_deref().unwrap_or(&ns);
+                let pod_rollup = d
+                    .spec
+                    .as_ref()
+                    .map(|s| compute_workload_pod_rollup(&pod_vec, wns, &s.selector))
+                    .unwrap_or_default();
+                deployment_to_item(d.clone(), &ns, pod_rollup)
+            })
+            .collect();
         let payload = serde_json::json!({
             "envId": env_id,
             "watchToken": watch_token,
@@ -793,28 +861,109 @@ async fn run_watch_statefulsets(
 ) {
     let all_namespaces = ns.as_deref() == Some(ALL_NAMESPACES_SENTINEL);
     let ns = ns.unwrap_or_else(|| "default".to_string());
-    let api: Api<StatefulSet> = if all_namespaces { Api::all(client.clone()) } else { Api::namespaced(client.clone(), &ns) };
-    let mut config = WatcherConfig::default();
-    if let Some(ref sel) = label_selector { config = config.labels(sel); }
-    let mut stream = Box::pin(watcher(api, config));
-    let mut items: HashMap<String, StatefulSetItem> = HashMap::new();
-    while let Some(ev) = stream.next().await {
-        match ev {
-            Ok(kube::runtime::watcher::Event::Applied(obj)) => { items.insert(obj.name_any(), statefulset_to_item(obj, &ns)); }
-            Ok(kube::runtime::watcher::Event::Deleted(obj)) => { items.remove(&obj.name_any()); }
-            Ok(kube::runtime::watcher::Event::Restarted(objs)) => {
-                items.clear();
-                for obj in objs { items.insert(obj.name_any(), statefulset_to_item(obj, &ns)); }
-            }
-            Err(e) => {
-                let msg = e.to_string();
-                debug_log::log_list_err("statefulsets/watch", Some(&env_id), &msg, LogLevel::Error);
-                let _ = app.emit(WATCH_EVENT, serde_json::json!({ "envId": env_id, "watchToken": watch_token, "error": msg }));
-                break;
+    let sts_api: Api<StatefulSet> = if all_namespaces {
+        Api::all(client.clone())
+    } else {
+        Api::namespaced(client.clone(), &ns)
+    };
+    let pod_api: Api<Pod> = if all_namespaces {
+        Api::all(client.clone())
+    } else {
+        Api::namespaced(client.clone(), &ns)
+    };
+    let mut sts_config = WatcherConfig::default();
+    let mut pod_config = WatcherConfig::default();
+    if let Some(ref sel) = label_selector {
+        sts_config = sts_config.labels(sel);
+        pod_config = pod_config.labels(sel);
+    }
+
+    enum StsOrPod {
+        Sts(Result<kube::runtime::watcher::Event<StatefulSet>, kube::runtime::watcher::Error>),
+        Pod(Result<kube::runtime::watcher::Event<Pod>, kube::runtime::watcher::Error>),
+    }
+
+    let sts_stream = watcher(sts_api, sts_config).map(StsOrPod::Sts);
+    let pod_stream = watcher(pod_api, pod_config).map(StsOrPod::Pod);
+    let mut merged = Box::pin(stream::select(sts_stream, pod_stream));
+
+    let mut statefulsets: HashMap<String, StatefulSet> = HashMap::new();
+    let mut pods: HashMap<String, Pod> = HashMap::new();
+
+    while let Some(branch) = merged.next().await {
+        let mut fatal: Option<String> = None;
+        match branch {
+            StsOrPod::Sts(Ok(ev)) => match ev {
+                kube::runtime::watcher::Event::Applied(obj) => {
+                    let key = workload_watch_cache_key(&obj, all_namespaces, &ns);
+                    statefulsets.insert(key, obj);
+                }
+                kube::runtime::watcher::Event::Deleted(obj) => {
+                    let key = workload_watch_cache_key(&obj, all_namespaces, &ns);
+                    statefulsets.remove(&key);
+                }
+                kube::runtime::watcher::Event::Restarted(list) => {
+                    statefulsets.clear();
+                    for obj in list {
+                        let key = workload_watch_cache_key(&obj, all_namespaces, &ns);
+                        statefulsets.insert(key, obj);
+                    }
+                }
+            },
+            StsOrPod::Pod(Ok(ev)) => match ev {
+                kube::runtime::watcher::Event::Applied(obj) => {
+                    let key = workload_watch_cache_key(&obj, all_namespaces, &ns);
+                    pods.insert(key, obj);
+                }
+                kube::runtime::watcher::Event::Deleted(obj) => {
+                    let key = workload_watch_cache_key(&obj, all_namespaces, &ns);
+                    pods.remove(&key);
+                }
+                kube::runtime::watcher::Event::Restarted(list) => {
+                    pods.clear();
+                    for obj in list {
+                        let key = workload_watch_cache_key(&obj, all_namespaces, &ns);
+                        pods.insert(key, obj);
+                    }
+                }
+            },
+            StsOrPod::Sts(Err(e)) | StsOrPod::Pod(Err(e)) => {
+                fatal = Some(e.to_string());
             }
         }
-        let payload = serde_json::json!({ "envId": env_id, "watchToken": watch_token, "kind": "statefulsets", "items": items.values().cloned().collect::<Vec<_>>() });
-        if app.emit(WATCH_EVENT, payload).is_err() { break; }
+
+        if let Some(msg) = fatal {
+            debug_log::log_list_err("statefulsets/watch", Some(&env_id), &msg, LogLevel::Error);
+            let _ = app.emit(WATCH_EVENT, serde_json::json!({
+                "envId": env_id,
+                "watchToken": watch_token,
+                "error": msg
+            }));
+            break;
+        }
+
+        let pod_vec: Vec<Pod> = pods.values().cloned().collect();
+        let list: Vec<StatefulSetItem> = statefulsets
+            .values()
+            .map(|s| {
+                let wns = s.metadata.namespace.as_deref().unwrap_or(&ns);
+                let pod_rollup = s
+                    .spec
+                    .as_ref()
+                    .map(|sp| compute_workload_pod_rollup(&pod_vec, wns, &sp.selector))
+                    .unwrap_or_default();
+                statefulset_to_item(s.clone(), &ns, pod_rollup)
+            })
+            .collect();
+        let payload = serde_json::json!({
+            "envId": env_id,
+            "watchToken": watch_token,
+            "kind": "statefulsets",
+            "items": list
+        });
+        if app.emit(WATCH_EVENT, payload).is_err() {
+            break;
+        }
     }
 }
 
@@ -989,28 +1138,119 @@ async fn run_watch_clusterrolebindings(app: AppHandle, client: Client, env_id: S
     }
 }
 
-async fn run_watch_daemonsets(app: AppHandle, client: Client, env_id: String, ns: Option<String>, label_selector: Option<String>, watch_token: String) {
+async fn run_watch_daemonsets(
+    app: AppHandle,
+    client: Client,
+    env_id: String,
+    ns: Option<String>,
+    label_selector: Option<String>,
+    watch_token: String,
+) {
     let all_namespaces = ns.as_deref() == Some(ALL_NAMESPACES_SENTINEL);
     let ns = ns.unwrap_or_else(|| "default".to_string());
-    let api: Api<DaemonSet> = if all_namespaces { Api::all(client.clone()) } else { Api::namespaced(client.clone(), &ns) };
-    let mut config = WatcherConfig::default();
-    if let Some(ref sel) = label_selector { config = config.labels(sel); }
-    let mut stream = Box::pin(watcher(api, config));
-    let mut items: HashMap<String, DaemonSetItem> = HashMap::new();
-    while let Some(ev) = stream.next().await {
-        match ev {
-            Ok(kube::runtime::watcher::Event::Applied(obj)) => { items.insert(obj.name_any(), daemonset_to_item(obj, &ns)); }
-            Ok(kube::runtime::watcher::Event::Deleted(obj)) => { items.remove(&obj.name_any()); }
-            Ok(kube::runtime::watcher::Event::Restarted(objs)) => { items.clear(); for obj in objs { items.insert(obj.name_any(), daemonset_to_item(obj, &ns)); } }
-            Err(e) => {
-                let msg = e.to_string();
-                debug_log::log_list_err("daemonsets/watch", Some(&env_id), &msg, LogLevel::Error);
-                let _ = app.emit(WATCH_EVENT, serde_json::json!({ "envId": env_id, "watchToken": watch_token, "error": msg }));
-                break;
+    let ds_api: Api<DaemonSet> = if all_namespaces {
+        Api::all(client.clone())
+    } else {
+        Api::namespaced(client.clone(), &ns)
+    };
+    let pod_api: Api<Pod> = if all_namespaces {
+        Api::all(client.clone())
+    } else {
+        Api::namespaced(client.clone(), &ns)
+    };
+    let mut ds_config = WatcherConfig::default();
+    let mut pod_config = WatcherConfig::default();
+    if let Some(ref sel) = label_selector {
+        ds_config = ds_config.labels(sel);
+        pod_config = pod_config.labels(sel);
+    }
+
+    enum DsOrPod {
+        Ds(Result<kube::runtime::watcher::Event<DaemonSet>, kube::runtime::watcher::Error>),
+        Pod(Result<kube::runtime::watcher::Event<Pod>, kube::runtime::watcher::Error>),
+    }
+
+    let ds_stream = watcher(ds_api, ds_config).map(DsOrPod::Ds);
+    let pod_stream = watcher(pod_api, pod_config).map(DsOrPod::Pod);
+    let mut merged = Box::pin(stream::select(ds_stream, pod_stream));
+
+    let mut daemonsets: HashMap<String, DaemonSet> = HashMap::new();
+    let mut pods: HashMap<String, Pod> = HashMap::new();
+
+    while let Some(branch) = merged.next().await {
+        let mut fatal: Option<String> = None;
+        match branch {
+            DsOrPod::Ds(Ok(ev)) => match ev {
+                kube::runtime::watcher::Event::Applied(obj) => {
+                    let key = workload_watch_cache_key(&obj, all_namespaces, &ns);
+                    daemonsets.insert(key, obj);
+                }
+                kube::runtime::watcher::Event::Deleted(obj) => {
+                    let key = workload_watch_cache_key(&obj, all_namespaces, &ns);
+                    daemonsets.remove(&key);
+                }
+                kube::runtime::watcher::Event::Restarted(list) => {
+                    daemonsets.clear();
+                    for obj in list {
+                        let key = workload_watch_cache_key(&obj, all_namespaces, &ns);
+                        daemonsets.insert(key, obj);
+                    }
+                }
+            },
+            DsOrPod::Pod(Ok(ev)) => match ev {
+                kube::runtime::watcher::Event::Applied(obj) => {
+                    let key = workload_watch_cache_key(&obj, all_namespaces, &ns);
+                    pods.insert(key, obj);
+                }
+                kube::runtime::watcher::Event::Deleted(obj) => {
+                    let key = workload_watch_cache_key(&obj, all_namespaces, &ns);
+                    pods.remove(&key);
+                }
+                kube::runtime::watcher::Event::Restarted(list) => {
+                    pods.clear();
+                    for obj in list {
+                        let key = workload_watch_cache_key(&obj, all_namespaces, &ns);
+                        pods.insert(key, obj);
+                    }
+                }
+            },
+            DsOrPod::Ds(Err(e)) | DsOrPod::Pod(Err(e)) => {
+                fatal = Some(e.to_string());
             }
         }
-        let payload = serde_json::json!({ "envId": env_id, "watchToken": watch_token, "kind": "daemonsets", "items": items.values().cloned().collect::<Vec<_>>() });
-        if app.emit(WATCH_EVENT, payload).is_err() { break; }
+
+        if let Some(msg) = fatal {
+            debug_log::log_list_err("daemonsets/watch", Some(&env_id), &msg, LogLevel::Error);
+            let _ = app.emit(WATCH_EVENT, serde_json::json!({
+                "envId": env_id,
+                "watchToken": watch_token,
+                "error": msg
+            }));
+            break;
+        }
+
+        let pod_vec: Vec<Pod> = pods.values().cloned().collect();
+        let list: Vec<DaemonSetItem> = daemonsets
+            .values()
+            .map(|d| {
+                let wns = d.metadata.namespace.as_deref().unwrap_or(&ns);
+                let pod_rollup = d
+                    .spec
+                    .as_ref()
+                    .map(|s| compute_workload_pod_rollup(&pod_vec, wns, &s.selector))
+                    .unwrap_or_default();
+                daemonset_to_item(d.clone(), &ns, pod_rollup)
+            })
+            .collect();
+        let payload = serde_json::json!({
+            "envId": env_id,
+            "watchToken": watch_token,
+            "kind": "daemonsets",
+            "items": list
+        });
+        if app.emit(WATCH_EVENT, payload).is_err() {
+            break;
+        }
     }
 }
 

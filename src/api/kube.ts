@@ -25,6 +25,16 @@ export interface PodItem {
   creation_time?: string | null;
 }
 
+
+export interface WorkloadPodRollup {
+  running_ready?: number | null;
+  pending?: number | null;
+  succeeded?: number | null;
+  failed?: number | null;
+  abnormal?: number | null;
+  last_container_restart?: string | null;
+}
+
 export interface DeploymentItem {
   name: string;
   namespace: string;
@@ -32,6 +42,7 @@ export interface DeploymentItem {
   ready?: number | null;
   creation_time?: string | null;
   label_selector?: string | null;
+  pod_rollup?: WorkloadPodRollup | null;
 }
 
 export interface ServiceItem {
@@ -51,6 +62,7 @@ export interface StatefulSetItem {
   ready?: number | null;
   creation_time?: string | null;
   label_selector?: string | null;
+  pod_rollup?: WorkloadPodRollup | null;
 }
 
 export interface ConfigMapItem {
@@ -119,6 +131,7 @@ export interface DaemonSetItem {
   ready?: number | null;
   creation_time?: string | null;
   label_selector?: string | null;
+  pod_rollup?: WorkloadPodRollup | null;
 }
 
 export interface PersistentVolumeClaimItem {

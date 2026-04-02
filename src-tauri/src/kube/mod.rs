@@ -42,5 +42,5 @@ pub use resources::{
     IngressClassItem, IngressItem, JobItem, LimitRangeItem, NamespaceItem, NetworkPolicyItem,
     NodeItem, PersistentVolumeClaimItem, PersistentVolumeItem, PodDisruptionBudgetItem,
     PodItem, PriorityClassItem, ReplicaSetItem, ResourceQuotaItem, RoleBindingItem, RoleItem,
-    SecretItem, ServiceAccountItem, ServiceItem, StatefulSetItem, StorageClassItem,
+    SecretItem, ServiceAccountItem, ServiceItem, StatefulSetItem,     StorageClassItem,
 };

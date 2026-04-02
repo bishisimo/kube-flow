@@ -64,6 +64,7 @@ import {
   type RoleBindingItem,
   type ClusterRoleItem,
   type ClusterRoleBindingItem,
+  type WorkloadPodRollup,
 } from "../api/kube";
 import type { PodDebugNamespace } from "../api/terminal";
 import { defaultNamespace } from "../api/env";
@@ -1610,6 +1611,8 @@ const rawTableRows = computed(() => {
         replicas: `${d.ready ?? 0}/${d.replicas ?? 0}`,
         creationTime: d.creation_time ?? "-",
         labelSelector: d.label_selector ?? null,
+        podRollup: d.pod_rollup ?? null,
+        recentRestart: d.pod_rollup?.last_container_restart ?? "-",
       }));
     case "services":
       return services.value.map((s) => ({
@@ -1627,6 +1630,8 @@ const rawTableRows = computed(() => {
         replicas: `${st.ready ?? 0}/${st.replicas ?? 0}`,
         creationTime: st.creation_time ?? "-",
         labelSelector: st.label_selector ?? null,
+        podRollup: st.pod_rollup ?? null,
+        recentRestart: st.pod_rollup?.last_container_restart ?? "-",
       }));
     case "configmaps":
       return configMaps.value.map((c) => ({
@@ -1688,6 +1693,8 @@ const rawTableRows = computed(() => {
         replicas: `${d.ready ?? 0}/${d.desired ?? 0}`,
         creationTime: d.creation_time ?? "-",
         labelSelector: d.label_selector ?? null,
+        podRollup: d.pod_rollup ?? null,
+        recentRestart: d.pod_rollup?.last_container_restart ?? "-",
       }));
     case "persistentvolumeclaims":
       return persistentVolumeClaims.value.map((p) => ({
@@ -1947,6 +1954,46 @@ function statusTone(statusValue: unknown): "ok" | "warn" | "error" | "neutral" {
 function isStatusColumn(colKey: string): boolean {
   return colKey === "phase" || colKey === "status" || colKey === "containerStatus";
 }
+type PodRollupBadgeTone = "running" | "pending" | "succeeded" | "failed" | "abnormal";
+type PodRollupBadge = { key: string; value: number; tone: PodRollupBadgeTone };
+
+function isPodRollupColumn(colKey: string): boolean {
+  return colKey === "podRollup";
+}
+
+function buildPodRollupBadges(v: unknown): PodRollupBadge[] {
+  const r = (v ?? {}) as WorkloadPodRollup;
+  const out: PodRollupBadge[] = [];
+  const push = (key: string, tone: PodRollupBadgeTone, n: unknown) => {
+    const m = Number(n ?? 0);
+    if (Number.isFinite(m) && m > 0) out.push({ key, value: m, tone });
+  };
+  push("running", "running", r.running_ready);
+  push("pending", "pending", r.pending);
+  push("succeeded", "succeeded", r.succeeded);
+  push("failed", "failed", r.failed);
+  push("abnormal", "abnormal", r.abnormal);
+  return out;
+}
+
+function formatRecentRestart(v: unknown): string {
+  const r = (v ?? {}) as WorkloadPodRollup;
+  return r.last_container_restart ?? "-";
+}
+
+function isRecentRestartHot(v: unknown): boolean {
+  const text = formatRecentRestart(v);
+  if (text === "-") return false;
+  const m = text.match(/\(([^)]+)\)/);
+  const age = (m?.[1] ?? text).trim();
+  if (age.endsWith("秒前")) return true;
+  if (age.endsWith("分钟前")) {
+    const n = Number.parseInt(age.replace("分钟前", ""), 10);
+    return Number.isFinite(n) && n <= 15;
+  }
+  return false;
+}
+
 
 function isSelectedRow(row: Record<string, unknown>): boolean {
   if (!selectedResource.value) return false;
@@ -1988,6 +2035,8 @@ const tableColumns = computed(() => {
         { key: "name", label: "名称" },
         { key: "ns", label: "Namespace" },
         { key: "replicas", label: "副本" },
+        { key: "podRollup", label: "Pod 态势" },
+        { key: "recentRestart", label: "最近重启" },
         { key: "creationTime", label: "创建时间" },
       ];
     case "services":
@@ -2004,6 +2053,8 @@ const tableColumns = computed(() => {
         { key: "name", label: "名称" },
         { key: "ns", label: "Namespace" },
         { key: "replicas", label: "副本" },
+        { key: "podRollup", label: "Pod 态势" },
+        { key: "recentRestart", label: "最近重启" },
         { key: "creationTime", label: "创建时间" },
       ];
     case "configmaps":
@@ -2058,6 +2109,8 @@ const tableColumns = computed(() => {
         { key: "name", label: "名称" },
         { key: "ns", label: "Namespace" },
         { key: "replicas", label: "Ready/Desired" },
+        { key: "podRollup", label: "Pod 态势" },
+        { key: "recentRestart", label: "最近重启" },
         { key: "creationTime", label: "创建时间" },
       ];
     case "persistentvolumeclaims":
@@ -2926,6 +2979,17 @@ onUnmounted(() => {
                     >
                       {{ normalizeStatus(row[col.key as keyof typeof row]) }}
                     </span>
+                    <template v-else-if="isPodRollupColumn(col.key)">
+                      <div class="pod-rollup-cell">
+                        <template v-for="badge in buildPodRollupBadges(row[col.key as keyof typeof row])" :key="badge.key">
+                          <span class="pod-rollup-badge" :class="`pod-rollup-badge-${badge.tone}`"><span class="pod-rollup-dot" />{{ badge.value }}</span>
+                        </template>
+                        <span v-if="buildPodRollupBadges(row[col.key as keyof typeof row]).length === 0" class="pod-rollup-empty">-</span>
+                      </div>
+                    </template>
+                    <template v-else-if="col.key === 'recentRestart'">
+                      <span :class="{ 'recent-restart-hot': isRecentRestartHot(row.podRollup) }">{{ formatRecentRestart(row.podRollup) }}</span>
+                    </template>
                     <template v-else>
                       {{ row[col.key as keyof typeof row] }}
                     </template>
@@ -4497,6 +4561,71 @@ onUnmounted(() => {
   color: #475569;
   background: #f8fafc;
   border-color: #e2e8f0;
+}
+
+.pod-rollup-cell {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pod-rollup-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+  border: 1px solid transparent;
+}
+.pod-rollup-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: currentColor;
+  margin-right: 6px;
+  opacity: 0.9;
+}
+
+.pod-rollup-badge-running {
+  background: rgba(34, 197, 94, 0.16);
+  color: #166534;
+  border-color: rgba(34, 197, 94, 0.35);
+}
+
+.pod-rollup-badge-pending {
+  background: rgba(245, 158, 11, 0.16);
+  color: #92400e;
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.pod-rollup-badge-succeeded {
+  background: rgba(100, 116, 139, 0.16);
+  color: #334155;
+  border-color: rgba(100, 116, 139, 0.35);
+}
+
+.pod-rollup-badge-failed {
+  background: rgba(239, 68, 68, 0.16);
+  color: #991b1b;
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+.pod-rollup-badge-abnormal {
+  background: rgba(190, 24, 93, 0.18);
+  color: #9f1239;
+  border-color: rgba(190, 24, 93, 0.35);
+}
+
+.pod-rollup-empty {
+  color: rgba(15, 23, 42, 0.45);
+}
+
+.recent-restart-hot {
+  color: #b91c1c;
+  font-weight: 600;
 }
 .resource-table .cell-link {
   cursor: pointer;
