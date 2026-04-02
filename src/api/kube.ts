@@ -788,6 +788,14 @@ export function kubeApplyResource(envId: string, yaml: string): Promise<void> {
   return invoke("kube_apply_resource", { envId, yaml });
 }
 
+export function kubeDeployResource(
+  envId: string,
+  yaml: string,
+  strategy: "create_replace" | "apply"
+): Promise<void> {
+  return invoke("kube_deploy_resource", { envId, yaml, strategy });
+}
+
 export function kubeDeleteResource(
   envId: string,
   kind: string,

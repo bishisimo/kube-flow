@@ -86,3 +86,18 @@ pub fn app_settings_set_log_active_stream_limit(limit: u32) -> Result<(), String
     config.set_log_active_stream_limit(limit);
     config.save(&path).map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub fn app_settings_get_resource_deploy_strategy() -> Result<String, String> {
+    let path = app_settings_config_path().ok_or_else(|| "app data dir not available".to_string())?;
+    let config = AppSettingsConfig::load(&path).map_err(|e| e.to_string())?;
+    Ok(config.resource_deploy_strategy().as_str().to_string())
+}
+
+#[tauri::command]
+pub fn app_settings_set_resource_deploy_strategy(strategy: String) -> Result<(), String> {
+    let path = app_settings_config_path().ok_or_else(|| "app data dir not available".to_string())?;
+    let mut config = AppSettingsConfig::load(&path).map_err(|e| e.to_string())?;
+    config.set_resource_deploy_strategy(&strategy);
+    config.save(&path).map_err(|e| e.to_string())
+}

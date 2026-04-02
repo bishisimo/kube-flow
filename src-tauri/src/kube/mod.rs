@@ -16,7 +16,7 @@ mod tunnel;
 
 pub use client::KubeClientStore;
 pub use resource_watch::{start_watch, WatchStore};
-pub use resource_apply::apply_resource_yaml;
+pub use resource_apply::{apply_resource_yaml, deploy_resource_yaml};
 pub use resource_delete::delete_resource;
 pub use resource_patch::{patch_container_images, ContainerImagePatch};
 pub use resource_describe::{describe_resource, DescribeResult};

@@ -4,6 +4,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export type TunnelMappingMode = "ssh" | "builtin";
+export type ResourceDeployStrategy = "create_replace" | "apply";
 
 export function appSettingsGetSshTunnelMode(): Promise<TunnelMappingMode> {
   return invoke("app_settings_get_ssh_tunnel_mode");
@@ -43,4 +44,12 @@ export function appSettingsGetLogActiveStreamLimit(): Promise<number> {
 
 export function appSettingsSetLogActiveStreamLimit(limit: number): Promise<void> {
   return invoke("app_settings_set_log_active_stream_limit", { limit });
+}
+
+export function appSettingsGetResourceDeployStrategy(): Promise<ResourceDeployStrategy> {
+  return invoke("app_settings_get_resource_deploy_strategy");
+}
+
+export function appSettingsSetResourceDeployStrategy(strategy: ResourceDeployStrategy): Promise<void> {
+  return invoke("app_settings_set_resource_deploy_strategy", { strategy });
 }

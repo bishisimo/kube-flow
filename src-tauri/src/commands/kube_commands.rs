@@ -1,10 +1,10 @@
 //! K8s 资源与客户端 Tauri 命令：需传入 env 或 env_id，从 store 取 Client。
 
-use crate::config::LogLevel;
+use crate::config::{LogLevel, ResourceDeployStrategy};
 use crate::debug_log;
 use crate::env::EnvService;
 use crate::kube::{
-    apply_resource_yaml, delete_resource, describe_resource, get_pod_container_names,
+    apply_resource_yaml, delete_resource, deploy_resource_yaml, describe_resource, get_pod_container_names,
     get_pod_logs, get_related_targets, get_resource_topology, get_resource_yaml, patch_container_images,
     run_pod_exec, run_pod_log_stream, start_watch, KubeClientStore, PodExecStore, PodLogStreamStore,
     RelatedTarget,
@@ -856,6 +856,25 @@ pub async fn kube_apply_resource(
         .ok_or_else(|| "environment not found".to_string())?;
     let client = store.get_or_build(&env).await.map_err(|e| e.to_string())?;
     apply_resource_yaml(&client, &yaml).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn kube_deploy_resource(
+    store: State<'_, KubeClientStore>,
+    env_id: String,
+    yaml: String,
+    strategy: String,
+) -> Result<(), String> {
+    let env = EnvService::list()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|e| e.id == env_id)
+        .ok_or_else(|| "environment not found".to_string())?;
+    let client = store.get_or_build(&env).await.map_err(|e| e.to_string())?;
+    let strategy = ResourceDeployStrategy::from_str(&strategy);
+    deploy_resource_yaml(&client, &yaml, strategy)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

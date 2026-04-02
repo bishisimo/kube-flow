@@ -2,7 +2,8 @@
 import { computed, ref, watch } from "vue";
 import * as jsYaml from "js-yaml";
 import { CodeEditor } from "monaco-editor-vue3";
-import { kubeApplyResource, kubeGetResource } from "../api/kube";
+import { kubeDeployResource, kubeGetResource } from "../api/kube";
+import { appSettingsGetResourceDeployStrategy } from "../api/config";
 import { useEnvStore } from "../stores/env";
 import { useYamlMonacoTheme } from "../stores/yamlTheme";
 import {
@@ -638,6 +639,11 @@ function onSaveYaml() {
   opMessage.value = "已保存资源 YAML。";
 }
 
+async function deployYamlToEnv(envId: string, yaml: string) {
+  const strategy = await appSettingsGetResourceDeployStrategy();
+  await kubeDeployResource(envId, yaml, strategy);
+}
+
 async function onApplyCurrent() {
   if (!selectedManifest.value || !selectedEnvId.value) return;
   const ok = validateCurrent();
@@ -648,7 +654,7 @@ async function onApplyCurrent() {
   try {
     const identity = parseIdentity(editYaml.value);
     if (!identity) throw new Error("无法解析资源身份信息。");
-    await kubeApplyResource(selectedEnvId.value, editYaml.value);
+    await deployYamlToEnv(selectedEnvId.value, editYaml.value);
     setManifestComponent(selectedManifest.value.id, selectedComponent.value);
     setManifestIdentity(selectedManifest.value.id, identity);
     saveManifestYaml(selectedManifest.value.id, editYaml.value, "apply");
@@ -676,7 +682,7 @@ async function onApplyComponent() {
   const failed: string[] = [];
   for (const item of list) {
     try {
-      await kubeApplyResource(selectedEnvId.value, item.yaml);
+      await deployYamlToEnv(selectedEnvId.value, item.yaml);
       saveManifestYaml(item.id, item.yaml, "apply");
       delete manifestDraftCache.value[item.id];
     } catch (e) {
@@ -1212,7 +1218,7 @@ async function onApplyPackageToEnv() {
     let success = 0;
     for (const r of resources) {
       try {
-        await kubeApplyResource(target.id, r.yaml);
+        await deployYamlToEnv(target.id, r.yaml);
         const mid = findManifestIdForPackageResource(target.id, r);
         if (mid) saveManifestYaml(mid, r.yaml, "apply");
         success += 1;

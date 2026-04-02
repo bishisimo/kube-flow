@@ -19,13 +19,16 @@ import {
   appSettingsGetAutoSnapshotEnabled,
   appSettingsGetAutoSnapshotLimitPerResource,
   appSettingsGetLogActiveStreamLimit,
+  appSettingsGetResourceDeployStrategy,
   appSettingsGetTerminalInstanceCacheLimit,
   appSettingsGetSshTunnelMode,
   appSettingsSetAutoSnapshotEnabled,
   appSettingsSetAutoSnapshotLimitPerResource,
   appSettingsSetLogActiveStreamLimit,
+  appSettingsSetResourceDeployStrategy,
   appSettingsSetTerminalInstanceCacheLimit,
   appSettingsSetSshTunnelMode,
+  type ResourceDeployStrategy,
   type TunnelMappingMode,
 } from "../api/config";
 import { useAppSettingsStore } from "../stores/appSettings";
@@ -70,6 +73,7 @@ const currentLogTailLines = ref(100);
 const currentSshTunnelMode = ref<TunnelMappingMode>("ssh");
 const currentAutoSnapshotEnabled = ref(true);
 const currentAutoSnapshotLimitPerResource = ref(10);
+const currentResourceDeployStrategy = ref<ResourceDeployStrategy>("create_replace");
 const currentTerminalInstanceCacheLimit = ref(6);
 const currentLogActiveStreamLimit = ref(3);
 const saving = ref(false);
@@ -128,12 +132,13 @@ const tempStrongholdPath = ref("");
 
 async function load() {
   try {
-    const [level, settings, sshMode, autoSnapshot, autoSnapshotLimit, terminalCacheLimit, activeLogLimit] = await Promise.all([
+    const [level, settings, sshMode, autoSnapshot, autoSnapshotLimit, resourceDeployStrategy, terminalCacheLimit, activeLogLimit] = await Promise.all([
       logGetLevel(),
       logGetDisplaySettings(),
       appSettingsGetSshTunnelMode(),
       appSettingsGetAutoSnapshotEnabled(),
       appSettingsGetAutoSnapshotLimitPerResource(),
+      appSettingsGetResourceDeployStrategy(),
       appSettingsGetTerminalInstanceCacheLimit(),
       appSettingsGetLogActiveStreamLimit(),
     ]);
@@ -144,6 +149,7 @@ async function load() {
     currentSshTunnelMode.value = sshMode;
     currentAutoSnapshotEnabled.value = autoSnapshot;
     currentAutoSnapshotLimitPerResource.value = Math.max(0, Math.floor(autoSnapshotLimit || 0));
+    currentResourceDeployStrategy.value = resourceDeployStrategy;
     currentTerminalInstanceCacheLimit.value = Math.min(20, Math.max(1, Math.floor(terminalCacheLimit || 6)));
     currentLogActiveStreamLimit.value = Math.min(12, Math.max(1, Math.floor(activeLogLimit || 3)));
     autoSnapshotEnabled.value = autoSnapshot;
@@ -152,6 +158,7 @@ async function load() {
     logActiveStreamLimit.value = currentLogActiveStreamLimit.value;
   } catch {
     currentLevel.value = "off";
+    currentResourceDeployStrategy.value = "create_replace";
     currentTerminalInstanceCacheLimit.value = 6;
     currentLogActiveStreamLimit.value = 3;
   }
@@ -334,6 +341,21 @@ async function saveTerminalInstanceCacheLimit(limit: number) {
     await appSettingsSetTerminalInstanceCacheLimit(normalized);
     terminalInstanceCacheLimit.value = normalized;
     message.value = "已保存";
+  } catch (e) {
+    message.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function saveResourceDeployStrategy(strategy: ResourceDeployStrategy) {
+  saving.value = true;
+  message.value = null;
+  try {
+    await appSettingsSetResourceDeployStrategy(strategy);
+    currentResourceDeployStrategy.value = strategy;
+    message.value = "已保存";
+    setTimeout(() => (message.value = null), 2000);
   } catch (e) {
     message.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -525,6 +547,43 @@ onMounted(() => {
                 保存数量
               </button>
             </div>
+          </div>
+          <p v-if="message" class="message" :class="{ error: message !== '已保存' }">
+            <span v-if="message === '已保存'" class="message-icon">✓</span>
+            {{ message }}
+          </p>
+        </section>
+
+        <section class="card">
+          <h2 class="card-title">编排中心下发</h2>
+          <p class="card-desc">控制编排中心把 YAML 投放到目标环境时采用的策略。工作台编辑现有资源仍保持原有覆盖逻辑，不受这里影响。</p>
+          <div class="level-options">
+            <button
+              type="button"
+              class="level-btn"
+              :class="{ active: currentResourceDeployStrategy === 'create_replace' }"
+              :disabled="saving"
+              @click="saveResourceDeployStrategy('create_replace')"
+            >
+              Create + Replace
+            </button>
+            <button
+              type="button"
+              class="level-btn"
+              :class="{ active: currentResourceDeployStrategy === 'apply' }"
+              :disabled="saving"
+              @click="saveResourceDeployStrategy('apply')"
+            >
+              Apply
+            </button>
+          </div>
+          <div class="setting-hint-block">
+            <div class="setting-hint-title">Create + Replace</div>
+            <div class="setting-hint-desc">目标资源不存在时先创建，已存在时按完整 YAML 覆盖，更接近模板投放。</div>
+          </div>
+          <div class="setting-hint-block">
+            <div class="setting-hint-title">Apply</div>
+            <div class="setting-hint-desc">使用 server-side apply 合并字段，更适合与其他控制器共享对象所有权。</div>
           </div>
           <p v-if="message" class="message" :class="{ error: message !== '已保存' }">
             <span v-if="message === '已保存'" class="message-icon">✓</span>
@@ -1120,6 +1179,24 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 0.6rem;
+}
+.setting-hint-block {
+  margin-top: 0.85rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+.setting-hint-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #1e293b;
+}
+.setting-hint-desc {
+  margin-top: 0.25rem;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: #64748b;
 }
 .setting-number-input {
   width: 88px;

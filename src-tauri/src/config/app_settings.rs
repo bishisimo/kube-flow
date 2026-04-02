@@ -17,6 +17,31 @@ pub enum LogLevel {
     Debug,
 }
 
+/// 编排中心资源下发策略。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceDeployStrategy {
+    #[default]
+    CreateReplace,
+    Apply,
+}
+
+impl ResourceDeployStrategy {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ResourceDeployStrategy::CreateReplace => "create_replace",
+            ResourceDeployStrategy::Apply => "apply",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "apply" => ResourceDeployStrategy::Apply,
+            _ => ResourceDeployStrategy::CreateReplace,
+        }
+    }
+}
+
 impl LogLevel {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -106,6 +131,9 @@ pub struct AppSettingsConfig {
     /// 日志中心允许同时保活的实时日志流数量上限；默认 3。
     #[serde(default = "default_log_active_stream_limit")]
     pub log_active_stream_limit: u32,
+    /// 编排中心资源下发策略：create_replace 或 apply。
+    #[serde(default)]
+    pub resource_deploy_strategy: String,
     /// 凭证存储与安全设置。
     #[serde(default)]
     pub security: SecurityConfig,
@@ -215,6 +243,14 @@ impl AppSettingsConfig {
         self.log_active_stream_limit = limit.clamp(1, 12);
     }
 
+    pub fn resource_deploy_strategy(&self) -> ResourceDeployStrategy {
+        ResourceDeployStrategy::from_str(&self.resource_deploy_strategy)
+    }
+
+    pub fn set_resource_deploy_strategy(&mut self, strategy: &str) {
+        self.resource_deploy_strategy = ResourceDeployStrategy::from_str(strategy).as_str().to_string();
+    }
+
 }
 
 /// 日志显示顺序：asc=正序（旧→新），desc=倒序（新→旧）。
@@ -288,6 +324,8 @@ struct AppSettingsFile {
     #[serde(default = "default_log_active_stream_limit")]
     log_active_stream_limit: u32,
     #[serde(default)]
+    resource_deploy_strategy: String,
+    #[serde(default)]
     security: SecurityConfig,
 }
 
@@ -327,6 +365,11 @@ impl AppSettingsConfig {
             auto_snapshot_limit_per_resource: file.auto_snapshot_limit_per_resource,
             terminal_instance_cache_limit: file.terminal_instance_cache_limit,
             log_active_stream_limit: file.log_active_stream_limit,
+            resource_deploy_strategy: if file.resource_deploy_strategy.is_empty() {
+                ResourceDeployStrategy::CreateReplace.as_str().to_string()
+            } else {
+                file.resource_deploy_strategy
+            },
             security: file.security,
         })
     }
@@ -345,6 +388,7 @@ impl AppSettingsConfig {
             auto_snapshot_limit_per_resource: self.auto_snapshot_limit_per_resource,
             terminal_instance_cache_limit: self.terminal_instance_cache_limit,
             log_active_stream_limit: self.log_active_stream_limit,
+            resource_deploy_strategy: self.resource_deploy_strategy.clone(),
             security: self.security.clone(),
         };
         let content = toml::to_string_pretty(&file).map_err(ConfigError::TomlSer)?;

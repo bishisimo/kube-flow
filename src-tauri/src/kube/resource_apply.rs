@@ -1,9 +1,7 @@
-//! 资源 Apply：解析 YAML 并 replace 到集群。
-//! 要求 YAML 包含 resourceVersion，用于乐观并发控制。
+//! 资源下发：支持工作台的 replace，以及编排中心的 create+replace / apply。
 
+use crate::config::ResourceDeployStrategy;
 use crate::kube::resources::ResourceError;
-use kube::api::{Api, PostParams};
-use kube::Client;
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
 use k8s_openapi::api::autoscaling::v2::HorizontalPodAutoscaler;
 use k8s_openapi::api::batch::v1::{CronJob, Job};
@@ -17,21 +15,37 @@ use k8s_openapi::api::policy::v1::PodDisruptionBudget;
 use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding, Role, RoleBinding};
 use k8s_openapi::api::scheduling::v1::PriorityClass;
 use k8s_openapi::api::storage::v1::StorageClass;
+use kube::api::{Api, Patch, PatchParams, PostParams, Resource};
+use kube::Client;
 
 fn ns_or_default(ns: Option<&str>) -> &str {
     ns.unwrap_or("default")
 }
 
-/// 解析 YAML 并 replace 到集群。
-/// YAML 必须包含 metadata.resourceVersion。
-pub async fn apply_resource_yaml(client: &Client, yaml: &str) -> Result<(), ResourceError> {
+fn sanitize_apply_value(mut obj: serde_json::Value) -> serde_json::Value {
+    if let Some(root) = obj.as_object_mut() {
+        if let Some(meta) = root.get_mut("metadata").and_then(|v| v.as_object_mut()) {
+            meta.remove("managedFields");
+            meta.remove("resourceVersion");
+            meta.remove("uid");
+            meta.remove("creationTimestamp");
+            meta.remove("generation");
+        }
+        root.remove("status");
+    }
+    obj
+}
+
+fn parse_resource_identity(
+    yaml: &str,
+) -> Result<(serde_json::Value, String, String, Option<String>), ResourceError> {
     let obj: serde_json::Value = serde_yaml::from_str(yaml)
         .map_err(|e| ResourceError::Serialize(format!("yaml parse: {}", e)))?;
-
     let kind = obj
         .get("kind")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| ResourceError::Serialize("missing kind".to_string()))?;
+        .ok_or_else(|| ResourceError::Serialize("missing kind".to_string()))?
+        .to_string();
 
     let meta = obj
         .get("metadata")
@@ -41,135 +55,280 @@ pub async fn apply_resource_yaml(client: &Client, yaml: &str) -> Result<(), Reso
     let name = meta
         .get("name")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| ResourceError::Serialize("missing metadata.name".to_string()))?;
+        .ok_or_else(|| ResourceError::Serialize("missing metadata.name".to_string()))?
+        .to_string();
 
-    let namespace = meta.get("namespace").and_then(|v| v.as_str());
+    let namespace = meta
+        .get("namespace")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
-    let pp = PostParams::default();
+    Ok((obj, kind, name, namespace))
+}
 
-    match kind {
-        "Namespace" => {
-            let o: Namespace = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<Namespace>::all(client.clone()).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "Node" => {
-            let o: Node = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<Node>::all(client.clone()).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "PersistentVolume" => {
-            let o: PersistentVolume = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<PersistentVolume>::all(client.clone()).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "StorageClass" => {
-            let o: StorageClass = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<StorageClass>::all(client.clone()).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "ClusterRole" => {
-            let o: ClusterRole = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<ClusterRole>::all(client.clone()).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "ClusterRoleBinding" => {
-            let o: ClusterRoleBinding = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<ClusterRoleBinding>::all(client.clone()).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "Pod" => {
-            let o: Pod = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<Pod>::namespaced(client.clone(), ns_or_default(namespace)).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "Deployment" => {
-            let o: Deployment = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<Deployment>::namespaced(client.clone(), ns_or_default(namespace)).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "Service" => {
-            let o: Service = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<Service>::namespaced(client.clone(), ns_or_default(namespace)).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "StatefulSet" => {
-            let o: StatefulSet = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<StatefulSet>::namespaced(client.clone(), ns_or_default(namespace)).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "DaemonSet" => {
-            let o: DaemonSet = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<DaemonSet>::namespaced(client.clone(), ns_or_default(namespace)).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "ConfigMap" => {
-            let o: ConfigMap = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<ConfigMap>::namespaced(client.clone(), ns_or_default(namespace)).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "Secret" => {
-            let o: Secret = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<Secret>::namespaced(client.clone(), ns_or_default(namespace)).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "ServiceAccount" => {
-            let o: ServiceAccount = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<ServiceAccount>::namespaced(client.clone(), ns_or_default(namespace)).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "PersistentVolumeClaim" => {
-            let o: PersistentVolumeClaim = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<PersistentVolumeClaim>::namespaced(client.clone(), ns_or_default(namespace)).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "Endpoints" => {
-            let o: Endpoints = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<Endpoints>::namespaced(client.clone(), ns_or_default(namespace)).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "EndpointSlice" => {
-            let o: EndpointSlice = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<EndpointSlice>::namespaced(client.clone(), ns_or_default(namespace)).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "Role" => {
-            let o: Role = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<Role>::namespaced(client.clone(), ns_or_default(namespace)).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "RoleBinding" => {
-            let o: RoleBinding = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<RoleBinding>::namespaced(client.clone(), ns_or_default(namespace)).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "ReplicaSet" => {
-            let o: ReplicaSet = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<ReplicaSet>::namespaced(client.clone(), ns_or_default(namespace)).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "Job" => {
-            let o: Job = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<Job>::namespaced(client.clone(), ns_or_default(namespace)).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "CronJob" => {
-            let o: CronJob = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<CronJob>::namespaced(client.clone(), ns_or_default(namespace)).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "Ingress" => {
-            let o: Ingress = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<Ingress>::namespaced(client.clone(), ns_or_default(namespace)).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "IngressClass" => {
-            let o: IngressClass = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<IngressClass>::all(client.clone()).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "NetworkPolicy" => {
-            let o: NetworkPolicy = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<NetworkPolicy>::namespaced(client.clone(), ns_or_default(namespace)).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "ResourceQuota" => {
-            let o: ResourceQuota = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<ResourceQuota>::namespaced(client.clone(), ns_or_default(namespace)).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "LimitRange" => {
-            let o: LimitRange = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<LimitRange>::namespaced(client.clone(), ns_or_default(namespace)).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "PriorityClass" => {
-            let o: PriorityClass = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<PriorityClass>::all(client.clone()).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "HorizontalPodAutoscaler" => {
-            let o: HorizontalPodAutoscaler = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<HorizontalPodAutoscaler>::namespaced(client.clone(), ns_or_default(namespace)).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        "PodDisruptionBudget" => {
-            let o: PodDisruptionBudget = serde_json::from_value(obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
-            Api::<PodDisruptionBudget>::namespaced(client.clone(), ns_or_default(namespace)).replace(name, &pp, &o).await.map_err(ResourceError::Kube)?;
-        }
-        _ => return Err(ResourceError::UnsupportedKind(kind.to_string())),
-    }
-
+async fn replace_existing_resource<T>(
+    api: Api<T>,
+    name: &str,
+    mut desired: T,
+) -> Result<(), ResourceError>
+where
+    T: Clone + std::fmt::Debug + serde::de::DeserializeOwned + serde::Serialize + Resource<DynamicType = ()>,
+{
+    let existing = api.get(name).await.map_err(ResourceError::Kube)?;
+    desired.meta_mut().resource_version = existing.meta().resource_version.clone();
+    api.replace(name, &PostParams::default(), &desired)
+        .await
+        .map_err(ResourceError::Kube)?;
     Ok(())
+}
+
+async fn create_or_replace_resource<T>(
+    api: Api<T>,
+    name: &str,
+    desired: T,
+) -> Result<(), ResourceError>
+where
+    T: Clone + std::fmt::Debug + serde::de::DeserializeOwned + serde::Serialize + Resource<DynamicType = ()>,
+{
+    if api.get_opt(name).await.map_err(ResourceError::Kube)?.is_some() {
+        replace_existing_resource(api, name, desired).await
+    } else {
+        api.create(&PostParams::default(), &desired)
+            .await
+            .map_err(ResourceError::Kube)?;
+        Ok(())
+    }
+}
+
+async fn server_side_apply_resource<T>(
+    api: Api<T>,
+    name: &str,
+    desired: T,
+) -> Result<(), ResourceError>
+where
+    T: Clone + std::fmt::Debug + serde::de::DeserializeOwned + serde::Serialize + Resource<DynamicType = ()>,
+{
+    let pp = PatchParams::apply("kube-flow").force();
+    api.patch(name, &pp, &Patch::Apply(&desired))
+        .await
+        .map_err(ResourceError::Kube)?;
+    Ok(())
+}
+
+macro_rules! dispatch_resource {
+    ($client:expr, $kind:expr, $obj:expr, $name:expr, $namespace:expr, |$typed:ident, $api:ident| $body:block) => {{
+        match $kind.as_str() {
+            "Namespace" => {
+                let $typed: Namespace =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api = Api::<Namespace>::all($client.clone());
+                $body
+            }
+            "Node" => {
+                let $typed: Node =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api = Api::<Node>::all($client.clone());
+                $body
+            }
+            "PersistentVolume" => {
+                let $typed: PersistentVolume =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api = Api::<PersistentVolume>::all($client.clone());
+                $body
+            }
+            "StorageClass" => {
+                let $typed: StorageClass =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api = Api::<StorageClass>::all($client.clone());
+                $body
+            }
+            "ClusterRole" => {
+                let $typed: ClusterRole =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api = Api::<ClusterRole>::all($client.clone());
+                $body
+            }
+            "ClusterRoleBinding" => {
+                let $typed: ClusterRoleBinding =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api = Api::<ClusterRoleBinding>::all($client.clone());
+                $body
+            }
+            "Pod" => {
+                let $typed: Pod =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api = Api::<Pod>::namespaced($client.clone(), ns_or_default($namespace.as_deref()));
+                $body
+            }
+            "Deployment" => {
+                let $typed: Deployment =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api = Api::<Deployment>::namespaced($client.clone(), ns_or_default($namespace.as_deref()));
+                $body
+            }
+            "Service" => {
+                let $typed: Service =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api = Api::<Service>::namespaced($client.clone(), ns_or_default($namespace.as_deref()));
+                $body
+            }
+            "StatefulSet" => {
+                let $typed: StatefulSet =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api = Api::<StatefulSet>::namespaced($client.clone(), ns_or_default($namespace.as_deref()));
+                $body
+            }
+            "DaemonSet" => {
+                let $typed: DaemonSet =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api = Api::<DaemonSet>::namespaced($client.clone(), ns_or_default($namespace.as_deref()));
+                $body
+            }
+            "ConfigMap" => {
+                let $typed: ConfigMap =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api = Api::<ConfigMap>::namespaced($client.clone(), ns_or_default($namespace.as_deref()));
+                $body
+            }
+            "Secret" => {
+                let $typed: Secret =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api = Api::<Secret>::namespaced($client.clone(), ns_or_default($namespace.as_deref()));
+                $body
+            }
+            "ServiceAccount" => {
+                let $typed: ServiceAccount =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api = Api::<ServiceAccount>::namespaced($client.clone(), ns_or_default($namespace.as_deref()));
+                $body
+            }
+            "PersistentVolumeClaim" => {
+                let $typed: PersistentVolumeClaim =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api =
+                    Api::<PersistentVolumeClaim>::namespaced($client.clone(), ns_or_default($namespace.as_deref()));
+                $body
+            }
+            "Endpoints" => {
+                let $typed: Endpoints =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api = Api::<Endpoints>::namespaced($client.clone(), ns_or_default($namespace.as_deref()));
+                $body
+            }
+            "EndpointSlice" => {
+                let $typed: EndpointSlice =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api = Api::<EndpointSlice>::namespaced($client.clone(), ns_or_default($namespace.as_deref()));
+                $body
+            }
+            "Role" => {
+                let $typed: Role =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api = Api::<Role>::namespaced($client.clone(), ns_or_default($namespace.as_deref()));
+                $body
+            }
+            "RoleBinding" => {
+                let $typed: RoleBinding =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api = Api::<RoleBinding>::namespaced($client.clone(), ns_or_default($namespace.as_deref()));
+                $body
+            }
+            "ReplicaSet" => {
+                let $typed: ReplicaSet =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api = Api::<ReplicaSet>::namespaced($client.clone(), ns_or_default($namespace.as_deref()));
+                $body
+            }
+            "Job" => {
+                let $typed: Job =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api = Api::<Job>::namespaced($client.clone(), ns_or_default($namespace.as_deref()));
+                $body
+            }
+            "CronJob" => {
+                let $typed: CronJob =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api = Api::<CronJob>::namespaced($client.clone(), ns_or_default($namespace.as_deref()));
+                $body
+            }
+            "Ingress" => {
+                let $typed: Ingress =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api = Api::<Ingress>::namespaced($client.clone(), ns_or_default($namespace.as_deref()));
+                $body
+            }
+            "IngressClass" => {
+                let $typed: IngressClass =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api = Api::<IngressClass>::all($client.clone());
+                $body
+            }
+            "NetworkPolicy" => {
+                let $typed: NetworkPolicy =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api = Api::<NetworkPolicy>::namespaced($client.clone(), ns_or_default($namespace.as_deref()));
+                $body
+            }
+            "ResourceQuota" => {
+                let $typed: ResourceQuota =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api = Api::<ResourceQuota>::namespaced($client.clone(), ns_or_default($namespace.as_deref()));
+                $body
+            }
+            "LimitRange" => {
+                let $typed: LimitRange =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api = Api::<LimitRange>::namespaced($client.clone(), ns_or_default($namespace.as_deref()));
+                $body
+            }
+            "PriorityClass" => {
+                let $typed: PriorityClass =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api = Api::<PriorityClass>::all($client.clone());
+                $body
+            }
+            "HorizontalPodAutoscaler" => {
+                let $typed: HorizontalPodAutoscaler =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api =
+                    Api::<HorizontalPodAutoscaler>::namespaced($client.clone(), ns_or_default($namespace.as_deref()));
+                $body
+            }
+            "PodDisruptionBudget" => {
+                let $typed: PodDisruptionBudget =
+                    serde_json::from_value($obj.clone()).map_err(|e| ResourceError::Serialize(e.to_string()))?;
+                let $api =
+                    Api::<PodDisruptionBudget>::namespaced($client.clone(), ns_or_default($namespace.as_deref()));
+                $body
+            }
+            _ => return Err(ResourceError::UnsupportedKind($kind.to_string())),
+        }
+    }};
+}
+
+/// 工作台资源编辑：要求对象已存在，按 replace 语义覆盖。
+pub async fn apply_resource_yaml(client: &Client, yaml: &str) -> Result<(), ResourceError> {
+    let (obj, kind, name, namespace) = parse_resource_identity(yaml)?;
+    let obj = sanitize_apply_value(obj);
+
+    dispatch_resource!(client, kind, obj, &name, namespace, |typed, api| {
+        replace_existing_resource(api, &name, typed).await
+    })
+}
+
+/// 编排中心资源下发：按策略使用 create+replace 或 server-side apply。
+pub async fn deploy_resource_yaml(
+    client: &Client,
+    yaml: &str,
+    strategy: ResourceDeployStrategy,
+) -> Result<(), ResourceError> {
+    let (obj, kind, name, namespace) = parse_resource_identity(yaml)?;
+    let obj = sanitize_apply_value(obj);
+
+    dispatch_resource!(client, kind, obj, &name, namespace, |typed, api| {
+        match strategy {
+            ResourceDeployStrategy::CreateReplace => create_or_replace_resource(api, &name, typed).await,
+            ResourceDeployStrategy::Apply => server_side_apply_resource(api, &name, typed).await,
+        }
+    })
 }
