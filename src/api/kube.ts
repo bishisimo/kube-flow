@@ -12,6 +12,12 @@ export interface NodeItem {
   name: string;
   status?: string | null;
   internal_ip?: string | null;
+  cpu_total?: string | null;
+  memory_total?: string | null;
+  gpu_total?: string | null;
+  cpu_requests?: string | null;
+  memory_requests?: string | null;
+  gpu_requests?: string | null;
   creation_time?: string | null;
 }
 
@@ -156,6 +162,7 @@ export interface PersistentVolumeItem {
 export interface StorageClassItem {
   name: string;
   provisioner?: string | null;
+  allow_volume_expansion?: boolean | null;
   creation_time?: string | null;
 }
 

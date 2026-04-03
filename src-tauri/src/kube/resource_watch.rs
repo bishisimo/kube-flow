@@ -5,7 +5,8 @@ use crate::config::LogLevel;
 use crate::debug_log;
 use crate::env::EnvService;
 use crate::kube::resources::{
-    compute_workload_pod_rollup, format_creation_time, label_selector_to_string, SubjectRef,
+    compute_workload_pod_rollup, format_cpu_total, format_creation_time, format_gpu, format_mem,
+    label_selector_to_string, quantity_cpu_millis, quantity_mem_bytes, quantity_scalar_units, SubjectRef,
     ClusterRoleBindingItem, ClusterRoleItem, ConfigMapItem, DaemonSetItem, DeploymentItem,
     EndpointSliceItem, EndpointsItem, NamespaceItem, NodeItem, PersistentVolumeClaimItem,
     PersistentVolumeItem, PodItem, RoleBindingItem, RoleItem, SecretItem, ServiceAccountItem,
@@ -190,10 +191,39 @@ fn node_to_item(n: Node) -> NodeItem {
                 .map(|a| a.address.clone())
         })
     });
+    let alloc_cpu = n
+        .status
+        .as_ref()
+        .and_then(|s| s.allocatable.as_ref())
+        .map(|m| quantity_cpu_millis(m.get("cpu")))
+        .unwrap_or(0);
+    let alloc_mem = n
+        .status
+        .as_ref()
+        .and_then(|s| s.allocatable.as_ref())
+        .map(|m| quantity_mem_bytes(m.get("memory")))
+        .unwrap_or(0);
+    let alloc_gpu = n
+        .status
+        .as_ref()
+        .and_then(|s| s.allocatable.as_ref())
+        .map(|m| {
+            m.iter()
+                .filter(|(name, _)| name.trim().to_lowercase().ends_with("/gpu"))
+                .map(|(_, quantity)| quantity_scalar_units(Some(quantity)))
+                .sum::<i64>()
+        })
+        .unwrap_or(0);
     NodeItem {
         name: n.metadata.name.unwrap_or_default(),
         status,
         internal_ip,
+        cpu_total: (alloc_cpu > 0).then(|| format_cpu_total(alloc_cpu)),
+        memory_total: (alloc_mem > 0).then(|| format_mem(alloc_mem)),
+        gpu_total: (alloc_gpu > 0).then(|| format_gpu(alloc_gpu)),
+        cpu_requests: None,
+        memory_requests: None,
+        gpu_requests: None,
         creation_time: format_creation_time(n.metadata.creation_timestamp.as_ref()),
     }
 }
@@ -382,6 +412,7 @@ fn storageclass_to_item(s: StorageClass) -> StorageClassItem {
     StorageClassItem {
         name: s.metadata.name.unwrap_or_default(),
         provisioner: Some(s.provisioner.clone()),
+        allow_volume_expansion: s.allow_volume_expansion,
         creation_time: format_creation_time(s.metadata.creation_timestamp.as_ref()),
     }
 }

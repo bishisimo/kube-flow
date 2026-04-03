@@ -3,10 +3,12 @@ import {
   appSettingsGetAutoSnapshotEnabled,
   appSettingsGetAutoSnapshotLimitPerResource,
   appSettingsGetLogActiveStreamLimit,
+  appSettingsGetNodeResourceUsageEnabled,
   appSettingsGetTerminalInstanceCacheLimit,
   appSettingsSetAutoSnapshotEnabled,
   appSettingsSetAutoSnapshotLimitPerResource,
   appSettingsSetLogActiveStreamLimit,
+  appSettingsSetNodeResourceUsageEnabled,
   appSettingsSetTerminalInstanceCacheLimit,
 } from "../api/config";
 
@@ -14,6 +16,7 @@ const autoSnapshotEnabled = ref(true);
 const autoSnapshotLimitPerResource = ref(10);
 const terminalInstanceCacheLimit = ref(6);
 const logActiveStreamLimit = ref(3);
+const nodeResourceUsageEnabled = ref(false);
 const loaded = ref(false);
 
 export async function ensureAppSettingsLoaded() {
@@ -23,14 +26,16 @@ export async function ensureAppSettingsLoaded() {
       autoSnapshotLimitPerResource: autoSnapshotLimitPerResource.value,
       terminalInstanceCacheLimit: terminalInstanceCacheLimit.value,
       logActiveStreamLimit: logActiveStreamLimit.value,
+      nodeResourceUsageEnabled: nodeResourceUsageEnabled.value,
     };
   }
   try {
-    const [enabled, limit, cacheLimit, activeLogLimit] = await Promise.all([
+    const [enabled, limit, cacheLimit, activeLogLimit, nodeUsageEnabled] = await Promise.all([
       appSettingsGetAutoSnapshotEnabled(),
       appSettingsGetAutoSnapshotLimitPerResource(),
       appSettingsGetTerminalInstanceCacheLimit(),
       appSettingsGetLogActiveStreamLimit(),
+      appSettingsGetNodeResourceUsageEnabled(),
     ]);
     autoSnapshotEnabled.value = enabled;
     autoSnapshotLimitPerResource.value = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 10;
@@ -40,11 +45,13 @@ export async function ensureAppSettingsLoaded() {
     logActiveStreamLimit.value = Number.isFinite(activeLogLimit)
       ? Math.min(12, Math.max(1, Math.floor(activeLogLimit)))
       : 3;
+    nodeResourceUsageEnabled.value = !!nodeUsageEnabled;
   } catch {
     autoSnapshotEnabled.value = true;
     autoSnapshotLimitPerResource.value = 10;
     terminalInstanceCacheLimit.value = 6;
     logActiveStreamLimit.value = 3;
+    nodeResourceUsageEnabled.value = false;
   } finally {
     loaded.value = true;
   }
@@ -53,6 +60,7 @@ export async function ensureAppSettingsLoaded() {
     autoSnapshotLimitPerResource: autoSnapshotLimitPerResource.value,
     terminalInstanceCacheLimit: terminalInstanceCacheLimit.value,
     logActiveStreamLimit: logActiveStreamLimit.value,
+    nodeResourceUsageEnabled: nodeResourceUsageEnabled.value,
   };
 }
 
@@ -88,17 +96,25 @@ export async function setLogActiveStreamLimit(limit: number) {
   loaded.value = true;
 }
 
+export async function setNodeResourceUsageEnabled(enabled: boolean) {
+  await appSettingsSetNodeResourceUsageEnabled(enabled);
+  nodeResourceUsageEnabled.value = enabled;
+  loaded.value = true;
+}
+
 export function useAppSettingsStore() {
   return {
     autoSnapshotEnabled,
     autoSnapshotLimitPerResource,
     terminalInstanceCacheLimit,
     logActiveStreamLimit,
+    nodeResourceUsageEnabled,
     ensureAppSettingsLoaded,
     ensureAutoSnapshotSettingLoaded,
     setAutoSnapshotEnabled,
     setAutoSnapshotLimitPerResource,
     setTerminalInstanceCacheLimit,
     setLogActiveStreamLimit,
+    setNodeResourceUsageEnabled,
   };
 }

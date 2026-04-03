@@ -16,6 +16,7 @@ const emit = defineEmits<{
   (e: "create"): void;
   (e: "view", snapshot: ResourceSnapshotItem): void;
   (e: "delete", snapshot: ResourceSnapshotItem): void;
+  (e: "toggle-pin", snapshot: ResourceSnapshotItem): void;
 }>();
 
 const pendingDeleteId = ref<string | null>(null);
@@ -74,7 +75,7 @@ function clearPendingDelete(snapshotId?: string) {
         :key="item.id"
         type="button"
         class="snapshot-card"
-        :class="{ 'snapshot-card-danger': pendingDeleteId === item.id }"
+        :class="{ 'snapshot-card-danger': pendingDeleteId === item.id, 'snapshot-card-pinned': item.pinned }"
         @click="emit('view', item)"
         @mouseleave="clearPendingDelete(item.id)"
       >
@@ -82,7 +83,18 @@ function clearPendingDelete(snapshotId?: string) {
           <span class="snapshot-card-title">{{ item.title }}</span>
           <div class="snapshot-card-actions">
             <span class="snapshot-card-badge kind">{{ categoryLabel(item.category) }}</span>
+            <span v-if="item.pinned" class="snapshot-card-badge pinned">已置顶</span>
             <span class="snapshot-card-badge">{{ sourceLabel(item.source) }}</span>
+            <button
+              type="button"
+              class="snapshot-pin"
+              :class="{ active: item.pinned }"
+              :aria-label="item.pinned ? '取消置顶快照' : '置顶快照'"
+              :title="item.pinned ? '取消置顶快照' : '置顶快照'"
+              @click.stop="emit('toggle-pin', item)"
+            >
+              {{ item.pinned ? "★" : "☆" }}
+            </button>
             <button
               type="button"
               class="snapshot-delete"
@@ -209,6 +221,12 @@ function clearPendingDelete(snapshotId?: string) {
   border-color: #fca5a5;
   box-shadow: 0 12px 24px rgba(248, 113, 113, 0.12);
 }
+.snapshot-card-pinned {
+  border-color: #fbbf24;
+  box-shadow: 0 12px 24px rgba(251, 191, 36, 0.12);
+  background:
+    linear-gradient(180deg, rgba(255, 251, 235, 0.96), rgba(255, 255, 255, 0.96));
+}
 .snapshot-card-top {
   display: flex;
   align-items: center;
@@ -236,6 +254,29 @@ function clearPendingDelete(snapshotId?: string) {
 .snapshot-card-badge.kind {
   background: #dbeafe;
   color: #1d4ed8;
+}
+.snapshot-card-badge.pinned {
+  background: #fef3c7;
+  color: #b45309;
+}
+.snapshot-pin {
+  width: 1.4rem;
+  height: 1.4rem;
+  border: none;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.snapshot-pin:hover {
+  background: #fef3c7;
+  color: #b45309;
+}
+.snapshot-pin.active {
+  background: #fef3c7;
+  color: #b45309;
 }
 .snapshot-delete {
   width: 1.4rem;

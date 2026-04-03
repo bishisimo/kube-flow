@@ -1,6 +1,6 @@
 //! K8s 资源与客户端 Tauri 命令：需传入 env 或 env_id，从 store 取 Client。
 
-use crate::config::{LogLevel, ResourceDeployStrategy};
+use crate::config::{app_settings_config_path, AppSettingsConfig, LogLevel, ResourceDeployStrategy};
 use crate::debug_log;
 use crate::env::EnvService;
 use crate::kube::{
@@ -77,7 +77,10 @@ pub async fn kube_list_nodes(
         .ok_or_else(|| "environment not found".to_string())?;
     let client = store.get_or_build(&env).await.map_err(|e| e.to_string())?;
     let sel = label_selector.as_deref();
-    with_list_log("Node", &env_id, list_nodes(&client, sel)).await
+    let settings_path = app_settings_config_path().ok_or_else(|| "app data dir not available".to_string())?;
+    let app_settings = AppSettingsConfig::load(&settings_path).map_err(|e| e.to_string())?;
+    let gpu_resource_names = app_settings.gpu_resource_names();
+    with_list_log("Node", &env_id, list_nodes(&client, sel, &gpu_resource_names)).await
 }
 
 #[tauri::command]

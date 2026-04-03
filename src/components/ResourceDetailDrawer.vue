@@ -22,6 +22,7 @@ import {
   formatResourceSnapshotYaml,
   listResourceSnapshotsByCategory,
   summarizeResourceYaml,
+  toggleResourceSnapshotPinned,
   type ResourceSnapshotItem,
 } from "../stores/resourceSnapshots";
 import { ensureAutoSnapshotSettingLoaded } from "../stores/appSettings";
@@ -304,6 +305,17 @@ function removeSnapshot(snapshot: ResourceSnapshotItem) {
   editInfo.value = "快照已删除。";
 }
 
+function togglePinSnapshot(snapshot: ResourceSnapshotItem) {
+  const next = toggleResourceSnapshotPinned(snapshot.id);
+  if (!next) return;
+  if (viewingSnapshot.value?.id === snapshot.id) {
+    viewingSnapshot.value = next;
+  }
+  editInfo.value = next.pinned
+    ? "快照已置顶，不会参与自动淘汰。"
+    : "已取消置顶，该快照会重新参与自动快照淘汰规则。";
+}
+
 function handleEditorError(message: string) {
   editError.value = message;
   editInfo.value = null;
@@ -516,7 +528,7 @@ watch(
           <div v-else-if="activeTab === 'snapshots'" class="snapshot-tab-wrap">
             <ResourceSnapshotPanel
               title="资源快照"
-              subtitle="统一查看和管理当前资源的历史快照；普通 YAML 编辑会保存完整 YAML（不含 managedFields）。"
+              subtitle="统一查看和管理当前资源的历史快照；普通 YAML 编辑会保存完整 YAML（不含 managedFields）。手动快照和置顶快照不会参与自动淘汰。"
               create-label="生成快照"
               :snapshots="genericSnapshots"
               :creating="snapshotSaving"
@@ -525,6 +537,7 @@ watch(
               @create="saveManualSnapshot"
               @view="openSnapshotViewer"
               @delete="removeSnapshot"
+              @toggle-pin="togglePinSnapshot"
             />
           </div>
           <div

@@ -3,6 +3,7 @@
 use crate::config::ConfigError;
 use crate::credentials::types::CredentialStoreKind;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::path::Path;
 
 /// 日志级别：Off 表示不写日志，其余按优先级 Error < Warn < Info < Debug。
@@ -106,6 +107,14 @@ impl Default for SecurityConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GpuResourceRule {
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default)]
+    pub resource_name: String,
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct AppSettingsConfig {
     #[serde(default)]
@@ -134,6 +143,12 @@ pub struct AppSettingsConfig {
     /// 编排中心资源下发策略：create_replace 或 apply。
     #[serde(default)]
     pub resource_deploy_strategy: String,
+    /// 是否在工作台 Node 列表中展示资源使用量统计；默认关闭。
+    #[serde(default)]
+    pub node_resource_usage_enabled: bool,
+    /// 用户扩展的 GPU 资源规则。
+    #[serde(default = "default_custom_gpu_resource_rules")]
+    pub custom_gpu_resource_rules: Vec<GpuResourceRule>,
     /// 凭证存储与安全设置。
     #[serde(default)]
     pub security: SecurityConfig,
@@ -157,6 +172,14 @@ fn default_terminal_instance_cache_limit() -> u32 {
 
 fn default_log_active_stream_limit() -> u32 {
     3
+}
+
+fn default_custom_gpu_resource_rules() -> Vec<GpuResourceRule> {
+    Vec::new()
+}
+
+fn default_builtin_gpu_resource_names() -> Vec<String> {
+    vec!["*/gpu".to_string()]
 }
 
 impl AppSettingsConfig {
@@ -251,6 +274,67 @@ impl AppSettingsConfig {
         self.resource_deploy_strategy = ResourceDeployStrategy::from_str(strategy).as_str().to_string();
     }
 
+    pub fn node_resource_usage_enabled(&self) -> bool {
+        self.node_resource_usage_enabled
+    }
+
+    pub fn set_node_resource_usage_enabled(&mut self, enabled: bool) {
+        self.node_resource_usage_enabled = enabled;
+    }
+
+    pub fn builtin_gpu_resource_names(&self) -> Vec<String> {
+        default_builtin_gpu_resource_names()
+    }
+
+    pub fn custom_gpu_resource_rules(&self) -> Vec<GpuResourceRule> {
+        let mut dedup = BTreeSet::new();
+        let mut out = Vec::new();
+        for item in &self.custom_gpu_resource_rules {
+            let resource_name = item.resource_name.trim().to_lowercase();
+            if resource_name.is_empty() || !dedup.insert(resource_name.clone()) {
+                continue;
+            }
+            out.push(GpuResourceRule {
+                display_name: item.display_name.trim().to_string(),
+                resource_name,
+            });
+        }
+        out
+    }
+
+    pub fn gpu_resource_names(&self) -> Vec<String> {
+        let mut dedup = BTreeSet::new();
+        for item in self.builtin_gpu_resource_names() {
+            let name = item.trim().to_lowercase();
+            if !name.is_empty() {
+                dedup.insert(name);
+            }
+        }
+        for item in self.custom_gpu_resource_rules() {
+            let name = item.resource_name.trim().to_lowercase();
+            if !name.is_empty() {
+                dedup.insert(name);
+            }
+        }
+        dedup.into_iter().collect()
+    }
+
+    pub fn set_custom_gpu_resource_rules(&mut self, rules: Vec<GpuResourceRule>) {
+        let mut dedup = BTreeSet::new();
+        let mut out = Vec::new();
+        for item in rules {
+            let resource_name = item.resource_name.trim().to_lowercase();
+            if resource_name.is_empty() || !dedup.insert(resource_name.clone()) {
+                continue;
+            }
+            out.push(GpuResourceRule {
+                display_name: item.display_name.trim().to_string(),
+                resource_name,
+            });
+        }
+        self.custom_gpu_resource_rules = out;
+    }
+
 }
 
 /// 日志显示顺序：asc=正序（旧→新），desc=倒序（新→旧）。
@@ -326,6 +410,10 @@ struct AppSettingsFile {
     #[serde(default)]
     resource_deploy_strategy: String,
     #[serde(default)]
+    node_resource_usage_enabled: bool,
+    #[serde(default = "default_custom_gpu_resource_rules")]
+    custom_gpu_resource_rules: Vec<GpuResourceRule>,
+    #[serde(default)]
     security: SecurityConfig,
 }
 
@@ -370,6 +458,8 @@ impl AppSettingsConfig {
             } else {
                 file.resource_deploy_strategy
             },
+            node_resource_usage_enabled: file.node_resource_usage_enabled,
+            custom_gpu_resource_rules: file.custom_gpu_resource_rules,
             security: file.security,
         })
     }
@@ -389,6 +479,8 @@ impl AppSettingsConfig {
             terminal_instance_cache_limit: self.terminal_instance_cache_limit,
             log_active_stream_limit: self.log_active_stream_limit,
             resource_deploy_strategy: self.resource_deploy_strategy.clone(),
+            node_resource_usage_enabled: self.node_resource_usage_enabled,
+            custom_gpu_resource_rules: self.custom_gpu_resource_rules.clone(),
             security: self.security.clone(),
         };
         let content = toml::to_string_pretty(&file).map_err(ConfigError::TomlSer)?;

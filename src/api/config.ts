@@ -5,6 +5,10 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type TunnelMappingMode = "ssh" | "builtin";
 export type ResourceDeployStrategy = "create_replace" | "apply";
+export interface GpuResourceRule {
+  display_name: string;
+  resource_name: string;
+}
 
 export function appSettingsGetSshTunnelMode(): Promise<TunnelMappingMode> {
   return invoke("app_settings_get_ssh_tunnel_mode");
@@ -52,4 +56,24 @@ export function appSettingsGetResourceDeployStrategy(): Promise<ResourceDeploySt
 
 export function appSettingsSetResourceDeployStrategy(strategy: ResourceDeployStrategy): Promise<void> {
   return invoke("app_settings_set_resource_deploy_strategy", { strategy });
+}
+
+export function appSettingsGetNodeResourceUsageEnabled(): Promise<boolean> {
+  return invoke("app_settings_get_node_resource_usage_enabled");
+}
+
+export function appSettingsSetNodeResourceUsageEnabled(enabled: boolean): Promise<void> {
+  return invoke("app_settings_set_node_resource_usage_enabled", { enabled });
+}
+
+export function appSettingsGetBuiltinGpuResourceNames(): Promise<string[]> {
+  return invoke("app_settings_get_builtin_gpu_resource_names");
+}
+
+export function appSettingsGetCustomGpuResourceRules(): Promise<GpuResourceRule[]> {
+  return invoke("app_settings_get_custom_gpu_resource_rules");
+}
+
+export function appSettingsSetCustomGpuResourceRules(rules: GpuResourceRule[]): Promise<void> {
+  return invoke("app_settings_set_custom_gpu_resource_rules", { rules });
 }

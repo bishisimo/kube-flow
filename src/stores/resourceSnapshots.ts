@@ -14,6 +14,7 @@ export interface ResourceSnapshotItem extends ResourceSnapshotRef {
   created_at: string;
   category: "resource" | "config" | "image";
   source: "manual" | "before-apply" | "before-image-patch";
+  pinned: boolean;
   title: string;
   summary: string;
   yaml: string;
@@ -39,6 +40,7 @@ function loadSnapshots(): ResourceSnapshotItem[] {
         return {
           ...snapshot,
           category,
+          pinned: snapshot.pinned === true,
         } as ResourceSnapshotItem;
       });
   } catch {
@@ -205,6 +207,7 @@ export function createResourceSnapshot(
     created_at: new Date().toISOString(),
     category: input.category,
     source: input.source,
+    pinned: false,
     title: input.title?.trim() || "资源快照",
     summary: input.summary?.trim() || summarizeResourceYaml(yaml),
     yaml,
@@ -213,8 +216,8 @@ export function createResourceSnapshot(
   const isAutomatic = input.source !== "manual";
   const automaticLimit = Math.max(0, Math.floor(autoSnapshotLimitPerResource.value ?? 10));
   const automaticSnapshots = isAutomatic
-    ? [next, ...sameResource.filter((item) => item.source !== "manual")]
-    : sameResource.filter((item) => item.source !== "manual");
+    ? [next, ...sameResource.filter((item) => item.source !== "manual" && !item.pinned)]
+    : sameResource.filter((item) => item.source !== "manual" && !item.pinned);
   const keptAutomaticIds = new Set(
     (automaticLimit === 0 ? automaticSnapshots : automaticSnapshots.slice(0, automaticLimit))
       .map((item) => item.id)
@@ -229,11 +232,20 @@ export function createResourceSnapshot(
         (item.resource_namespace ?? null) === (resource.resource_namespace ?? null);
       if (!matchesResource) return true;
       if (item.source === "manual") return true;
+      if (item.pinned) return true;
       return keptAutomaticIds.has(item.id);
     }),
   ];
   persist();
   return next;
+}
+
+export function toggleResourceSnapshotPinned(id: string): ResourceSnapshotItem | null {
+  const target = snapshots.value.find((item) => item.id === id);
+  if (!target) return null;
+  target.pinned = !target.pinned;
+  persist();
+  return target;
 }
 
 export function deleteResourceSnapshot(id: string): boolean {
@@ -250,6 +262,7 @@ export function useResourceSnapshotsStore() {
     listResourceSnapshots,
     listResourceSnapshotsByCategory,
     createResourceSnapshot,
+    toggleResourceSnapshotPinned,
     deleteResourceSnapshot,
   };
 }

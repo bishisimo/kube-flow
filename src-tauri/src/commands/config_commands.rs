@@ -1,6 +1,6 @@
 //! 配置相关 Tauri 命令：路径、目录创建、应用设置。
 
-use crate::config::{app_settings_config_path, AppSettingsConfig};
+use crate::config::{app_settings_config_path, AppSettingsConfig, GpuResourceRule};
 
 #[tauri::command]
 pub fn app_data_dir() -> Option<String> {
@@ -99,5 +99,42 @@ pub fn app_settings_set_resource_deploy_strategy(strategy: String) -> Result<(),
     let path = app_settings_config_path().ok_or_else(|| "app data dir not available".to_string())?;
     let mut config = AppSettingsConfig::load(&path).map_err(|e| e.to_string())?;
     config.set_resource_deploy_strategy(&strategy);
+    config.save(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn app_settings_get_node_resource_usage_enabled() -> Result<bool, String> {
+    let path = app_settings_config_path().ok_or_else(|| "app data dir not available".to_string())?;
+    let config = AppSettingsConfig::load(&path).map_err(|e| e.to_string())?;
+    Ok(config.node_resource_usage_enabled())
+}
+
+#[tauri::command]
+pub fn app_settings_set_node_resource_usage_enabled(enabled: bool) -> Result<(), String> {
+    let path = app_settings_config_path().ok_or_else(|| "app data dir not available".to_string())?;
+    let mut config = AppSettingsConfig::load(&path).map_err(|e| e.to_string())?;
+    config.set_node_resource_usage_enabled(enabled);
+    config.save(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn app_settings_get_builtin_gpu_resource_names() -> Result<Vec<String>, String> {
+    let path = app_settings_config_path().ok_or_else(|| "app data dir not available".to_string())?;
+    let config = AppSettingsConfig::load(&path).map_err(|e| e.to_string())?;
+    Ok(config.builtin_gpu_resource_names())
+}
+
+#[tauri::command]
+pub fn app_settings_get_custom_gpu_resource_rules() -> Result<Vec<GpuResourceRule>, String> {
+    let path = app_settings_config_path().ok_or_else(|| "app data dir not available".to_string())?;
+    let config = AppSettingsConfig::load(&path).map_err(|e| e.to_string())?;
+    Ok(config.custom_gpu_resource_rules())
+}
+
+#[tauri::command]
+pub fn app_settings_set_custom_gpu_resource_rules(rules: Vec<GpuResourceRule>) -> Result<(), String> {
+    let path = app_settings_config_path().ok_or_else(|| "app data dir not available".to_string())?;
+    let mut config = AppSettingsConfig::load(&path).map_err(|e| e.to_string())?;
+    config.set_custom_gpu_resource_rules(rules);
     config.save(&path).map_err(|e| e.to_string())
 }

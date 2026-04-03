@@ -8,7 +8,7 @@ mod app_settings;
 
 pub use paths::{app_data_dir, app_settings_config_path, debug_log_path, ensure_app_data_dir, kube_flow_config_path};
 pub use app_settings::{
-    AppSettingsConfig, LogDisplayFormat, LogDisplayOrder, LogLevel, ResourceDeployStrategy, SecurityConfig,
+    AppSettingsConfig, GpuResourceRule, LogDisplayFormat, LogDisplayOrder, LogLevel, ResourceDeployStrategy, SecurityConfig,
 };
 pub use kube_flow::{KubeFlowConfig, KubeFlowConfigFile};
 pub use ssh_config::{

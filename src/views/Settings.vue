@@ -18,16 +18,22 @@ import { useYamlTheme, useYamlMonacoTheme, YAML_THEMES } from "../stores/yamlThe
 import {
   appSettingsGetAutoSnapshotEnabled,
   appSettingsGetAutoSnapshotLimitPerResource,
+  appSettingsGetBuiltinGpuResourceNames,
+  appSettingsGetCustomGpuResourceRules,
   appSettingsGetLogActiveStreamLimit,
+  appSettingsGetNodeResourceUsageEnabled,
   appSettingsGetResourceDeployStrategy,
   appSettingsGetTerminalInstanceCacheLimit,
   appSettingsGetSshTunnelMode,
   appSettingsSetAutoSnapshotEnabled,
   appSettingsSetAutoSnapshotLimitPerResource,
+  appSettingsSetCustomGpuResourceRules,
   appSettingsSetLogActiveStreamLimit,
+  appSettingsSetNodeResourceUsageEnabled,
   appSettingsSetResourceDeployStrategy,
   appSettingsSetTerminalInstanceCacheLimit,
   appSettingsSetSshTunnelMode,
+  type GpuResourceRule,
   type ResourceDeployStrategy,
   type TunnelMappingMode,
 } from "../api/config";
@@ -63,7 +69,7 @@ const CATEGORIES: { id: CategoryId; label: string; icon: string }[] = [
 const { themeId } = useYamlTheme();
 const { monacoTheme } = useYamlMonacoTheme();
 const { triggerLogRefresh } = useLogStore();
-const { autoSnapshotEnabled, autoSnapshotLimitPerResource, terminalInstanceCacheLimit, logActiveStreamLimit } = useAppSettingsStore();
+const { autoSnapshotEnabled, autoSnapshotLimitPerResource, terminalInstanceCacheLimit, logActiveStreamLimit, nodeResourceUsageEnabled } = useAppSettingsStore();
 const { loadEnvironments } = useEnvStore();
 const activeCategory = ref<CategoryId>("appearance");
 const currentLevel = ref<string>("off");
@@ -76,6 +82,9 @@ const currentAutoSnapshotLimitPerResource = ref(10);
 const currentResourceDeployStrategy = ref<ResourceDeployStrategy>("create_replace");
 const currentTerminalInstanceCacheLimit = ref(6);
 const currentLogActiveStreamLimit = ref(3);
+const currentNodeResourceUsageEnabled = ref(false);
+const builtinGpuResourceNames = ref<string[]>([]);
+const customGpuResourceRules = ref<GpuResourceRule[]>([]);
 const saving = ref(false);
 const message = ref<string | null>(null);
 const yamlThemePreview = `apiVersion: apps/v1
@@ -132,7 +141,7 @@ const tempStrongholdPath = ref("");
 
 async function load() {
   try {
-    const [level, settings, sshMode, autoSnapshot, autoSnapshotLimit, resourceDeployStrategy, terminalCacheLimit, activeLogLimit] = await Promise.all([
+    const [level, settings, sshMode, autoSnapshot, autoSnapshotLimit, resourceDeployStrategy, terminalCacheLimit, activeLogLimit, nodeUsageEnabled, builtinGpuNames, customGpuRules] = await Promise.all([
       logGetLevel(),
       logGetDisplaySettings(),
       appSettingsGetSshTunnelMode(),
@@ -141,6 +150,9 @@ async function load() {
       appSettingsGetResourceDeployStrategy(),
       appSettingsGetTerminalInstanceCacheLimit(),
       appSettingsGetLogActiveStreamLimit(),
+      appSettingsGetNodeResourceUsageEnabled(),
+      appSettingsGetBuiltinGpuResourceNames(),
+      appSettingsGetCustomGpuResourceRules(),
     ]);
     currentLevel.value = level;
     currentOrder.value = settings.order;
@@ -152,15 +164,22 @@ async function load() {
     currentResourceDeployStrategy.value = resourceDeployStrategy;
     currentTerminalInstanceCacheLimit.value = Math.min(20, Math.max(1, Math.floor(terminalCacheLimit || 6)));
     currentLogActiveStreamLimit.value = Math.min(12, Math.max(1, Math.floor(activeLogLimit || 3)));
+    currentNodeResourceUsageEnabled.value = !!nodeUsageEnabled;
+    builtinGpuResourceNames.value = builtinGpuNames;
+    customGpuResourceRules.value = customGpuRules.length ? customGpuRules : [{ display_name: "", resource_name: "" }];
     autoSnapshotEnabled.value = autoSnapshot;
     autoSnapshotLimitPerResource.value = currentAutoSnapshotLimitPerResource.value;
     terminalInstanceCacheLimit.value = currentTerminalInstanceCacheLimit.value;
     logActiveStreamLimit.value = currentLogActiveStreamLimit.value;
+    nodeResourceUsageEnabled.value = currentNodeResourceUsageEnabled.value;
   } catch {
     currentLevel.value = "off";
     currentResourceDeployStrategy.value = "create_replace";
     currentTerminalInstanceCacheLimit.value = 6;
     currentLogActiveStreamLimit.value = 3;
+    currentNodeResourceUsageEnabled.value = false;
+    builtinGpuResourceNames.value = ["*/gpu"];
+    customGpuResourceRules.value = [{ display_name: "", resource_name: "" }];
   }
   await loadEnvironments().catch(() => {});
 }
@@ -354,6 +373,54 @@ async function saveResourceDeployStrategy(strategy: ResourceDeployStrategy) {
   try {
     await appSettingsSetResourceDeployStrategy(strategy);
     currentResourceDeployStrategy.value = strategy;
+    message.value = "已保存";
+    setTimeout(() => (message.value = null), 2000);
+  } catch (e) {
+    message.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function saveNodeResourceUsageEnabled(enabled: boolean) {
+  saving.value = true;
+  message.value = null;
+  try {
+    await appSettingsSetNodeResourceUsageEnabled(enabled);
+    currentNodeResourceUsageEnabled.value = enabled;
+    nodeResourceUsageEnabled.value = enabled;
+    message.value = "已保存";
+    setTimeout(() => (message.value = null), 2000);
+  } catch (e) {
+    message.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    saving.value = false;
+  }
+}
+
+function addGpuRuleRow() {
+  customGpuResourceRules.value = [...customGpuResourceRules.value, { display_name: "", resource_name: "" }];
+}
+
+function removeGpuRuleRow(index: number) {
+  customGpuResourceRules.value = customGpuResourceRules.value.filter((_, idx) => idx !== index);
+  if (!customGpuResourceRules.value.length) {
+    customGpuResourceRules.value = [{ display_name: "", resource_name: "" }];
+  }
+}
+
+async function saveCustomGpuResourceNames() {
+  saving.value = true;
+  message.value = null;
+  try {
+    const rules = customGpuResourceRules.value
+      .map((item) => ({
+        display_name: item.display_name.trim(),
+        resource_name: item.resource_name.trim(),
+      }))
+      .filter((item) => item.resource_name.length > 0);
+    await appSettingsSetCustomGpuResourceRules(rules);
+    customGpuResourceRules.value = rules.length ? rules : [{ display_name: "", resource_name: "" }];
     message.value = "已保存";
     setTimeout(() => (message.value = null), 2000);
   } catch (e) {
@@ -584,6 +651,106 @@ onMounted(() => {
           <div class="setting-hint-block">
             <div class="setting-hint-title">Apply</div>
             <div class="setting-hint-desc">使用 server-side apply 合并字段，更适合与其他控制器共享对象所有权。</div>
+          </div>
+          <p v-if="message" class="message" :class="{ error: message !== '已保存' }">
+            <span v-if="message === '已保存'" class="message-icon">✓</span>
+            {{ message }}
+          </p>
+        </section>
+
+        <section class="card">
+          <h2 class="card-title">Node 资源统计</h2>
+          <p class="card-desc">控制工作台 Node 列表是否展示资源统计信息。默认关闭，按需开启。</p>
+          <div class="level-options">
+            <button
+              type="button"
+              class="level-btn"
+              :class="{ active: currentNodeResourceUsageEnabled }"
+              :disabled="saving"
+              @click="saveNodeResourceUsageEnabled(true)"
+            >
+              开启统计
+            </button>
+            <button
+              type="button"
+              class="level-btn"
+              :class="{ active: !currentNodeResourceUsageEnabled }"
+              :disabled="saving"
+              @click="saveNodeResourceUsageEnabled(false)"
+            >
+              关闭统计
+            </button>
+          </div>
+          <div class="setting-hint-block">
+            <div class="setting-hint-title">关闭时</div>
+            <div class="setting-hint-desc">只展示节点基础状态，不启动额外的资源统计请求。</div>
+          </div>
+          <div class="setting-hint-block">
+            <div class="setting-hint-title">开启时</div>
+            <div class="setting-hint-desc">在 Node 列表中展示资源统计信息，帮助观察节点容量分布。</div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-copy">
+              <div class="setting-title">内置 GPU 识别规则</div>
+              <div class="setting-desc">默认支持通用的 GPU 资源模式识别，自定义规则用于补充特殊资源名或自定义显示名称。</div>
+            </div>
+            <div class="setting-input-wrap setting-stack-wrap">
+              <div class="tag-list">
+                <span v-for="name in builtinGpuResourceNames" :key="name" class="hint-chip">{{ name }}</span>
+              </div>
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-copy">
+              <div class="setting-title">自定义 GPU 规则</div>
+              <div class="setting-desc">用于补充特殊资源名，或为已识别的资源配置更友好的显示名称。</div>
+            </div>
+            <div class="setting-input-wrap setting-stack-wrap">
+              <div class="gpu-rule-list">
+                <div v-for="(rule, index) in customGpuResourceRules" :key="index" class="gpu-rule-row">
+                  <input
+                    v-model="rule.display_name"
+                    type="text"
+                    class="setting-text-input"
+                    :disabled="saving"
+                    placeholder="显示名称，例如 A100"
+                  />
+                  <input
+                    v-model="rule.resource_name"
+                    type="text"
+                    class="setting-text-input"
+                    :disabled="saving"
+                    placeholder="资源名称，例如 vendor.com/gpu"
+                  />
+                  <button
+                    type="button"
+                    class="btn-row-remove"
+                    :disabled="saving"
+                    @click="removeGpuRuleRow(index)"
+                  >
+                    删除
+                  </button>
+                </div>
+              </div>
+              <div class="setting-inline-actions">
+                <button
+                  type="button"
+                  class="level-btn"
+                  :disabled="saving"
+                  @click="addGpuRuleRow"
+                >
+                  增加规则
+                </button>
+                <button
+                  type="button"
+                  class="level-btn"
+                  :disabled="saving"
+                  @click="saveCustomGpuResourceNames"
+                >
+                  保存规则
+                </button>
+              </div>
+            </div>
           </div>
           <p v-if="message" class="message" :class="{ error: message !== '已保存' }">
             <span v-if="message === '已保存'" class="message-icon">✓</span>
@@ -1179,6 +1346,83 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 0.6rem;
+}
+.setting-stack-wrap {
+  flex-direction: column;
+  align-items: stretch;
+  min-width: 260px;
+}
+.setting-inline-actions {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+.hint-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.55rem;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #334155;
+  font-size: 0.75rem;
+  line-height: 1.2;
+}
+.setting-text-input,
+.setting-textarea {
+  min-width: 260px;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: #1e293b;
+  background: #fff;
+}
+.setting-textarea {
+  min-height: 96px;
+  resize: vertical;
+}
+.setting-text-input {
+  min-width: 0;
+  width: 100%;
+}
+.gpu-rule-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.gpu-rule-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(220px, 1.4fr) auto;
+  gap: 0.6rem;
+  align-items: center;
+}
+.btn-row-remove {
+  padding: 0.55rem 0.75rem;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  background: #fff1f2;
+  color: #be123c;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+.btn-row-remove:hover {
+  background: #ffe4e6;
+}
+.setting-textarea:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+.setting-text-input:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
 .setting-hint-block {
   margin-top: 0.85rem;

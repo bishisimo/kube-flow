@@ -22,6 +22,7 @@ import { useStrongholdAuthStore } from "../stores/strongholdAuth";
 import { useShellStore } from "../stores/shell";
 import { useLogCenterStore } from "../stores/logCenter";
 import { useOrchestratorStore } from "../stores/orchestrator";
+import { useAppSettingsStore } from "../stores/appSettings";
 import {
   buildNodeTerminalLaunch,
   getNodeTerminalStrategy,
@@ -30,6 +31,7 @@ import { effectiveContext } from "../api/env";
 import {
   kubeGetResource,
   kubeGetPodContainers,
+  kubeListNodes,
   kubeListNamespaces,
   kubeListServices,
   kubeStartWatch,
@@ -73,6 +75,7 @@ const { openedEnvs, currentEnv, currentId, touchEnv, loadEnvironments, getEnvVie
 const { pendingOpen, requestSwitchToShell } = useShellStore();
 const { pendingLogOpen, requestSwitchToLogCenter } = useLogCenterStore();
 const { manifests, upsertFromWorkbenchSync, requestSwitchToOrchestrator } = useOrchestratorStore();
+const { nodeResourceUsageEnabled, ensureAppSettingsLoaded } = useAppSettingsStore();
 const {
   getProgress,
   getState,
@@ -244,6 +247,9 @@ const podIpFilter = ref("");
 const labelSelector = ref("");
 /** Watch 实时更新：开启后通过 Tauri 事件接收增量，仅部分 kind 支持 */
 const watchEnabled = ref(true);
+const NODE_ALLOC_REFRESH_MS = 30_000;
+const nodeAllocations = ref<Record<string, { cpuRequests: string; memoryRequests: string; gpuRequests: string }>>({});
+let nodeAllocRefreshTimer: number | null = null;
 /** 排序：默认按创建时间倒序 */
 
 function currentEnvSourceLabel(): string {
@@ -367,6 +373,53 @@ function clearResourceCollections() {
   priorityClasses.value = [];
   horizontalPodAutoscalers.value = [];
   podDisruptionBudgets.value = [];
+}
+
+function clearNodeAllocations() {
+  nodeAllocations.value = {};
+}
+
+function applyNodeAllocationSnapshot(items: NodeItem[]) {
+  const next: Record<string, { cpuRequests: string; memoryRequests: string; gpuRequests: string }> = {};
+  for (const item of items) {
+    next[item.name] = {
+      cpuRequests: item.cpu_requests ?? "-",
+      memoryRequests: item.memory_requests ?? "-",
+      gpuRequests: item.gpu_requests ?? "-",
+    };
+  }
+  nodeAllocations.value = next;
+}
+
+async function refreshNodeAllocations() {
+  const envId = currentId.value;
+  if (!envId || selectedKind.value !== "nodes") return;
+  try {
+    const items = await kubeListNodes(envId, labelSelector.value.trim() || null);
+    if (envId !== currentId.value || selectedKind.value !== "nodes") return;
+    applyNodeAllocationSnapshot(items);
+  } catch {
+    // 快照刷新失败时保留上一份结果，避免节点分配列闪空。
+  }
+}
+
+function stopNodeAllocationPolling() {
+  if (nodeAllocRefreshTimer !== null) {
+    window.clearInterval(nodeAllocRefreshTimer);
+    nodeAllocRefreshTimer = null;
+  }
+}
+
+function syncNodeAllocationPolling() {
+  stopNodeAllocationPolling();
+  if (!nodeResourceUsageEnabled.value || !currentId.value || selectedKind.value !== "nodes") {
+    clearNodeAllocations();
+    return;
+  }
+  void refreshNodeAllocations();
+  nodeAllocRefreshTimer = window.setInterval(() => {
+    void refreshNodeAllocations();
+  }, NODE_ALLOC_REFRESH_MS);
 }
 
 function setResourceItems(kind: ResourceKind, items: unknown[]) {
@@ -1592,6 +1645,18 @@ const rawTableRows = computed(() => {
         name: n.name,
         status: n.status ?? "-",
         internalIp: n.internal_ip ?? "-",
+        cpuTotal: n.cpu_total ?? "-",
+        memoryTotal: n.memory_total ?? "-",
+        gpuTotal: n.gpu_total ?? "-",
+        cpuRequests: nodeResourceUsageEnabled.value
+          ? (nodeAllocations.value[n.name]?.cpuRequests ?? n.cpu_requests ?? "-")
+          : "-",
+        memoryRequests: nodeResourceUsageEnabled.value
+          ? (nodeAllocations.value[n.name]?.memoryRequests ?? n.memory_requests ?? "-")
+          : "-",
+        gpuRequests: nodeResourceUsageEnabled.value
+          ? (nodeAllocations.value[n.name]?.gpuRequests ?? n.gpu_requests ?? "-")
+          : "-",
         creationTime: n.creation_time ?? "-",
       }));
     case "pods":
@@ -1717,6 +1782,8 @@ const rawTableRows = computed(() => {
       return storageClasses.value.map((s) => ({
         name: s.name,
         provisioner: s.provisioner ?? "-",
+        allowVolumeExpansion:
+          s.allow_volume_expansion == null ? "-" : s.allow_volume_expansion ? "是" : "否",
         creationTime: s.creation_time ?? "-",
       }));
     case "endpoints":
@@ -1931,6 +1998,7 @@ function normalizeStatus(raw: unknown): string {
 function statusTone(statusValue: unknown): "ok" | "warn" | "error" | "neutral" {
   const v = normalizeStatus(statusValue).toLowerCase();
   if (!v || v === "-") return "neutral";
+  if (v.includes("notready") || v.includes("not ready") || v.includes("unready")) return "error";
   if (v.includes("running") || v.includes("ready") || v.includes("bound") || v.includes("active")) return "ok";
   if (
     v.includes("pending") ||
@@ -1994,6 +2062,26 @@ function isRecentRestartHot(v: unknown): boolean {
   return false;
 }
 
+function isNodeAllocColumn(key: string): boolean {
+  return key === "cpuRequests" || key === "memoryRequests" || key === "gpuRequests";
+}
+
+function parseAllocPercent(value: unknown): number | null {
+  if (typeof value !== "string") return null;
+  const m = value.match(/\((\d+)%\)/);
+  if (!m) return null;
+  const percent = Number.parseInt(m[1], 10);
+  return Number.isFinite(percent) ? percent : null;
+}
+
+function nodeAllocTone(value: unknown): "" | "warn" | "danger" {
+  const percent = parseAllocPercent(value);
+  if (percent == null) return "";
+  if (percent >= 90) return "danger";
+  if (percent >= 80) return "warn";
+  return "";
+}
+
 
 function isSelectedRow(row: Record<string, unknown>): boolean {
   if (!selectedResource.value) return false;
@@ -2018,6 +2106,17 @@ const tableColumns = computed(() => {
         { key: "name", label: "名称" },
         { key: "status", label: "状态" },
         { key: "internalIp", label: "Internal IP" },
+        ...(nodeResourceUsageEnabled.value
+          ? [
+              { key: "cpuRequests", label: "CPU 分配/总量" },
+              { key: "memoryRequests", label: "内存分配/总量" },
+              { key: "gpuRequests", label: "GPU 分配/总量" },
+            ]
+          : [
+              { key: "cpuTotal", label: "CPU 总量" },
+              { key: "memoryTotal", label: "内存总量" },
+              { key: "gpuTotal", label: "GPU 总量" },
+            ]),
         { key: "creationTime", label: "创建时间" },
       ];
     case "pods":
@@ -2134,6 +2233,7 @@ const tableColumns = computed(() => {
       return [
         { key: "name", label: "名称" },
         { key: "provisioner", label: "Provisioner" },
+        { key: "allowVolumeExpansion", label: "允许扩容" },
         { key: "creationTime", label: "创建时间" },
       ];
     case "endpoints":
@@ -2336,6 +2436,7 @@ onMounted(() => {
   favoriteNamespaces.value = loadFavoriteNamespaces();
   recentKinds.value = loadRecentKinds();
   recentNamespaces.value = loadRecentNamespaces(currentId.value);
+  void ensureAppSettingsLoaded();
   const id = currentId.value;
   if (id) restoreEnvViewState(id);
   document.addEventListener("click", onDocClick);
@@ -2346,6 +2447,7 @@ onUnmounted(() => {
   document.removeEventListener("click", onDocClick);
   window.removeEventListener("resize", adjustActionMenuPosition);
   window.removeEventListener("scroll", adjustActionMenuPosition, true);
+  stopNodeAllocationPolling();
 });
 watch(selectedKind, () => {
   sortBy.value = "creationTime";
@@ -2380,6 +2482,13 @@ watch([selectedNamespace, selectedKind], () => {
   const id = currentId.value;
   if (id) saveEnvViewState(id);
 });
+watch(
+  [currentId, selectedKind, labelSelector, nodeResourceUsageEnabled],
+  () => {
+    syncNodeAllocationPolling();
+  },
+  { immediate: true }
+);
 watch(
   [currentId, selectedNamespace, selectedKind],
   () => {
@@ -2513,6 +2622,7 @@ onUnmounted(() => {
   document.removeEventListener("click", onDocClick);
   unlistenConnection?.();
   unlistenWatch?.();
+  stopNodeAllocationPolling();
   for (const env of openedEnvs.value) {
     kubeStopWatch(env.id).catch(() => {});
     clearWatchToken(env.id);
@@ -2990,6 +3100,11 @@ onUnmounted(() => {
                     <template v-else-if="col.key === 'recentRestart'">
                       <span :class="{ 'recent-restart-hot': isRecentRestartHot(row.podRollup) }">{{ formatRecentRestart(row.podRollup) }}</span>
                     </template>
+                    <template v-else-if="isNodeAllocColumn(col.key)">
+                      <span class="node-alloc-pill" :class="`node-alloc-pill-${nodeAllocTone(row[col.key as keyof typeof row])}`">
+                        {{ row[col.key as keyof typeof row] }}
+                      </span>
+                    </template>
                     <template v-else>
                       {{ row[col.key as keyof typeof row] }}
                     </template>
@@ -3352,19 +3467,6 @@ onUnmounted(() => {
       @close="deleteConfirmVisible = false"
       @confirm="onDeleteConfirm"
     />
-
-    <!-- 加载失败弹窗（含 SSH 隧道等错误） -->
-    <Teleport to="body">
-      <div v-if="listError" class="error-modal-overlay" @click.self="dismissError">
-        <div class="error-modal" role="alertdialog" aria-labelledby="error-modal-title">
-          <h2 id="error-modal-title" class="error-modal-title">加载失败</h2>
-          <p class="error-modal-message">{{ listError }}</p>
-          <div class="error-modal-actions">
-            <button type="button" class="btn-primary" @click="dismissError">确定</button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
   </div>
 </template>
 
@@ -4153,32 +4255,6 @@ onUnmounted(() => {
   justify-content: center;
   z-index: 9999;
 }
-.error-modal {
-  background: #fff;
-  border-radius: 12px;
-  padding: 1.5rem;
-  max-width: 420px;
-  width: 90%;
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.15);
-}
-.error-modal-title {
-  margin: 0 0 1rem 0;
-  font-size: 1.125rem;
-  font-weight: 600;
-  color: #1e293b;
-}
-.error-modal-message {
-  margin: 0 0 1.25rem 0;
-  font-size: 0.875rem;
-  color: #475569;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.error-modal-actions {
-  display: flex;
-  justify-content: flex-end;
-}
 .sync-orchestrator-modal {
   width: min(92vw, 520px);
   background: #fff;
@@ -4633,6 +4709,25 @@ onUnmounted(() => {
 }
 .resource-table .cell-link:hover {
   text-decoration: underline;
+}
+.node-alloc-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 0.75rem;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+.node-alloc-pill-warn {
+  background: #fef3c7;
+  color: #b45309;
+}
+.node-alloc-pill-danger {
+  background: #fee2e2;
+  color: #b91c1c;
 }
 .empty-table {
   margin: 1rem 0 0;
