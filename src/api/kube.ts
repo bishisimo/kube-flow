@@ -11,6 +11,7 @@ export interface NamespaceItem {
 export interface NodeItem {
   name: string;
   status?: string | null;
+  taint_count?: number | null;
   internal_ip?: string | null;
   cpu_total?: string | null;
   memory_total?: string | null;

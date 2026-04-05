@@ -42,6 +42,7 @@ export interface SshTunnel {
   remote_kubeconfig_path: string;
   local_port?: number | null;
   remote_port?: number | null;
+  has_saved_credential?: boolean;
 }
 
 /** 当前生效的 context 名（current_context 或第一个） */

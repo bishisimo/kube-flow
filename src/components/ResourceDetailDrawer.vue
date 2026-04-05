@@ -39,6 +39,12 @@ export interface SelectedResource {
   namespace: string | null;
 }
 
+interface NodeTaintDraft {
+  key: string;
+  value: string;
+  effect: "NoSchedule" | "PreferNoSchedule" | "NoExecute" | "";
+}
+
 const props = defineProps<{
   visible: boolean;
   envId: string | null;
@@ -56,7 +62,7 @@ const emit = defineEmits<{
   }): void;
 }>();
 
-type DetailTab = "yaml" | "describe" | "edit" | "editConfig" | "logs" | "topology" | "snapshots";
+type DetailTab = "yaml" | "describe" | "edit" | "editConfig" | "logs" | "topology" | "snapshots" | "taints";
 const activeTab = ref<DetailTab>("yaml");
 
 const rawYaml = ref("");
@@ -75,6 +81,7 @@ const viewingSnapshot = ref<ResourceSnapshotItem | null>(null);
 const showManagedFields = ref(false);
 const { monacoTheme } = useYamlMonacoTheme();
 const strongholdAuth = useStrongholdAuthStore();
+const nodeTaints = ref<NodeTaintDraft[]>([]);
 
 
 const monacoOptions = {
@@ -103,12 +110,105 @@ const snapshotResourceRef = computed(() =>
 
 const genericSnapshots = computed(() => listResourceSnapshotsByCategory(snapshotResourceRef.value, "all"));
 const currentSnapshotSummary = computed(() => summarizeResourceYaml(resolveCurrentDraftYaml() || rawYaml.value));
+const isNodeResource = computed(() => props.resource?.kind === "Node");
+
+const taintsValidationError = computed(() => {
+  const seen = new Set<string>();
+  for (const taint of nodeTaints.value) {
+    const key = taint.key.trim();
+    const effect = taint.effect.trim();
+    if (!key) return "污点 key 不能为空。";
+    if (!effect) return "请选择污点 effect。";
+    const dedupKey = `${key}|${effect}`;
+    if (seen.has(dedupKey)) return `存在重复污点：${key} / ${effect}`;
+    seen.add(dedupKey);
+  }
+  return null;
+});
 
 function resolveCurrentDraftYaml(): string {
+  if (activeTab.value === "taints" && isNodeResource.value && rawYaml.value) {
+    return buildNodeTaintsYaml();
+  }
   if (props.resource?.kind === "ConfigMap" || props.resource?.kind === "Secret") {
     return editConfigYaml.value || editYaml.value || rawYaml.value;
   }
   return editYaml.value || rawYaml.value;
+}
+
+function parseNodeTaintsFromYaml(yamlStr: string): NodeTaintDraft[] {
+  if (!yamlStr) return [];
+  try {
+    const parsed = jsYaml.load(yamlStr) as Record<string, unknown> | null;
+    const spec =
+      parsed?.spec && typeof parsed.spec === "object" ? (parsed.spec as Record<string, unknown>) : null;
+    const taints = Array.isArray(spec?.taints) ? (spec?.taints as Array<Record<string, unknown>>) : [];
+    return taints.map((item) => ({
+      key: typeof item.key === "string" ? item.key : "",
+      value: typeof item.value === "string" ? item.value : "",
+      effect:
+        item.effect === "NoSchedule" || item.effect === "PreferNoSchedule" || item.effect === "NoExecute"
+          ? item.effect
+          : "",
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function buildNodeTaintsYaml(): string {
+  if (!rawYaml.value) return "";
+  try {
+    const parsed = jsYaml.load(rawYaml.value) as Record<string, unknown> | null;
+    if (!parsed || typeof parsed !== "object") return rawYaml.value;
+    const spec =
+      parsed.spec && typeof parsed.spec === "object" ? (parsed.spec as Record<string, unknown>) : {};
+    const nextTaints = nodeTaints.value.map((item) => {
+      const taint: Record<string, string> = {
+        key: item.key.trim(),
+        effect: item.effect,
+      };
+      if (item.value.trim()) taint.value = item.value.trim();
+      return taint;
+    });
+    spec.taints = nextTaints;
+    parsed.spec = spec;
+    return jsYaml.dump(parsed, { lineWidth: -1 });
+  } catch {
+    return rawYaml.value;
+  }
+}
+
+function resetNodeTaintsDraft() {
+  nodeTaints.value = parseNodeTaintsFromYaml(rawYaml.value);
+}
+
+function addNodeTaint() {
+  nodeTaints.value = [
+    ...nodeTaints.value,
+    { key: "", value: "", effect: "NoSchedule" },
+  ];
+  editError.value = null;
+  editInfo.value = null;
+}
+
+function removeNodeTaint(index: number) {
+  nodeTaints.value = nodeTaints.value.filter((_, idx) => idx !== index);
+  editError.value = null;
+  editInfo.value = null;
+}
+
+function taintEffectLabel(effect: string): string {
+  switch (effect) {
+    case "NoSchedule":
+      return "禁止调度";
+    case "PreferNoSchedule":
+      return "尽量不调度";
+    case "NoExecute":
+      return "禁止运行";
+    default:
+      return "未设置";
+  }
 }
 
 function getInitialDrawerWidth(): number {
@@ -293,6 +393,17 @@ async function applyEdit(yamlOverride?: string) {
   }
 }
 
+async function applyNodeTaints() {
+  if (!isNodeResource.value || !rawYaml.value) return;
+  if (taintsValidationError.value) {
+    editError.value = taintsValidationError.value;
+    editInfo.value = null;
+    return;
+  }
+  await applyEdit(buildNodeTaintsYaml());
+  resetNodeTaintsDraft();
+}
+
 function openSnapshotViewer(snapshot: ResourceSnapshotItem) {
   viewingSnapshot.value = snapshot;
 }
@@ -360,6 +471,8 @@ watch(
           kind === "DaemonSet")
       ) {
         nextTab = "logs";
+      } else if (initialTab === "taints" && kind === "Node") {
+        nextTab = "taints";
       } else if (initialTab === "topology") {
         nextTab = "topology";
       }
@@ -376,6 +489,7 @@ watch(
       describeError.value = null;
       editError.value = null;
       editInfo.value = null;
+      nodeTaints.value = [];
       viewingSnapshot.value = null;
     }
   },
@@ -391,6 +505,11 @@ watch(
     if ((tab === "edit" || tab === "editConfig") && yaml) {
       editYaml.value = stripManagedFields(yaml);
       editConfigYaml.value = stripManagedFields(yaml);
+      editError.value = null;
+      editInfo.value = null;
+    }
+    if (tab === "taints" && yaml && isNodeResource.value) {
+      resetNodeTaintsDraft();
       editError.value = null;
       editInfo.value = null;
     }
@@ -422,12 +541,12 @@ watch(
         </header>
         <div v-if="props.resource" class="drawer-toolbar">
           <div class="toolbar-head">
-            <template v-if="activeTab === 'edit' && rawYaml">
+            <template v-if="(activeTab === 'edit' || activeTab === 'taints') && rawYaml">
               <button
                 type="button"
                 class="btn-primary toolbar-apply"
                 :disabled="editSaving"
-                @click="applyEdit()"
+                @click="activeTab === 'taints' ? applyNodeTaints() : applyEdit()"
               >
                 {{ editSaving ? "保存中…" : "应用" }}
               </button>
@@ -461,6 +580,16 @@ watch(
               >
                 <span class="tab-icon" aria-hidden="true">D</span>
                 <span class="tab-title">详情</span>
+              </button>
+              <button
+                v-if="resource?.kind === 'Node'"
+                type="button"
+                class="tab-btn tab-compact"
+                :class="{ active: activeTab === 'taints' }"
+                @click="activeTab = 'taints'"
+              >
+                <span class="tab-icon" aria-hidden="true">T</span>
+                <span class="tab-title">污点</span>
               </button>
               <button
                 v-if="
@@ -510,13 +639,53 @@ watch(
           </div>
         </div>
         <div class="drawer-body">
-          <div v-if="loading && (activeTab === 'yaml' || activeTab === 'edit' || activeTab === 'editConfig')" class="loading-state">加载中…</div>
+          <div v-if="loading && (activeTab === 'yaml' || activeTab === 'edit' || activeTab === 'editConfig' || activeTab === 'taints')" class="loading-state">加载中…</div>
           <div v-else-if="describeLoading && activeTab === 'describe'" class="loading-state">加载中…</div>
-          <div v-else-if="error && (activeTab === 'yaml' || activeTab === 'edit' || activeTab === 'editConfig')" class="error-state">{{ error }}</div>
+          <div v-else-if="error && (activeTab === 'yaml' || activeTab === 'edit' || activeTab === 'editConfig' || activeTab === 'taints')" class="error-state">{{ error }}</div>
           <div v-else-if="describeError && activeTab === 'describe'" class="error-state">{{ describeError }}</div>
           <div v-else-if="activeTab === 'describe'" class="describe-panel">
             <div v-if="describeMarkdown" class="describe-scroll describe-markdown" v-html="marked.parse(describeMarkdown)"></div>
             <p v-else class="describe-empty">暂无内容</p>
+          </div>
+          <div v-else-if="activeTab === 'taints' && resource?.kind === 'Node'" class="taints-panel">
+            <div v-if="editError" class="edit-error">{{ editError }}</div>
+            <div v-else-if="editInfo" class="edit-info">{{ editInfo }}</div>
+            <div v-if="!nodeTaints.length" class="taints-empty">当前节点没有配置污点。</div>
+            <div class="taints-list">
+              <div v-for="(taint, index) in nodeTaints" :key="index" class="taint-card">
+                <div class="taint-card-head">
+                  <div class="taint-card-index">污点 {{ index + 1 }}</div>
+                  <button type="button" class="btn-close taint-remove-btn" aria-label="删除污点" @click="removeNodeTaint(index)">×</button>
+                </div>
+                <label class="taint-field">
+                  <span class="taint-field-label">Key</span>
+                  <input v-model="taint.key" type="text" class="taint-input" placeholder="例如 dedicated" />
+                </label>
+                <label class="taint-field">
+                  <span class="taint-field-label">Value</span>
+                  <input v-model="taint.value" type="text" class="taint-input" placeholder="例如 infra（可选）" />
+                </label>
+                <label class="taint-field">
+                  <span class="taint-field-label">Effect</span>
+                  <div class="taint-effect-row">
+                    <select v-model="taint.effect" class="taint-input taint-select">
+                      <option value="" disabled>选择生效方式</option>
+                      <option value="NoSchedule">NoSchedule</option>
+                      <option value="PreferNoSchedule">PreferNoSchedule</option>
+                      <option value="NoExecute">NoExecute</option>
+                    </select>
+                    <span class="taint-effect-pill" :class="`effect-${taint.effect || 'empty'}`">
+                      {{ taintEffectLabel(taint.effect) }}
+                    </span>
+                  </div>
+                </label>
+              </div>
+              <button type="button" class="taint-add-card" :disabled="editSaving" @click="addNodeTaint">
+                <span class="taint-add-card-plus">+</span>
+                <span class="taint-add-card-text">新增污点</span>
+              </button>
+            </div>
+            <div v-if="taintsValidationError" class="edit-error taints-validation">{{ taintsValidationError }}</div>
           </div>
           <div v-else-if="activeTab === 'topology'" class="topology-panel-wrap">
             <ResourceTopologyPanel
@@ -922,6 +1091,168 @@ watch(
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+.taints-panel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 1rem;
+  display: grid;
+  gap: 0.75rem;
+  background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
+}
+.taints-empty {
+  padding: 0.9rem 1rem;
+  border: 1px dashed #cbd5e1;
+  border-radius: 14px;
+  background: #fff;
+  font-size: 0.8rem;
+  color: #64748b;
+}
+.taints-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+.taint-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  padding: 1rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at top right, rgba(37, 99, 235, 0.08), transparent 28%),
+    #fff;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
+}
+.taint-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.taint-card-index {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.45rem;
+  padding: 0 0.5rem;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+.taint-effect-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.5rem;
+  padding: 0 0.55rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+.taint-effect-pill.effect-NoSchedule {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+.taint-effect-pill.effect-PreferNoSchedule {
+  background: #fef3c7;
+  color: #b45309;
+}
+.taint-effect-pill.effect-NoExecute {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+.taint-effect-pill.effect-empty {
+  background: #e2e8f0;
+  color: #475569;
+}
+.taint-effect-code {
+  font-size: 0.75rem;
+  color: #64748b;
+  font-family: ui-monospace, "SF Mono", Monaco, Consolas, monospace;
+}
+.taint-field {
+  display: grid;
+  gap: 0.35rem;
+}
+.taint-field-label {
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: #475569;
+}
+.taint-effect-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.taint-remove-btn {
+  width: 1.8rem;
+  height: 1.8rem;
+  font-size: 1.2rem;
+  border-radius: 999px;
+  color: #94a3b8;
+}
+.taint-remove-btn:hover {
+  background: #fef2f2;
+  color: #dc2626;
+}
+.taint-add-card {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.42rem;
+  width: 100%;
+  min-height: 48px;
+  padding: 0.7rem 0.9rem;
+  border: 1px dashed #93c5fd;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #f8fbff, #eff6ff);
+  color: #1d4ed8;
+  cursor: pointer;
+}
+.taint-add-card:hover {
+  border-color: #60a5fa;
+  background: linear-gradient(180deg, #eff6ff, #dbeafe);
+}
+.taint-add-card:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.taint-add-card-plus {
+  font-size: 0.95rem;
+  line-height: 1;
+  font-weight: 700;
+}
+.taint-add-card-text {
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+.taint-input {
+  width: 100%;
+  min-width: 0;
+  height: 2.2rem;
+  border: 1px solid #dbe3ee;
+  border-radius: 10px;
+  padding: 0 0.7rem;
+  font-size: 0.82rem;
+  color: #0f172a;
+  background: #f8fafc;
+}
+.taint-select {
+  flex: 1 1 280px;
+  max-width: 100%;
+}
+.taint-input:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+  background: #fff;
+}
+.taints-validation {
+  margin: 0;
 }
 .edit-panel {
   flex: 1;

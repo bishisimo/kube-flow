@@ -191,6 +191,12 @@ fn node_to_item(n: Node) -> NodeItem {
                 .map(|a| a.address.clone())
         })
     });
+    let taint_count = n
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.taints.as_ref())
+        .map(|taints| taints.len() as u32)
+        .unwrap_or(0);
     let alloc_cpu = n
         .status
         .as_ref()
@@ -217,6 +223,7 @@ fn node_to_item(n: Node) -> NodeItem {
     NodeItem {
         name: n.metadata.name.unwrap_or_default(),
         status,
+        taint_count: Some(taint_count),
         internal_ip,
         cpu_total: (alloc_cpu > 0).then(|| format_cpu_total(alloc_cpu)),
         memory_total: (alloc_mem > 0).then(|| format_mem(alloc_mem)),

@@ -883,11 +883,19 @@ function onRowContextMenu(row: Record<string, unknown>, e: MouseEvent) {
 
 function onRowClick(row: Record<string, unknown>) {
   const resource = selectResourceFromRow(row);
-  if (resource) {
-    selectedResource.value = resource;
-    detailDrawerInitialTab.value = null;
-    detailDrawerVisible.value = true;
-  }
+  if (resource) openDetailDrawerForResource(resource);
+}
+
+function openDetailDrawerForResource(resource: SelectedResourceRef, initialTab: string | null = null) {
+  selectedResource.value = resource;
+  detailDrawerInitialTab.value = initialTab;
+  detailDrawerVisible.value = true;
+}
+
+function openNodeTaintsFromRow(row: Record<string, unknown>) {
+  const resource = selectResourceFromRow(row);
+  if (!resource || resource.kind !== "Node") return;
+  openDetailDrawerForResource(resource, "taints");
 }
 
 function closeActionMenu() {
@@ -1644,6 +1652,7 @@ const rawTableRows = computed(() => {
       return nodes.value.map((n) => ({
         name: n.name,
         status: n.status ?? "-",
+        taints: typeof n.taint_count === "number" ? (n.taint_count > 0 ? `${n.taint_count}` : "无") : "-",
         internalIp: n.internal_ip ?? "-",
         cpuTotal: n.cpu_total ?? "-",
         memoryTotal: n.memory_total ?? "-",
@@ -2105,6 +2114,7 @@ const tableColumns = computed(() => {
       return [
         { key: "name", label: "名称" },
         { key: "status", label: "状态" },
+        { key: "taints", label: "污点" },
         { key: "internalIp", label: "Internal IP" },
         ...(nodeResourceUsageEnabled.value
           ? [
@@ -3104,6 +3114,17 @@ onUnmounted(() => {
                       <span class="node-alloc-pill" :class="`node-alloc-pill-${nodeAllocTone(row[col.key as keyof typeof row])}`">
                         {{ row[col.key as keyof typeof row] }}
                       </span>
+                    </template>
+                    <template v-else-if="selectedKind === 'nodes' && col.key === 'taints'">
+                      <button
+                        type="button"
+                        class="taint-entry-btn"
+                        :class="{ 'taint-entry-btn-empty': row[col.key as keyof typeof row] === '无' }"
+                        @click.stop="openNodeTaintsFromRow(row)"
+                      >
+                        <span class="taint-entry-label">污点</span>
+                        <span class="taint-entry-value">{{ row[col.key as keyof typeof row] }}</span>
+                      </button>
                     </template>
                     <template v-else>
                       {{ row[col.key as keyof typeof row] }}
@@ -4709,6 +4730,41 @@ onUnmounted(() => {
 }
 .resource-table .cell-link:hover {
   text-decoration: underline;
+}
+.taint-entry-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 1.85rem;
+  padding: 0 0.55rem;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  cursor: pointer;
+  font: inherit;
+}
+.taint-entry-btn:hover {
+  background: #dbeafe;
+  border-color: #93c5fd;
+}
+.taint-entry-btn-empty {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+  color: #475569;
+}
+.taint-entry-btn-empty:hover {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+}
+.taint-entry-label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.taint-entry-value {
+  font-size: 0.78rem;
+  font-weight: 700;
 }
 .node-alloc-pill {
   display: inline-flex;

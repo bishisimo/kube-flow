@@ -5,6 +5,8 @@
 import { ref } from "vue";
 import { credentialCacheOnly } from "../api/credential";
 import { envListSshTunnels } from "../api/env";
+import { useStrongholdAuthStore } from "./strongholdAuth";
+import { useStrongholdStatusStore } from "./strongholdStatus";
 
 export interface SshAuthRequest {
   tunnelId: string;
@@ -18,6 +20,8 @@ export interface SshAuthRequest {
 const AUTH_REQUIRED_RE = /SSH_AUTH_REQUIRED:([^\s]+)/;
 
 const pending = ref<SshAuthRequest | null>(null);
+const strongholdAuth = useStrongholdAuthStore();
+const { refreshStrongholdStatus } = useStrongholdStatusStore();
 
 /**
  * 检查错误字符串是否包含 SSH 认证错误，若是则激活弹窗并返回 true。
@@ -37,6 +41,20 @@ async function checkAndHandle(error: string, onConfirmed?: () => void): Promise<
     if (found) {
       tunnelName = found.name;
       sshHost = found.ssh_host;
+      if (found.has_saved_credential) {
+        const status = await refreshStrongholdStatus().catch(() => null);
+        if (status === "locked") {
+          await strongholdAuth.checkAndHandle(
+            "Stronghold 已锁定",
+            onConfirmed,
+            {
+              title: "解锁环境凭证",
+              description: "当前环境已配置保存密码，请先输入 Stronghold 主密码解锁。",
+            }
+          );
+          return true;
+        }
+      }
     }
   } catch {
     // 查找失败时降级使用 tunnelId

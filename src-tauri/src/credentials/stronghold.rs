@@ -100,23 +100,35 @@ impl StrongholdBackend {
 
     /// 解锁：用主密码解密快照，将凭证加载到内存。
     pub fn unlock(&self, master_password: &str) -> Result<(), String> {
-        let content = std::fs::read_to_string(&self.path).map_err(|e| e.to_string())?;
-        let hold: HoldFile = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+        let content = std::fs::read_to_string(&self.path)
+            .map_err(|_| "无法读取凭证库文件，请检查文件是否存在且可访问".to_string())?;
+        let hold: HoldFile = serde_json::from_str(&content)
+            .map_err(|_| "凭证库文件格式异常，无法解锁".to_string())?;
 
-        let salt = B64.decode(&hold.salt).map_err(|e| e.to_string())?;
+        if hold.version != 1 {
+            return Err("凭证库文件版本不受支持，无法解锁".to_string());
+        }
+
+        let salt = B64
+            .decode(&hold.salt)
+            .map_err(|_| "凭证库文件内容异常，无法解锁".to_string())?;
         let key = derive_key(master_password, &salt)?;
 
-        let nonce_bytes = B64.decode(&hold.nonce).map_err(|e| e.to_string())?;
-        let ciphertext = B64.decode(&hold.ciphertext).map_err(|e| e.to_string())?;
+        let nonce_bytes = B64
+            .decode(&hold.nonce)
+            .map_err(|_| "凭证库文件内容异常，无法解锁".to_string())?;
+        let ciphertext = B64
+            .decode(&hold.ciphertext)
+            .map_err(|_| "凭证库文件内容异常，无法解锁".to_string())?;
 
         let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
         let nonce = Nonce::from_slice(&nonce_bytes);
         let plaintext = cipher
             .decrypt(nonce, ciphertext.as_slice())
-            .map_err(|_| "主密码错误或文件已损坏".to_string())?;
+            .map_err(|_| "主密码不正确，无法解锁凭证库".to_string())?;
 
-        let data: HashMap<String, String> =
-            serde_json::from_slice(&plaintext).map_err(|e| e.to_string())?;
+        let data: HashMap<String, String> = serde_json::from_slice(&plaintext)
+            .map_err(|_| "凭证库内容异常，无法完成解锁".to_string())?;
 
         *self.state.lock().unwrap() = StrongholdState::Unlocked { data, key, salt };
         Ok(())

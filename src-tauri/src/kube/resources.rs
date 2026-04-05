@@ -324,6 +324,8 @@ pub struct NodeItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub taint_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub internal_ip: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cpu_total: Option<String>,
@@ -629,6 +631,12 @@ pub async fn list_nodes(
                         .map(|a| a.address.clone())
                 })
             });
+            let taint_count = n
+                .spec
+                .as_ref()
+                .and_then(|spec| spec.taints.as_ref())
+                .map(|taints| taints.len() as u32)
+                .unwrap_or(0);
             let alloc_cpu = n
                 .status
                 .as_ref()
@@ -695,6 +703,7 @@ pub async fn list_nodes(
             NodeItem {
                 name: node_name,
                 status,
+                taint_count: Some(taint_count),
                 internal_ip,
                 cpu_total: (alloc_cpu > 0).then(|| format_cpu_total(alloc_cpu)),
                 memory_total: (alloc_mem > 0).then(|| format_mem(alloc_mem)),

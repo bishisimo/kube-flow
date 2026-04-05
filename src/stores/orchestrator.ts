@@ -10,6 +10,16 @@ export interface OrchestratorResourceRef {
   namespace: string | null;
 }
 
+export interface OrchestratorImportResourceInput {
+  component: string;
+  kind: string;
+  name: string;
+  namespace: string | null;
+  yaml: string;
+  source_file_name?: string | null;
+  source_doc_index?: number | null;
+}
+
 export interface ManifestHistoryItem {
   id: string;
   at: string;
@@ -29,6 +39,29 @@ export interface OrchestratorManifest {
   created_at: string;
   updated_at: string;
   history: ManifestHistoryItem[];
+  source_type?: "manual" | "import_file" | "import_text" | "sync_from_workbench" | "package_sync";
+  source_batch_id?: string | null;
+  source_file_name?: string | null;
+  source_doc_index?: number | null;
+}
+
+export interface OrchestratorImportBatch {
+  id: string;
+  env_id: string;
+  env_name: string;
+  name: string;
+  source_kind: "file" | "text";
+  file_count: number;
+  document_count: number;
+  resource_count: number;
+  error_count: number;
+  warning_count: number;
+  created_at: string;
+  strategy_snapshot: {
+    component: string;
+    overwrite: boolean;
+  };
+  summary: string;
 }
 
 export interface OrchestratorPackageResourceSnapshot {
@@ -89,9 +122,11 @@ export interface OrchestratorFocusTarget {
 
 const STORAGE_KEY = "kube-flow:orchestrator:manifests";
 const STORAGE_KEY_PACKAGES = "kube-flow:orchestrator:packages";
+const STORAGE_KEY_BATCHES = "kube-flow:orchestrator:import-batches";
 
 const manifests = ref<OrchestratorManifest[]>(loadManifests());
 const packages = ref<OrchestratorPackage[]>(loadPackages());
+const importBatches = ref<OrchestratorImportBatch[]>(loadImportBatches());
 const switchToOrchestratorRequested = ref(0);
 const orchestratorFocusTarget = ref<OrchestratorFocusTarget | null>(null);
 
@@ -111,6 +146,7 @@ function persist() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(manifests.value));
     localStorage.setItem(STORAGE_KEY_PACKAGES, JSON.stringify(packages.value));
+    localStorage.setItem(STORAGE_KEY_BATCHES, JSON.stringify(importBatches.value));
   } catch {}
 }
 
@@ -141,12 +177,44 @@ function loadPackages(): OrchestratorPackage[] {
   }
 }
 
+function loadImportBatches(): OrchestratorImportBatch[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_BATCHES);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item) => item && typeof item === "object") as OrchestratorImportBatch[];
+  } catch {
+    return [];
+  }
+}
+
 function uid(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function formatRfc3339Local(date: Date): string {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const year = date.getFullYear();
+  const month = pad(date.getMonth() + 1);
+  const day = pad(date.getDate());
+  const hours = pad(date.getHours());
+  const minutes = pad(date.getMinutes());
+  const seconds = pad(date.getSeconds());
+  const offsetMinutes = -date.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const offsetHours = pad(Math.floor(Math.abs(offsetMinutes) / 60));
+  const offsetRemainMinutes = pad(Math.abs(offsetMinutes) % 60);
+  return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}${sign}${offsetHours}:${offsetRemainMinutes}`;
+}
+
+function batchLabel(sourceKind: "file" | "text", now = new Date()): string {
+  const prefix = sourceKind === "text" ? "创建" : "导入";
+  return `${formatRfc3339Local(now)} ${prefix}`;
 }
 
 function buildHistory(action: ManifestHistoryItem["action"], yaml: string): ManifestHistoryItem {
@@ -241,6 +309,10 @@ function upsertFromWorkbenchSync(
     created_at: now,
     updated_at: now,
     history: pushHistory([], "sync", sanitizedYaml),
+    source_type: "sync_from_workbench",
+    source_batch_id: null,
+    source_file_name: null,
+    source_doc_index: null,
   };
   manifests.value = [item, ...manifests.value];
   persist();
@@ -283,6 +355,10 @@ function createManifestDraft(envId: string, envName: string, component: string, 
     created_at: now,
     updated_at: now,
     history: yaml ? [buildHistory("save", yaml)] : [],
+    source_type: "manual",
+    source_batch_id: null,
+    source_file_name: null,
+    source_doc_index: null,
   };
   manifests.value = [item, ...manifests.value];
   persist();
@@ -306,6 +382,115 @@ function setManifestIdentity(
 function deleteManifest(id: string) {
   manifests.value = manifests.value.filter((m) => m.id !== id);
   persist();
+}
+
+function importManifestsToEnv(
+  envId: string,
+  envName: string,
+  resources: OrchestratorImportResourceInput[],
+  overwrite = true,
+  batchMeta?: {
+    name?: string;
+    source_kind?: "file" | "text";
+    file_count?: number;
+    document_count?: number;
+    error_count?: number;
+    warning_count?: number;
+    component?: string;
+  }
+): { created: number; updated: number; skipped: number; manifestIds: string[]; batchId: string | null } {
+  let created = 0;
+  let updated = 0;
+  let skipped = 0;
+  const manifestIds: string[] = [];
+  const now = nowIso();
+  const batchId = batchMeta ? uid("batch") : null;
+  const sourceType: OrchestratorManifest["source_type"] =
+    batchMeta?.source_kind === "text" ? "import_text" : "import_file";
+
+  if (batchId) {
+    const meta = batchMeta!;
+    const fileCount = Math.max(1, meta.file_count ?? 1);
+    const documentCount = Math.max(resources.length, meta.document_count ?? resources.length);
+    importBatches.value = [
+      {
+        id: batchId,
+        env_id: envId,
+        env_name: envName,
+        name: meta.name?.trim() || batchLabel(meta.source_kind ?? "file", new Date(now)),
+        source_kind: meta.source_kind ?? "file",
+        file_count: fileCount,
+        document_count: documentCount,
+        resource_count: resources.length,
+        error_count: Math.max(0, meta.error_count ?? 0),
+        warning_count: Math.max(0, meta.warning_count ?? 0),
+        created_at: now,
+        strategy_snapshot: {
+          component: normalizeComponent(meta.component ?? resources[0]?.component ?? "default"),
+          overwrite,
+        },
+        summary: `导入 ${resources.length} 个资源，来源 ${fileCount} 个文件。`,
+      },
+      ...importBatches.value,
+    ].slice(0, 100);
+  }
+
+  for (const resource of resources) {
+    const component = normalizeComponent(resource.component);
+    const existing = manifests.value.find(
+      (m) =>
+        m.env_id === envId &&
+        m.resource_kind === resource.kind &&
+        m.resource_name === resource.name &&
+        (m.resource_namespace ?? null) === (resource.namespace ?? null)
+    );
+
+    if (existing) {
+      if (!overwrite) {
+        skipped += 1;
+        continue;
+      }
+      existing.env_name = envName;
+      existing.component = component;
+      existing.resource_kind = resource.kind;
+      existing.resource_name = resource.name;
+      existing.resource_namespace = resource.namespace ?? null;
+      existing.yaml = resource.yaml;
+      existing.updated_at = now;
+      existing.history = pushHistory(existing.history, "save", resource.yaml);
+      existing.source_type = sourceType;
+      existing.source_batch_id = batchId;
+      existing.source_file_name = resource.source_file_name ?? null;
+      existing.source_doc_index = resource.source_doc_index ?? null;
+      manifestIds.push(existing.id);
+      updated += 1;
+      continue;
+    }
+
+    const item: OrchestratorManifest = {
+      id: uid("manifest"),
+      env_id: envId,
+      env_name: envName,
+      component,
+      resource_kind: resource.kind,
+      resource_name: resource.name,
+      resource_namespace: resource.namespace ?? null,
+      yaml: resource.yaml,
+      created_at: now,
+      updated_at: now,
+      history: pushHistory([], "save", resource.yaml),
+      source_type: sourceType,
+      source_batch_id: batchId,
+      source_file_name: resource.source_file_name ?? null,
+      source_doc_index: resource.source_doc_index ?? null,
+    };
+    manifests.value = [item, ...manifests.value];
+    manifestIds.push(item.id);
+    created += 1;
+  }
+
+  persist();
+  return { created, updated, skipped, manifestIds, batchId };
 }
 
 function createPackage(name: string, description = ""): OrchestratorPackage {
@@ -482,6 +667,10 @@ function syncPackageVersionToEnv(
       created_at: now,
       updated_at: now,
       history: pushHistory([], "save", res.yaml),
+      source_type: "package_sync",
+      source_batch_id: null,
+      source_file_name: null,
+      source_doc_index: null,
     };
     manifests.value = [next, ...manifests.value];
     manifestIds.push(next.id);
@@ -578,6 +767,10 @@ function copyComponentToEnv(
         created_at: now,
         updated_at: now,
         history: pushHistory([], "save", source.yaml),
+        source_type: source.source_type,
+        source_batch_id: source.source_batch_id ?? null,
+        source_file_name: source.source_file_name ?? null,
+        source_doc_index: source.source_doc_index ?? null,
       },
       ...manifests.value,
     ];
@@ -596,6 +789,7 @@ export function useOrchestratorStore() {
   return {
     manifests,
     packages,
+    importBatches,
     switchToOrchestratorRequested,
     orchestratorFocusTarget,
     requestSwitchToOrchestrator,
@@ -605,6 +799,7 @@ export function useOrchestratorStore() {
     createManifestDraft,
     setManifestIdentity,
     deleteManifest,
+    importManifestsToEnv,
     copyComponentToEnv,
     createPackage,
     deletePackage,

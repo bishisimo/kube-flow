@@ -8,6 +8,7 @@ import { useEnvStore } from "../stores/env";
 import { useYamlMonacoTheme } from "../stores/yamlTheme";
 import {
   useOrchestratorStore,
+  type OrchestratorImportBatch,
   type OrchestratorManifest,
   type OrchestratorPackage,
   type OrchestratorPackageVersion,
@@ -33,30 +34,78 @@ interface TokenOp {
   text: string;
 }
 
+interface ImportPreviewItem {
+  id: string;
+  fileName: string;
+  docIndex: number;
+  kind: string;
+  name: string;
+  namespace: string | null;
+  yaml: string;
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+  conflict: boolean;
+  duplicate: boolean;
+}
+
+interface ComponentApplyItem {
+  manifestId: string;
+  kind: string;
+  name: string;
+  namespace: string | null;
+  yaml: string;
+  fileName: string | null;
+  status: "pending" | "running" | "success" | "failed";
+  error: string | null;
+}
+
 const APPLY_ORDER: Record<string, number> = {
+  CustomResourceDefinition: 0,
   Namespace: 1,
-  ConfigMap: 10,
-  Secret: 11,
-  ServiceAccount: 12,
-  PersistentVolumeClaim: 13,
-  Service: 20,
-  Deployment: 30,
-  StatefulSet: 31,
-  DaemonSet: 32,
-  Ingress: 40,
-  HorizontalPodAutoscaler: 50,
+  PriorityClass: 2,
+  StorageClass: 3,
+  IngressClass: 4,
+  ServiceAccount: 10,
+  Role: 11,
+  ClusterRole: 12,
+  RoleBinding: 13,
+  ClusterRoleBinding: 14,
+  ConfigMap: 20,
+  Secret: 21,
+  PersistentVolume: 22,
+  PersistentVolumeClaim: 23,
+  ResourceQuota: 24,
+  LimitRange: 25,
+  MutatingWebhookConfiguration: 26,
+  ValidatingWebhookConfiguration: 27,
+  NetworkPolicy: 28,
+  Service: 30,
+  Endpoints: 31,
+  EndpointSlice: 32,
+  Deployment: 40,
+  StatefulSet: 41,
+  DaemonSet: 42,
+  ReplicaSet: 43,
+  Job: 44,
+  CronJob: 45,
+  Pod: 46,
+  Ingress: 50,
+  HorizontalPodAutoscaler: 51,
+  PodDisruptionBudget: 52,
 };
 
 const { environments, currentId } = useEnvStore();
 const {
   manifests,
   packages,
+  importBatches,
   orchestratorFocusTarget,
-  createManifestDraft,
   saveManifestYaml,
   setManifestIdentity,
   setManifestComponent,
   deleteManifest,
+  importManifestsToEnv,
   copyComponentToEnv,
   createPackage,
   deletePackage,
@@ -69,8 +118,11 @@ const {
 const { monacoTheme } = useYamlMonacoTheme();
 
 const activeView = ref<"resources" | "packages">("resources");
+const resourceGroupView = ref<"component" | "file" | "batch">("component");
 const selectedEnvId = ref<string>("");
 const selectedComponent = ref<string>("");
+const selectedSourceFile = ref<string>("");
+const selectedBatchId = ref<string>("");
 const selectedManifestId = ref<string>("");
 const editYaml = ref("");
 const componentFilterKeyword = ref("");
@@ -80,6 +132,8 @@ const opMessage = ref<string | null>(null);
 const opError = ref<string | null>(null);
 const applying = ref(false);
 const applyDialogVisible = ref(false);
+const componentApplyDialogVisible = ref(false);
+const createYamlActive = ref(false);
 const copyDialogVisible = ref(false);
 const copyTargetEnvId = ref("");
 const copyOverwrite = ref(true);
@@ -112,6 +166,16 @@ const listContextTarget = ref<
   | { type: "component"; component: string; count: number }
   | null
 >(null);
+const importLoading = ref(false);
+const importComponent = ref("");
+const importOverwrite = ref(true);
+const importPreviewItems = ref<ImportPreviewItem[]>([]);
+const importSummaryMessage = ref<string | null>(null);
+const importFileInput = ref<HTMLInputElement | null>(null);
+const importTextDraft = ref("");
+const importParseTimer = ref<number | null>(null);
+const componentApplyItems = ref<ComponentApplyItem[]>([]);
+const componentApplyPhase = ref<"idle" | "applying" | "completed">("idle");
 
 const editorOptions = {
   fontSize: 13,
@@ -137,6 +201,27 @@ const componentItems = computed(() =>
     count: manifestsByEnv.value.filter((m) => m.component === name).length,
   }))
 );
+const sourceFileItems = computed(() => {
+  const fileMap = new Map<string, number>();
+  for (const manifest of manifestsByEnv.value) {
+    const fileName = manifest.source_file_name?.trim();
+    if (!fileName) continue;
+    fileMap.set(fileName, (fileMap.get(fileName) ?? 0) + 1);
+  }
+  return Array.from(fileMap.entries())
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+});
+const batchItems = computed(() =>
+  importBatches.value
+    .filter((batch) => batch.env_id === selectedEnvId.value)
+    .map((batch) => ({
+      id: batch.id,
+      name: batch.name,
+      count: batch.resource_count,
+      batch,
+    }))
+);
 
 const filteredComponentItems = computed(() => {
   const keyword = componentFilterKeyword.value.trim().toLowerCase();
@@ -147,11 +232,32 @@ const filteredComponentItems = computed(() => {
 const manifestsByComponent = computed(() =>
   manifestsByEnv.value.filter((m) => m.component === selectedComponent.value)
 );
+const manifestsBySourceFile = computed(() =>
+  manifestsByEnv.value.filter((m) => (m.source_file_name ?? "") === selectedSourceFile.value)
+);
+const manifestsByBatch = computed(() =>
+  manifestsByEnv.value.filter((m) => (m.source_batch_id ?? "") === selectedBatchId.value)
+);
+const selectedImportBatch = computed<OrchestratorImportBatch | null>(
+  () => importBatches.value.find((batch) => batch.id === selectedBatchId.value) ?? null
+);
+const activeGroupLabel = computed(() => {
+  if (resourceGroupView.value === "file") return selectedSourceFile.value;
+  if (resourceGroupView.value === "batch") {
+    return selectedImportBatch.value?.name ?? "";
+  }
+  return selectedComponent.value;
+});
+const manifestsInActiveGroup = computed(() => {
+  if (resourceGroupView.value === "file") return manifestsBySourceFile.value;
+  if (resourceGroupView.value === "batch") return manifestsByBatch.value;
+  return manifestsByComponent.value;
+});
 const componentOptionsForAssign = computed(() =>
   components.value.filter((name) => name !== selectedManifest.value?.component)
 );
 const manifestDraftCount = computed(() =>
-  manifestsByComponent.value.filter((m) => manifestDraftCache.value[m.id] && manifestDraftCache.value[m.id] !== m.yaml).length
+  manifestsInActiveGroup.value.filter((m) => manifestDraftCache.value[m.id] && manifestDraftCache.value[m.id] !== m.yaml).length
 );
 const selectedPackage = computed<OrchestratorPackage | null>(
   () => packages.value.find((p) => p.id === selectedPackageId.value) ?? null
@@ -189,9 +295,43 @@ const selectedManifest = computed<OrchestratorManifest | null>(
 
 const selectedHistory = computed(() => selectedManifest.value?.history ?? []);
 const canApplyCurrent = computed(() => Boolean(selectedEnvId.value && selectedManifestId.value));
-const canApplyComponent = computed(() => Boolean(selectedEnvId.value && selectedComponent.value));
+const canApplyComponent = computed(() => Boolean(selectedEnvId.value && selectedComponent.value && resourceGroupView.value === "component"));
 const canOpenApplyDialog = computed(() => canApplyCurrent.value || canApplyComponent.value);
-const canOpenCopyDialog = computed(() => Boolean(selectedEnvId.value && selectedComponent.value && environments.value.length > 1));
+const componentApplyPlan = computed(() => {
+  const list = [...manifestsByComponent.value];
+  const delayedWebhookKeys = buildDelayedWebhookKeys(list);
+  return list.sort((a, b) => {
+    const wa = applyWeight(
+      a.resource_kind,
+      delayedWebhookKeys.has(resourceIdentityKey(a.resource_kind, a.resource_name, a.resource_namespace))
+    );
+    const wb = applyWeight(
+      b.resource_kind,
+      delayedWebhookKeys.has(resourceIdentityKey(b.resource_kind, b.resource_name, b.resource_namespace))
+    );
+    if (wa !== wb) return wa - wb;
+    if ((a.resource_namespace || "") !== (b.resource_namespace || "")) {
+      return (a.resource_namespace || "").localeCompare(b.resource_namespace || "");
+    }
+    return a.resource_name.localeCompare(b.resource_name);
+  });
+});
+const componentApplySummary = computed(() => {
+  const success = componentApplyItems.value.filter((item) => item.status === "success").length;
+  const failed = componentApplyItems.value.filter((item) => item.status === "failed").length;
+  const running = componentApplyItems.value.filter((item) => item.status === "running").length;
+  const pending = componentApplyItems.value.filter((item) => item.status === "pending").length;
+  return {
+    total: componentApplyItems.value.length,
+    success,
+    failed,
+    running,
+    pending,
+  };
+});
+const canOpenCopyDialog = computed(
+  () => Boolean(selectedEnvId.value && selectedComponent.value && environments.value.length > 1 && resourceGroupView.value === "component")
+);
 const diffStats = computed(() => {
   let added = 0;
   let removed = 0;
@@ -203,13 +343,30 @@ const diffStats = computed(() => {
   }
   return { added, removed, modified };
 });
+const importValidItems = computed(() => importPreviewItems.value.filter((item) => item.valid));
+const importInvalidItems = computed(() => importPreviewItems.value.filter((item) => !item.valid));
+const importWarningItems = computed(() => importValidItems.value.filter((item) => item.warnings.length > 0));
+const canConfirmImport = computed(
+  () => Boolean(selectedEnvId.value && importValidItems.value.length && !importLoading.value)
+);
 
 function onSelectComponent(componentName: string) {
   if (!componentName || componentName === selectedComponent.value) return;
   selectedComponent.value = componentName;
 }
 
+function onSelectSourceFile(fileName: string) {
+  if (!fileName || fileName === selectedSourceFile.value) return;
+  selectedSourceFile.value = fileName;
+}
+
+function onSelectBatch(batchId: string) {
+  if (!batchId || batchId === selectedBatchId.value) return;
+  selectedBatchId.value = batchId;
+}
+
 function onSelectManifest(manifestId: string) {
+  createYamlActive.value = false;
   selectedManifestId.value = manifestId;
   if (selectedComponent.value) {
     selectedManifestByComponent.value[selectedComponent.value] = manifestId;
@@ -257,6 +414,450 @@ function openDeleteResourceDialog(manifest: OrchestratorManifest) {
     label: `${manifest.resource_kind}/${manifest.resource_name}`,
   };
   listDeleteDialogVisible.value = true;
+}
+
+function makeImportPreviewId(fileName: string, docIndex: number) {
+  return `${fileName}:${docIndex}`;
+}
+
+function existingManifestConflict(kind: string, name: string, namespace: string | null) {
+  return manifests.value.some(
+    (m) =>
+      m.env_id === selectedEnvId.value &&
+      m.resource_kind === kind &&
+      m.resource_name === name &&
+      (m.resource_namespace ?? null) === (namespace ?? null)
+  );
+}
+
+function buildImportYaml(doc: unknown): string {
+  return jsYaml.dump(doc, { lineWidth: -1 });
+}
+
+function resourceIdentityKey(kind: string, name: string, namespace: string | null) {
+  return `${kind}|${namespace ?? ""}|${name}`;
+}
+
+function parseYamlObject(yaml: string): Record<string, unknown> | null {
+  try {
+    const parsed = jsYaml.load(yaml);
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+function isWebhookConfigurationKind(kind: string) {
+  return kind === "MutatingWebhookConfiguration" || kind === "ValidatingWebhookConfiguration";
+}
+
+function isWorkloadKind(kind: string) {
+  return ["Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job", "CronJob", "Pod"].includes(kind);
+}
+
+function extractWebhookServiceKeys(yaml: string): string[] {
+  const obj = parseYamlObject(yaml);
+  if (!obj) return [];
+  const webhooks = Array.isArray(obj.webhooks) ? (obj.webhooks as Array<Record<string, unknown>>) : [];
+  const keys: string[] = [];
+  for (const webhook of webhooks) {
+    const clientConfig =
+      webhook.clientConfig && typeof webhook.clientConfig === "object"
+        ? (webhook.clientConfig as Record<string, unknown>)
+        : null;
+    const service =
+      clientConfig?.service && typeof clientConfig.service === "object"
+        ? (clientConfig.service as Record<string, unknown>)
+        : null;
+    if (!service) continue;
+    const name = typeof service.name === "string" ? service.name.trim() : "";
+    if (!name) continue;
+    const namespace = typeof service.namespace === "string" && service.namespace.trim() ? service.namespace.trim() : "default";
+    keys.push(resourceIdentityKey("Service", name, namespace));
+  }
+  return keys;
+}
+
+function buildDelayedWebhookKeys<T extends { resource_kind: string; resource_name: string; resource_namespace: string | null; yaml: string }>(
+  list: T[]
+): Set<string> {
+  const serviceKeys = new Set(
+    list
+      .filter((item) => item.resource_kind === "Service")
+      .map((item) => resourceIdentityKey("Service", item.resource_name, item.resource_namespace || "default"))
+  );
+  const workloadNamespaces = new Set(
+    list
+      .filter((item) => isWorkloadKind(item.resource_kind))
+      .map((item) => item.resource_namespace || "default")
+  );
+  const delayed = new Set<string>();
+  for (const item of list) {
+    if (!isWebhookConfigurationKind(item.resource_kind)) continue;
+    const targetServiceKeys = extractWebhookServiceKeys(item.yaml);
+    const shouldDelay = targetServiceKeys.some((svcKey) => {
+      if (!serviceKeys.has(svcKey)) return false;
+      const namespace = svcKey.split("|")[1] || "default";
+      return workloadNamespaces.has(namespace);
+    });
+    if (shouldDelay) {
+      delayed.add(resourceIdentityKey(item.resource_kind, item.resource_name, item.resource_namespace));
+    }
+  }
+  return delayed;
+}
+
+function applyWeight(kind: string, delayedWebhook = false) {
+  if (delayedWebhook && isWebhookConfigurationKind(kind)) return 49;
+  return APPLY_ORDER[kind] ?? 999;
+}
+
+function buildKnownResourceKeySet(items: Array<{ kind: string; name: string; namespace: string | null }>) {
+  return new Set(items.map((item) => resourceIdentityKey(item.kind, item.name, item.namespace)));
+}
+
+function extractImportRefWarnings(
+  yaml: string,
+  knownResources: Set<string>
+): string[] {
+  const warnings: string[] = [];
+  let parsed: unknown;
+  try {
+    parsed = jsYaml.load(yaml);
+  } catch {
+    return warnings;
+  }
+  if (!parsed || typeof parsed !== "object") return warnings;
+  const obj = parsed as Record<string, unknown>;
+  const kind = typeof obj.kind === "string" ? obj.kind : "";
+  const metadata = obj.metadata as Record<string, unknown> | undefined;
+  const namespace =
+    metadata && typeof metadata.namespace === "string" && metadata.namespace.trim()
+      ? metadata.namespace.trim()
+      : null;
+
+  const checkRef = (targetKind: "ConfigMap" | "Secret" | "ServiceAccount" | "PersistentVolumeClaim", name: string) => {
+    const exact = resourceIdentityKey(targetKind, name, namespace);
+    const fallback = resourceIdentityKey(targetKind, name, null);
+    if (!knownResources.has(exact) && !knownResources.has(fallback)) {
+      warnings.push(`引用资源缺失：${targetKind}/${name}`);
+    }
+  };
+
+  if (kind === "Deployment" || kind === "StatefulSet" || kind === "DaemonSet") {
+    const spec = obj.spec as Record<string, unknown> | undefined;
+    const template = spec?.template as Record<string, unknown> | undefined;
+    const podSpec = template?.spec as Record<string, unknown> | undefined;
+    if (podSpec && typeof podSpec.serviceAccountName === "string" && podSpec.serviceAccountName) {
+      checkRef("ServiceAccount", podSpec.serviceAccountName);
+    }
+    const volumes = Array.isArray(podSpec?.volumes) ? (podSpec?.volumes as Array<Record<string, unknown>>) : [];
+    for (const v of volumes) {
+      const cm = v.configMap as Record<string, unknown> | undefined;
+      if (cm && typeof cm.name === "string" && cm.name) checkRef("ConfigMap", cm.name);
+      const sec = v.secret as Record<string, unknown> | undefined;
+      if (sec && typeof sec.secretName === "string" && sec.secretName) checkRef("Secret", sec.secretName);
+      const pvc = v.persistentVolumeClaim as Record<string, unknown> | undefined;
+      if (pvc && typeof pvc.claimName === "string" && pvc.claimName) checkRef("PersistentVolumeClaim", pvc.claimName);
+    }
+    const containers = [
+      ...(Array.isArray(podSpec?.containers) ? (podSpec.containers as Array<Record<string, unknown>>) : []),
+      ...(Array.isArray(podSpec?.initContainers) ? (podSpec.initContainers as Array<Record<string, unknown>>) : []),
+    ];
+    for (const c of containers) {
+      const envFrom = Array.isArray(c.envFrom) ? (c.envFrom as Array<Record<string, unknown>>) : [];
+      for (const ef of envFrom) {
+        const cm = ef.configMapRef as Record<string, unknown> | undefined;
+        if (cm && typeof cm.name === "string" && cm.name) checkRef("ConfigMap", cm.name);
+        const sec = ef.secretRef as Record<string, unknown> | undefined;
+        if (sec && typeof sec.name === "string" && sec.name) checkRef("Secret", sec.name);
+      }
+      const env = Array.isArray(c.env) ? (c.env as Array<Record<string, unknown>>) : [];
+      for (const e of env) {
+        const vf = e.valueFrom as Record<string, unknown> | undefined;
+        const cm = vf?.configMapKeyRef as Record<string, unknown> | undefined;
+        if (cm && typeof cm.name === "string" && cm.name) checkRef("ConfigMap", cm.name);
+        const sec = vf?.secretKeyRef as Record<string, unknown> | undefined;
+        if (sec && typeof sec.name === "string" && sec.name) checkRef("Secret", sec.name);
+      }
+    }
+  }
+
+  return Array.from(new Set(warnings));
+}
+
+function applyImportBatchPrecheck(items: ImportPreviewItem[]): ImportPreviewItem[] {
+  const duplicateCounts = new Map<string, number>();
+  for (const item of items) {
+    if (!item.valid) continue;
+    const key = resourceIdentityKey(item.kind, item.name, item.namespace);
+    duplicateCounts.set(key, (duplicateCounts.get(key) ?? 0) + 1);
+  }
+
+  const knownResources = buildKnownResourceKeySet([
+    ...manifestsByEnv.value.map((m) => ({
+      kind: m.resource_kind,
+      name: m.resource_name,
+      namespace: m.resource_namespace,
+    })),
+    ...items
+      .filter((item) => item.valid)
+      .map((item) => ({
+        kind: item.kind,
+        name: item.name,
+        namespace: item.namespace,
+      })),
+  ]);
+
+  return items.map((item) => {
+    if (!item.valid) return item;
+    const key = resourceIdentityKey(item.kind, item.name, item.namespace);
+    const duplicate = (duplicateCounts.get(key) ?? 0) > 1;
+    const warnings = [...item.warnings];
+    if (duplicate) warnings.push("批次内存在重复资源身份，导入后可能相互覆盖。");
+    if (item.conflict) warnings.push(`环境内已存在同名资源，导入时将${importOverwrite.value ? "覆盖" : "跳过"}。`);
+    warnings.push(...extractImportRefWarnings(item.yaml, knownResources));
+    return {
+      ...item,
+      duplicate,
+      warnings: Array.from(new Set(warnings)),
+    };
+  });
+}
+
+function refreshImportPreviewChecks() {
+  if (!importPreviewItems.value.length) return;
+  importPreviewItems.value = applyImportBatchPrecheck(
+    importPreviewItems.value.map((item) => ({
+      ...item,
+      warnings: [],
+      conflict: item.valid ? existingManifestConflict(item.kind, item.name, item.namespace) : false,
+      duplicate: false,
+    }))
+  );
+}
+
+function buildImportPreviewFromText(fileName: string, content: string): ImportPreviewItem[] {
+  const docs: unknown[] = [];
+  try {
+    jsYaml.loadAll(content, (doc) => {
+      docs.push(doc);
+    });
+  } catch (e) {
+    return [
+      {
+        id: makeImportPreviewId(fileName, 1),
+        fileName,
+        docIndex: 1,
+        kind: "-",
+        name: "-",
+        namespace: null,
+        yaml: content,
+        valid: false,
+        errors: [`YAML 解析失败：${e instanceof Error ? e.message : String(e)}`],
+        warnings: [],
+        conflict: false,
+        duplicate: false,
+      },
+    ];
+  }
+
+  const items: ImportPreviewItem[] = [];
+  let docIndex = 0;
+  for (const doc of docs) {
+    if (doc == null) continue;
+    docIndex += 1;
+    if (typeof doc !== "object") {
+      items.push({
+        id: makeImportPreviewId(fileName, docIndex),
+        fileName,
+        docIndex,
+        kind: "-",
+        name: "-",
+        namespace: null,
+        yaml: String(doc),
+        valid: false,
+        errors: ["该 document 不是对象结构，无法作为 Kubernetes 资源导入。"],
+        warnings: [],
+        conflict: false,
+        duplicate: false,
+      });
+      continue;
+    }
+    const yaml = buildImportYaml(doc);
+    const identity = parseIdentity(yaml);
+    if (!identity) {
+      items.push({
+        id: makeImportPreviewId(fileName, docIndex),
+        fileName,
+        docIndex,
+        kind: "-",
+        name: "-",
+        namespace: null,
+        yaml,
+        valid: false,
+        errors: ["缺少 kind 或 metadata.name，无法识别资源身份。"],
+        warnings: [],
+        conflict: false,
+        duplicate: false,
+      });
+      continue;
+    }
+    const errors: string[] = [];
+    const parsed = doc as Record<string, unknown>;
+    if (typeof parsed.apiVersion !== "string" || !parsed.apiVersion.trim()) {
+      errors.push("缺少 apiVersion。");
+    }
+    items.push({
+      id: makeImportPreviewId(fileName, docIndex),
+      fileName,
+      docIndex,
+      kind: identity.kind,
+      name: identity.name,
+      namespace: identity.namespace,
+      yaml,
+      valid: errors.length === 0,
+      errors,
+      warnings: [],
+      conflict: existingManifestConflict(identity.kind, identity.name, identity.namespace),
+      duplicate: false,
+    });
+  }
+
+  if (items.length > 0) return items;
+  return [
+    {
+      id: makeImportPreviewId(fileName, 1),
+      fileName,
+      docIndex: 1,
+      kind: "-",
+      name: "-",
+      namespace: null,
+      yaml: content,
+      valid: false,
+      errors: ["文件中未解析出可导入的 YAML document。"],
+      warnings: [],
+      conflict: false,
+      duplicate: false,
+    },
+  ];
+}
+
+async function onImportFilesSelected(event: Event) {
+  const input = event.target as HTMLInputElement | null;
+  const files = Array.from(input?.files ?? []);
+  if (!files.length) return;
+  importLoading.value = true;
+  try {
+    const chunks: string[] = [];
+    for (const file of files) {
+      const text = await file.text();
+      chunks.push([
+        "# ========================================",
+        `# 导入文件: ${file.name}`,
+        "# ========================================",
+        text.trim(),
+      ].join("\n"));
+    }
+    const merged = chunks.join("\n\n---\n\n");
+    importTextDraft.value = importTextDraft.value.trim()
+      ? `${importTextDraft.value.trim()}\n\n---\n\n${merged}`
+      : merged;
+    parseImportTextDraft();
+  } finally {
+    importLoading.value = false;
+    if (input) input.value = "";
+  }
+}
+
+function triggerImportFileSelect() {
+  importFileInput.value?.click();
+}
+
+function parseImportTextDraft() {
+  const name = "当前草稿";
+  const content = importTextDraft.value.trim();
+  if (!content) {
+    importPreviewItems.value = [];
+    importSummaryMessage.value = "请输入 YAML 文本后再解析。";
+    return;
+  }
+  const rows = applyImportBatchPrecheck(buildImportPreviewFromText(name, content));
+  importPreviewItems.value = rows;
+  importSummaryMessage.value = `已解析当前草稿，共 ${rows.length} 个条目；有效 ${rows.filter((r) => r.valid).length}，无效 ${rows.filter((r) => !r.valid).length}，批次内重复 ${rows.filter((r) => r.duplicate).length}。`;
+}
+
+function openCreateYamlDialog() {
+  if (!selectedEnvId.value) return;
+  importComponent.value = selectedComponent.value || "default";
+  importOverwrite.value = true;
+  importPreviewItems.value = [];
+  importSummaryMessage.value = null;
+  importTextDraft.value = "";
+  createYamlActive.value = true;
+}
+
+function closeCreateYamlDialog() {
+  if (importLoading.value) return;
+  if (importParseTimer.value) {
+    window.clearTimeout(importParseTimer.value);
+    importParseTimer.value = null;
+  }
+  createYamlActive.value = false;
+}
+
+async function onConfirmImport() {
+  if (!selectedEnvId.value) return;
+  const env = environments.value.find((item) => item.id === selectedEnvId.value);
+  if (!env) return;
+  const component = importComponent.value.trim() || selectedComponent.value || "default";
+  const resources = importValidItems.value.map((item) => ({
+    component,
+    kind: item.kind,
+    name: item.name,
+    namespace: item.namespace,
+    yaml: item.yaml,
+    source_file_name: item.fileName,
+    source_doc_index: item.docIndex,
+  }));
+  if (!resources.length) {
+    opError.value = "没有可导入的有效资源。";
+    return;
+  }
+
+  importLoading.value = true;
+  opError.value = null;
+  opMessage.value = null;
+  try {
+    const result = importManifestsToEnv(
+      selectedEnvId.value,
+      env.display_name,
+      resources,
+      importOverwrite.value,
+      {
+        source_kind: "text",
+        file_count: 1,
+        document_count: importPreviewItems.value.length,
+        error_count: importInvalidItems.value.length,
+        warning_count: importWarningItems.value.length,
+        component,
+      }
+    );
+    selectedComponent.value = component;
+    if (result.batchId) {
+      selectedBatchId.value = result.batchId;
+    }
+    if (resources[0]?.source_file_name) selectedSourceFile.value = resources[0].source_file_name;
+    if (result.manifestIds.length > 0) {
+      onSelectManifest(result.manifestIds[0]);
+    }
+    createYamlActive.value = false;
+    opMessage.value = `保存完成：新增 ${result.created}，更新 ${result.updated}，跳过 ${result.skipped}。`;
+  } catch (e) {
+    opError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    importLoading.value = false;
+  }
 }
 
 function openDeleteComponentDialog(componentName: string, count: number) {
@@ -381,15 +982,24 @@ watch(
 );
 
 watch(
-  () => [selectedEnvId.value, components.value.join("|")] as const,
+  () => [
+    selectedEnvId.value,
+    components.value.join("|"),
+    sourceFileItems.value.map((item) => item.name).join("|"),
+    batchItems.value.map((item) => item.id).join("|"),
+  ] as const,
   () => {
-    if (!components.value.length) {
-      selectedComponent.value = "";
-      selectedManifestId.value = "";
-      return;
-    }
-    if (!selectedComponent.value || !components.value.includes(selectedComponent.value)) {
+    if (!components.value.length) selectedComponent.value = "";
+    else if (!selectedComponent.value || !components.value.includes(selectedComponent.value)) {
       selectedComponent.value = components.value[0];
+    }
+    if (!sourceFileItems.value.length) selectedSourceFile.value = "";
+    else if (!selectedSourceFile.value || !sourceFileItems.value.some((item) => item.name === selectedSourceFile.value)) {
+      selectedSourceFile.value = sourceFileItems.value[0].name;
+    }
+    if (!batchItems.value.length) selectedBatchId.value = "";
+    else if (!selectedBatchId.value || !batchItems.value.some((item) => item.id === selectedBatchId.value)) {
+      selectedBatchId.value = batchItems.value[0].id;
     }
     diffRows.value = [];
   },
@@ -412,20 +1022,57 @@ watch(
 );
 
 watch(
-  () => [selectedComponent.value, manifestsByComponent.value.map((m) => m.id).join(",")] as const,
+  () => [importOverwrite.value, selectedEnvId.value, manifestsByEnv.value.length] as const,
   () => {
-    if (!manifestsByComponent.value.length) {
+    refreshImportPreviewChecks();
+  }
+);
+
+watch(
+  () => [createYamlActive.value, importTextDraft.value] as const,
+  ([visible, draft]) => {
+    if (importParseTimer.value) {
+      window.clearTimeout(importParseTimer.value);
+      importParseTimer.value = null;
+    }
+    if (!visible) return;
+    if (!draft.trim()) {
+      importPreviewItems.value = [];
+      importSummaryMessage.value = "可以直接编写 YAML，也可以先导入文件到当前草稿。";
+      return;
+    }
+    importSummaryMessage.value = "正在解析当前草稿…";
+    importParseTimer.value = window.setTimeout(() => {
+      parseImportTextDraft();
+      importParseTimer.value = null;
+    }, 350);
+  }
+);
+
+watch(
+  () => [
+    resourceGroupView.value,
+    selectedComponent.value,
+    selectedSourceFile.value,
+    selectedBatchId.value,
+    manifestsInActiveGroup.value.map((m) => m.id).join(","),
+  ] as const,
+  () => {
+    if (!manifestsInActiveGroup.value.length) {
       selectedManifestId.value = "";
       editYaml.value = "";
       return;
     }
-    const rememberedId = selectedManifestByComponent.value[selectedComponent.value];
-    if (rememberedId && manifestsByComponent.value.some((m) => m.id === rememberedId)) {
+    const rememberedId =
+      resourceGroupView.value === "component"
+        ? selectedManifestByComponent.value[selectedComponent.value]
+        : "";
+    if (rememberedId && manifestsInActiveGroup.value.some((m) => m.id === rememberedId)) {
       selectedManifestId.value = rememberedId;
-    } else if (!selectedManifestId.value || !manifestsByComponent.value.some((m) => m.id === selectedManifestId.value)) {
-      selectedManifestId.value = manifestsByComponent.value[0].id;
+    } else if (!selectedManifestId.value || !manifestsInActiveGroup.value.some((m) => m.id === selectedManifestId.value)) {
+      selectedManifestId.value = manifestsInActiveGroup.value[0].id;
     }
-    if (selectedComponent.value && selectedManifestId.value) {
+    if (resourceGroupView.value === "component" && selectedComponent.value && selectedManifestId.value) {
       selectedManifestByComponent.value[selectedComponent.value] = selectedManifestId.value;
     }
     diffRows.value = [];
@@ -525,69 +1172,14 @@ function parseIdentity(yaml: string): ParseIdentity | null {
 }
 
 function extractRefCheckWarnings(yaml: string, inventory: OrchestratorManifest[]): string[] {
-  const warnings: string[] = [];
-  let parsed: unknown;
-  try {
-    parsed = jsYaml.load(yaml);
-  } catch {
-    return warnings;
-  }
-  if (!parsed || typeof parsed !== "object") return warnings;
-  const obj = parsed as Record<string, unknown>;
-  const kind = typeof obj.kind === "string" ? obj.kind : "";
-  if (!["Deployment", "StatefulSet", "DaemonSet"].includes(kind)) return warnings;
-
-  const known = new Set(
-    inventory.map((m) => `${m.resource_kind}|${m.resource_namespace ?? ""}|${m.resource_name}`)
+  const known = buildKnownResourceKeySet(
+    inventory.map((m) => ({
+      kind: m.resource_kind,
+      name: m.resource_name,
+      namespace: m.resource_namespace,
+    }))
   );
-  const spec = obj.spec as Record<string, unknown> | undefined;
-  const template = spec?.template as Record<string, unknown> | undefined;
-  const podSpec = template?.spec as Record<string, unknown> | undefined;
-  const metadata = obj.metadata as Record<string, unknown> | undefined;
-  const defaultNs =
-    metadata && typeof metadata.namespace === "string" && metadata.namespace.trim()
-      ? metadata.namespace
-      : "";
-
-  const checkRef = (targetKind: "ConfigMap" | "Secret", name: string) => {
-    const key = `${targetKind}|${defaultNs}|${name}`;
-    if (!known.has(key) && !known.has(`${targetKind}||${name}`)) {
-      warnings.push(`未在当前组件中发现引用资源：${targetKind}/${name}`);
-    }
-  };
-
-  const volumes = Array.isArray(podSpec?.volumes) ? (podSpec?.volumes as Array<Record<string, unknown>>) : [];
-  for (const v of volumes) {
-    const cm = v.configMap as Record<string, unknown> | undefined;
-    if (cm && typeof cm.name === "string" && cm.name) checkRef("ConfigMap", cm.name);
-    const sec = v.secret as Record<string, unknown> | undefined;
-    if (sec && typeof sec.secretName === "string" && sec.secretName) checkRef("Secret", sec.secretName);
-  }
-
-  const containers = [
-    ...(Array.isArray(podSpec?.containers) ? (podSpec?.containers as Array<Record<string, unknown>>) : []),
-    ...(Array.isArray(podSpec?.initContainers)
-      ? (podSpec?.initContainers as Array<Record<string, unknown>>)
-      : []),
-  ];
-  for (const c of containers) {
-    const envFrom = Array.isArray(c.envFrom) ? (c.envFrom as Array<Record<string, unknown>>) : [];
-    for (const ef of envFrom) {
-      const cm = ef.configMapRef as Record<string, unknown> | undefined;
-      if (cm && typeof cm.name === "string" && cm.name) checkRef("ConfigMap", cm.name);
-      const sec = ef.secretRef as Record<string, unknown> | undefined;
-      if (sec && typeof sec.name === "string" && sec.name) checkRef("Secret", sec.name);
-    }
-    const env = Array.isArray(c.env) ? (c.env as Array<Record<string, unknown>>) : [];
-    for (const e of env) {
-      const vf = e.valueFrom as Record<string, unknown> | undefined;
-      const cm = vf?.configMapKeyRef as Record<string, unknown> | undefined;
-      if (cm && typeof cm.name === "string" && cm.name) checkRef("ConfigMap", cm.name);
-      const sec = vf?.secretKeyRef as Record<string, unknown> | undefined;
-      if (sec && typeof sec.name === "string" && sec.name) checkRef("Secret", sec.name);
-    }
-  }
-  return Array.from(new Set(warnings));
+  return extractImportRefWarnings(yaml, known);
 }
 
 function validateCurrent(): boolean {
@@ -618,7 +1210,7 @@ function validateCurrent(): boolean {
   }
   if (validationErrors.value.length > 0) return false;
 
-  validationWarnings.value = extractRefCheckWarnings(editYaml.value, manifestsByComponent.value);
+  validationWarnings.value = extractRefCheckWarnings(editYaml.value, manifestsInActiveGroup.value);
   return true;
 }
 
@@ -667,29 +1259,58 @@ async function onApplyCurrent() {
   }
 }
 
+function buildComponentApplyItems(): ComponentApplyItem[] {
+  return componentApplyPlan.value.map((item) => ({
+    manifestId: item.id,
+    kind: item.resource_kind,
+    name: item.resource_name,
+    namespace: item.resource_namespace,
+    yaml: item.yaml,
+    fileName: item.source_file_name ?? null,
+    status: "pending",
+    error: null,
+  }));
+}
+
+function openComponentApplyFlow() {
+  componentApplyItems.value = buildComponentApplyItems();
+  componentApplyPhase.value = "idle";
+  componentApplyDialogVisible.value = true;
+}
+
+function closeComponentApplyDialog() {
+  if (componentApplyPhase.value === "applying") return;
+  componentApplyDialogVisible.value = false;
+}
+
 async function onApplyComponent() {
   if (!selectedEnvId.value || !selectedComponent.value) return;
-  const list = [...manifestsByComponent.value].sort((a, b) => {
-    const wa = APPLY_ORDER[a.resource_kind] ?? 999;
-    const wb = APPLY_ORDER[b.resource_kind] ?? 999;
-    if (wa !== wb) return wa - wb;
-    return a.resource_name.localeCompare(b.resource_name);
-  });
-  if (!list.length) return;
+  if (!componentApplyItems.value.length) {
+    componentApplyItems.value = buildComponentApplyItems();
+  }
+  if (!componentApplyItems.value.length) return;
   applying.value = true;
+  componentApplyPhase.value = "applying";
   opError.value = null;
   opMessage.value = null;
   const failed: string[] = [];
-  for (const item of list) {
+  for (const item of componentApplyItems.value) {
+    item.status = "running";
+    item.error = null;
     try {
       await deployYamlToEnv(selectedEnvId.value, item.yaml);
-      saveManifestYaml(item.id, item.yaml, "apply");
-      delete manifestDraftCache.value[item.id];
+      saveManifestYaml(item.manifestId, item.yaml, "apply");
+      delete manifestDraftCache.value[item.manifestId];
+      item.status = "success";
     } catch (e) {
-      failed.push(`${item.resource_kind}/${item.resource_name}: ${e instanceof Error ? e.message : String(e)}`);
+      const message = e instanceof Error ? e.message : String(e);
+      item.status = "failed";
+      item.error = message;
+      failed.push(`${item.kind}/${item.name}: ${message}`);
     }
   }
   applying.value = false;
+  componentApplyPhase.value = "completed";
   if (failed.length) {
     opError.value = `组件应用部分失败：${failed.join("；")}`;
   } else {
@@ -736,6 +1357,16 @@ async function onApplyCurrentFromDialog() {
 async function onApplyComponentFromDialog() {
   if (!canApplyComponent.value || applying.value) return;
   applyDialogVisible.value = false;
+  openComponentApplyFlow();
+}
+
+async function startComponentApplyFromDialog() {
+  if (applying.value || !componentApplyItems.value.length) return;
+  componentApplyItems.value = componentApplyItems.value.map((item) => ({
+    ...item,
+    status: "pending",
+    error: null,
+  }));
   await onApplyComponent();
 }
 
@@ -963,25 +1594,6 @@ function formatCodeCell(row: DiffRow, side: "left" | "right"): string {
   return renderInlineDiff(row.leftText, row.rightText, side);
 }
 
-function onCreateManifest() {
-  if (!selectedEnvId.value) return;
-  const env = environments.value.find((e) => e.id === selectedEnvId.value);
-  if (!env) return;
-  const component = selectedComponent.value || "default";
-  const item = createManifestDraft(selectedEnvId.value, env.display_name, component, [
-    "apiVersion: v1",
-    "kind: ConfigMap",
-    "metadata:",
-    "  name: example-config",
-    "  namespace: default",
-    "data:",
-    "  key: value",
-    "",
-  ].join("\n"));
-  selectedComponent.value = item.component;
-  onSelectManifest(item.id);
-}
-
 function onRestoreHistory(yaml: string) {
   editYaml.value = yaml;
   if (selectedManifest.value) {
@@ -1130,11 +1742,28 @@ function validatePackageVersion(version: OrchestratorPackageVersion): string[] {
 }
 
 function sortPackageResources(list: OrchestratorPackageResourceSnapshot[]): OrchestratorPackageResourceSnapshot[] {
+  const delayedWebhookKeys = buildDelayedWebhookKeys(
+    list.map((item) => ({
+      resource_kind: item.resource_kind,
+      resource_name: item.resource_name,
+      resource_namespace: item.resource_namespace,
+      yaml: item.yaml,
+    }))
+  );
   return [...list].sort((a, b) => {
-    const wa = APPLY_ORDER[a.resource_kind] ?? 999;
-    const wb = APPLY_ORDER[b.resource_kind] ?? 999;
+    const wa = applyWeight(
+      a.resource_kind,
+      delayedWebhookKeys.has(resourceIdentityKey(a.resource_kind, a.resource_name, a.resource_namespace))
+    );
+    const wb = applyWeight(
+      b.resource_kind,
+      delayedWebhookKeys.has(resourceIdentityKey(b.resource_kind, b.resource_name, b.resource_namespace))
+    );
     if (wa !== wb) return wa - wb;
     if (a.component !== b.component) return a.component.localeCompare(b.component);
+    if ((a.resource_namespace || "") !== (b.resource_namespace || "")) {
+      return (a.resource_namespace || "").localeCompare(b.resource_namespace || "");
+    }
     return a.resource_name.localeCompare(b.resource_name);
   });
 }
@@ -1288,23 +1917,35 @@ async function onConfirmPackageAction() {
         </option>
       </select>
       <span v-if="activeView === 'resources'" class="hint">
-        组件：{{ selectedComponent || "-" }}（{{ manifestsByComponent.length }} 资源）
+        {{
+          createYamlActive
+            ? "当前正在编辑新建草稿"
+            : `${resourceGroupView === "component" ? "组件" : resourceGroupView === "file" ? "文件" : "批次"}：${activeGroupLabel || "-"}（${manifestsInActiveGroup.length} 资源）`
+        }}
       </span>
       <button
         v-if="activeView === 'resources'"
         type="button"
         class="btn btn-create"
         :disabled="!selectedEnvId"
-        @click="onCreateManifest"
+        @click="openCreateYamlDialog"
       >
-        新建资源
+        新建 YAML
       </button>
-      <button v-if="activeView === 'resources'" type="button" class="btn btn-save" :disabled="!selectedManifestId" @click="onSaveYaml">保存</button>
+      <button
+        v-if="activeView === 'resources'"
+        type="button"
+        class="btn btn-save"
+        :disabled="!selectedManifestId || createYamlActive"
+        @click="onSaveYaml"
+      >
+        保存
+      </button>
       <button
         v-if="activeView === 'resources'"
         type="button"
         class="btn btn-primary"
-        :disabled="!canOpenApplyDialog || applying"
+        :disabled="!canOpenApplyDialog || applying || createYamlActive"
         @click="openApplyDialog"
       >
         {{ applying ? "应用中…" : "应用" }}
@@ -1313,7 +1954,7 @@ async function onConfirmPackageAction() {
         v-if="activeView === 'resources'"
         type="button"
         class="btn btn-diff"
-        :disabled="!selectedManifestId || diffLoading"
+        :disabled="!selectedManifestId || diffLoading || createYamlActive"
         @click="loadDiff"
       >
         {{ diffLoading ? "生成中…" : "查看差异" }}
@@ -1322,7 +1963,7 @@ async function onConfirmPackageAction() {
         v-if="activeView === 'resources'"
         type="button"
         class="btn btn-copy"
-        :disabled="!canOpenCopyDialog || copyLoading"
+        :disabled="!canOpenCopyDialog || copyLoading || createYamlActive"
         @click="openCopyDialog"
       >
         {{ copyLoading ? "复制中…" : "复制到环境" }}
@@ -1335,17 +1976,44 @@ async function onConfirmPackageAction() {
         <template v-else>
           <div class="component-switcher">
             <div class="component-switcher-head">
-              <span>组件切换</span>
+              <span>资源视图</span>
               <small v-if="manifestDraftCount > 0">未保存草稿 {{ manifestDraftCount }}</small>
+            </div>
+            <div class="group-view-switch">
+              <button
+                type="button"
+                class="group-view-btn"
+                :class="{ active: resourceGroupView === 'component' }"
+                @click="resourceGroupView = 'component'"
+              >
+                组件
+              </button>
+              <button
+                type="button"
+                class="group-view-btn"
+                :class="{ active: resourceGroupView === 'file' }"
+                @click="resourceGroupView = 'file'"
+              >
+                文件
+              </button>
+              <button
+                type="button"
+                class="group-view-btn"
+                :class="{ active: resourceGroupView === 'batch' }"
+                @click="resourceGroupView = 'batch'"
+              >
+                批次
+              </button>
             </div>
             <input
               v-model="componentFilterKeyword"
               type="text"
               class="component-search"
-              placeholder="搜索组件名称"
+              :placeholder="resourceGroupView === 'component' ? '搜索组件名称' : resourceGroupView === 'file' ? '搜索文件名' : '搜索批次名称'"
             />
             <div class="component-list">
               <button
+                v-if="resourceGroupView === 'component'"
                 v-for="item in filteredComponentItems"
                 :key="item.name"
                 type="button"
@@ -1367,27 +2035,61 @@ async function onConfirmPackageAction() {
                   </button>
                 </div>
               </button>
-              <div v-if="!filteredComponentItems.length" class="empty">没有匹配的组件</div>
+              <button
+                v-else-if="resourceGroupView === 'file'"
+                v-for="item in sourceFileItems.filter((entry) => entry.name.toLowerCase().includes(componentFilterKeyword.trim().toLowerCase()))"
+                :key="item.name"
+                type="button"
+                class="component-item"
+                :class="{ active: selectedSourceFile === item.name }"
+                @click="onSelectSourceFile(item.name)"
+              >
+                <span class="component-item-name">{{ item.name }}</span>
+                <div class="component-item-actions">
+                  <small>{{ item.count }}</small>
+                </div>
+              </button>
+              <button
+                v-else
+                v-for="item in batchItems.filter((entry) => entry.name.toLowerCase().includes(componentFilterKeyword.trim().toLowerCase()))"
+                :key="item.id"
+                type="button"
+                class="component-item"
+                :class="{ active: selectedBatchId === item.id }"
+                @click="onSelectBatch(item.id)"
+              >
+                <span class="component-item-name">{{ item.name }}</span>
+                <div class="component-item-actions">
+                  <small>{{ item.count }}</small>
+                </div>
+              </button>
+              <div
+                v-if="
+                  (resourceGroupView === 'component' && !filteredComponentItems.length) ||
+                  (resourceGroupView === 'file' && !sourceFileItems.filter((entry) => entry.name.toLowerCase().includes(componentFilterKeyword.trim().toLowerCase())).length) ||
+                  (resourceGroupView === 'batch' && !batchItems.filter((entry) => entry.name.toLowerCase().includes(componentFilterKeyword.trim().toLowerCase())).length)
+                "
+                class="empty"
+              >
+                {{ resourceGroupView === "component" ? "没有匹配的组件" : resourceGroupView === "file" ? "没有匹配的文件" : "没有匹配的批次" }}
+              </div>
             </div>
           </div>
 
           <div class="list-title">
             <span>资源列表</span>
-            <small>{{ selectedComponent || "-" }}</small>
+            <small>{{ activeGroupLabel || "-" }}</small>
           </div>
           <div class="resource-list-panel">
             <div
-              v-for="m in manifestsByComponent"
+              v-for="m in manifestsInActiveGroup"
               :key="m.id"
               class="item"
               :class="{ active: selectedManifestId === m.id }"
               @click="onSelectManifest(m.id)"
             >
               <div class="item-title">
-                <span>
-                  {{ m.resource_kind }} / {{ m.resource_name }}
-                  <strong v-if="hasManifestDraft(m.id)" class="draft-tag">草稿</strong>
-                </span>
+                <span class="item-kind">{{ m.resource_kind }}</span>
                 <button
                   type="button"
                   class="card-delete-btn"
@@ -1398,15 +2100,56 @@ async function onConfirmPackageAction() {
                   ❌
                 </button>
               </div>
-              <div class="item-sub">{{ m.resource_namespace || "default" }}</div>
+              <div class="item-name-row">
+                <strong class="item-name">{{ m.resource_name }}</strong>
+                <strong v-if="hasManifestDraft(m.id)" class="draft-tag">草稿</strong>
+              </div>
+              <div class="item-sub">
+                <span>命名空间：{{ m.resource_namespace || "default" }}</span>
+              </div>
+              <div v-if="m.source_file_name" class="item-meta">
+                <span>{{ m.source_file_name }}#{{ m.source_doc_index ?? 1 }}</span>
+              </div>
             </div>
-            <div v-if="!manifestsByComponent.length" class="empty">当前组件暂无资源</div>
+            <div v-if="!manifestsInActiveGroup.length" class="empty">
+              {{ resourceGroupView === "component" ? "当前组件暂无资源" : resourceGroupView === "file" ? "当前文件暂无资源" : "当前批次暂无资源" }}
+            </div>
           </div>
         </template>
       </aside>
 
       <section class="editor-panel">
-        <div v-if="selectedManifest" class="meta-row">
+        <input
+          ref="importFileInput"
+          type="file"
+          accept=".yaml,.yml"
+          multiple
+          class="import-file-input"
+          @change="onImportFilesSelected"
+        />
+        <div v-if="createYamlActive" class="meta-row">
+          <div class="meta-component-editor">
+            <div class="meta-field">
+              <span>新建 YAML</span>
+              <strong class="meta-component-name">{{ importComponent || selectedComponent || "default" }}</strong>
+            </div>
+          </div>
+          <div class="meta-actions">
+            <button type="button" class="btn btn-import" :disabled="importLoading" @click="triggerImportFileSelect">
+              {{ importLoading ? "导入中…" : "导入文件" }}
+            </button>
+            <button
+              type="button"
+              class="btn"
+              :disabled="importLoading"
+              @click="importTextDraft = ''; importPreviewItems = []; importSummaryMessage = null"
+            >
+              清空
+            </button>
+            <button type="button" class="btn" :disabled="importLoading" @click="closeCreateYamlDialog">关闭</button>
+          </div>
+        </div>
+        <div v-else-if="selectedManifest" class="meta-row">
           <div class="meta-component-editor">
             <div class="meta-field">
               <span>当前所属组件</span>
@@ -1416,39 +2159,133 @@ async function onConfirmPackageAction() {
           </div>
           <div class="meta-actions">
             <span class="hint">资源：{{ selectedManifest.resource_kind }}/{{ selectedManifest.resource_name }}</span>
+            <span v-if="selectedManifest.source_file_name" class="hint">
+              来源：{{ selectedManifest.source_file_name }}#{{ selectedManifest.source_doc_index ?? 1 }}
+            </span>
           </div>
         </div>
-        <CodeEditor
-          v-model:value="editYaml"
-          language="yaml"
-          :theme="monacoTheme"
-          :options="editorOptions"
-          class="editor"
-        />
-        <div v-if="validationErrors.length" class="message message-error">
-          {{ validationErrors.join("；") }}
+        <template v-if="createYamlActive">
+          <div class="create-toolbar">
+            <label class="field-label create-field">
+              <span>保存到组件</span>
+              <input v-model="importComponent" type="text" class="assign-input import-input" placeholder="输入组件名称" />
+            </label>
+            <label class="field-check">
+              <input v-model="importOverwrite" type="checkbox" :disabled="importLoading" />
+              遇到同名资源时覆盖已有编排资产
+            </label>
+            <div class="create-toolbar-actions">
+              <button type="button" class="btn btn-primary" :disabled="!canConfirmImport" @click="onConfirmImport">
+                {{
+                  importLoading
+                    ? "保存中…"
+                    : importValidItems.length === 1
+                      ? "保存资源"
+                      : `保存 ${importValidItems.length} 个资源`
+                }}
+              </button>
+            </div>
+          </div>
+          <CodeEditor
+            v-model:value="importTextDraft"
+            language="yaml"
+            :theme="monacoTheme"
+            :options="editorOptions"
+            class="editor"
+          />
+          <div v-if="importSummaryMessage" class="message message-ok">{{ importSummaryMessage }}</div>
+          <div v-if="opError" class="message message-error">{{ opError }}</div>
+          <div v-if="opMessage" class="message message-ok">{{ opMessage }}</div>
+        </template>
+        <template v-else-if="selectedManifest">
+          <CodeEditor
+            v-model:value="editYaml"
+            language="yaml"
+            :theme="monacoTheme"
+            :options="editorOptions"
+            class="editor"
+          />
+          <div v-if="validationErrors.length" class="message message-error">
+            {{ validationErrors.join("；") }}
+          </div>
+          <div v-if="validationWarnings.length" class="message message-warn">
+            {{ validationWarnings.join("；") }}
+          </div>
+          <div v-if="opError" class="message message-error">{{ opError }}</div>
+          <div v-if="opMessage" class="message message-ok">{{ opMessage }}</div>
+        </template>
+        <div v-else class="editor-empty-state">
+          <div class="editor-empty-icon">YAML</div>
+          <div class="editor-empty-title">还没有打开任何资源</div>
+          <div class="editor-empty-desc">
+            可以从左侧选择一个已有资源继续编辑，或者直接新建一份 YAML 草稿。
+          </div>
+          <div class="editor-empty-actions">
+            <button type="button" class="btn btn-primary" @click="openCreateYamlDialog">新建 YAML</button>
+            <button
+              v-if="manifestsInActiveGroup.length"
+              type="button"
+              class="btn"
+              @click="onSelectManifest(manifestsInActiveGroup[0].id)"
+            >
+              打开第一个资源
+            </button>
+          </div>
         </div>
-        <div v-if="validationWarnings.length" class="message message-warn">
-          {{ validationWarnings.join("；") }}
-        </div>
-        <div v-if="opError" class="message message-error">{{ opError }}</div>
-        <div v-if="opMessage" class="message message-ok">{{ opMessage }}</div>
       </section>
 
       <aside class="history">
-        <div class="history-title">历史快照</div>
-        <div v-if="selectedHistory.length === 0" class="empty">暂无历史</div>
-        <button
-          v-for="h in selectedHistory"
-          :key="h.id"
-          type="button"
-          class="history-item"
-          :class="`history-${h.action}`"
-          @click="onRestoreHistory(h.yaml)"
-        >
-          <span>{{ h.action }}</span>
-          <span>{{ new Date(h.at).toLocaleString() }}</span>
-        </button>
+        <template v-if="createYamlActive">
+          <div class="history-title">解析预览</div>
+          <div class="copy-tip preview-tip">可以直接编写 YAML，也可以先导入文件到当前草稿。</div>
+          <div v-if="!importPreviewItems.length" class="empty">草稿为空或尚未识别到资源。</div>
+          <div v-else class="create-preview-list">
+            <div
+              v-for="item in importPreviewItems"
+              :key="item.id"
+              class="import-preview-item"
+              :class="{
+                valid: item.valid && !item.conflict && !item.duplicate && item.warnings.length === 0,
+                conflict: item.valid && (item.conflict || item.duplicate || item.warnings.length > 0),
+                invalid: !item.valid,
+              }"
+            >
+              <div class="import-preview-title-row">
+                <span class="import-preview-type">{{ item.valid ? item.kind : "未识别资源" }}</span>
+                <span class="import-preview-doc">文档 #{{ item.docIndex }}</span>
+              </div>
+              <div class="import-preview-name-row">
+                <strong class="import-preview-name">{{ item.valid ? item.name : "请检查 YAML 结构" }}</strong>
+              </div>
+              <div class="import-preview-main">
+                <span>{{ item.valid ? `命名空间：${item.namespace || "default"}` : "当前文档未识别出有效资源" }}</span>
+              </div>
+              <div v-if="item.fileName !== '当前草稿'" class="import-preview-meta">
+                <small class="import-preview-source">来源文件：{{ item.fileName }}</small>
+              </div>
+              <div v-for="(msg, idx) in item.errors" :key="`err-side-${item.id}-${idx}`" class="import-preview-tip error-tip">{{ msg }}</div>
+              <div v-for="(msg, idx) in item.warnings" :key="`warn-side-${item.id}-${idx}`" class="import-preview-tip">
+                {{ msg }}
+              </div>
+            </div>
+          </div>
+        </template>
+        <template v-else>
+          <div class="history-title">历史快照</div>
+          <div v-if="!selectedManifest" class="empty">先选择一个资源，或新建 YAML 后再查看这里的内容。</div>
+          <div v-else-if="selectedHistory.length === 0" class="empty">暂无历史</div>
+          <button
+            v-for="h in selectedHistory"
+            :key="h.id"
+            type="button"
+            class="history-item"
+            :class="`history-${h.action}`"
+            @click="onRestoreHistory(h.yaml)"
+          >
+            <span>{{ h.action }}</span>
+            <span>{{ new Date(h.at).toLocaleString() }}</span>
+          </button>
+        </template>
       </aside>
     </div>
 
@@ -1779,6 +2616,68 @@ async function onConfirmPackageAction() {
       </div>
     </Teleport>
     <Teleport to="body">
+      <div v-if="componentApplyDialogVisible" class="apply-modal-overlay" @click.self="closeComponentApplyDialog">
+        <section class="apply-modal apply-flow-modal" role="dialog" aria-label="应用组件流程">
+          <header class="apply-head">
+            <h3>应用组件</h3>
+            <div class="apply-flow-subtitle">
+              环境：{{ environments.find((env) => env.id === selectedEnvId)?.display_name || "-" }} · 组件：{{ selectedComponent || "-" }}
+            </div>
+          </header>
+          <div class="apply-body apply-flow-body">
+            <div class="apply-flow-summary">
+              <span class="risk-pill notice">总数 {{ componentApplySummary.total }}</span>
+              <span class="risk-pill notice">未开始 {{ componentApplySummary.pending }}</span>
+              <span class="risk-pill notice" v-if="componentApplySummary.running">进行中 {{ componentApplySummary.running }}</span>
+              <span class="risk-pill" :class="componentApplySummary.failed ? 'warning' : 'notice'">成功 {{ componentApplySummary.success }}</span>
+              <span class="risk-pill error" v-if="componentApplySummary.failed">失败 {{ componentApplySummary.failed }}</span>
+            </div>
+            <div class="copy-tip">
+              {{ componentApplyPhase === "idle" ? "系统会按资源依赖顺序逐条应用当前组件。" : componentApplyPhase === "applying" ? "正在按顺序应用资源，请留意每条状态变化。" : "本次组件应用已经完成，可在下方查看成功与失败详情。" }}
+            </div>
+            <div class="apply-flow-list">
+              <div
+                v-for="item in componentApplyItems"
+                :key="item.manifestId"
+                class="apply-flow-item"
+                :class="`status-${item.status}`"
+              >
+                <div class="apply-flow-item-head">
+                  <span class="apply-flow-kind">{{ item.kind }}</span>
+                  <span class="apply-flow-status">{{ item.status === "pending" ? "未开始" : item.status === "running" ? "应用中" : item.status === "success" ? "成功" : "失败" }}</span>
+                </div>
+                <div class="apply-flow-name">{{ item.name }}</div>
+                <div class="apply-flow-meta">
+                  <span>命名空间：{{ item.namespace || "default" }}</span>
+                  <span v-if="item.fileName">来源文件：{{ item.fileName }}</span>
+                </div>
+                <div v-if="item.error" class="apply-flow-error">{{ item.error }}</div>
+              </div>
+            </div>
+          </div>
+          <footer class="apply-foot">
+            <button type="button" class="btn" :disabled="componentApplyPhase === 'applying'" @click="closeComponentApplyDialog">
+              {{ componentApplyPhase === "completed" ? "关闭" : "取消" }}
+            </button>
+            <button
+              type="button"
+              class="btn btn-primary"
+              :disabled="componentApplyPhase === 'applying' || !componentApplyItems.length"
+              @click="startComponentApplyFromDialog"
+            >
+              {{
+                componentApplyPhase === "idle"
+                  ? "开始应用"
+                  : componentApplySummary.failed
+                    ? "重新应用"
+                    : "再次应用"
+              }}
+            </button>
+          </footer>
+        </section>
+      </div>
+    </Teleport>
+    <Teleport to="body">
       <div v-if="copyDialogVisible" class="apply-modal-overlay" @click.self="closeCopyDialog">
         <section class="apply-modal" role="dialog" aria-label="复制组件到环境">
           <header class="apply-head">
@@ -1982,6 +2881,20 @@ async function onConfirmPackageAction() {
   background: #dcfce7;
   color: #f0fdf4;
 }
+.btn-import {
+  border-color: #d97706;
+  background: #d97706;
+  color: #fff;
+}
+.btn-import:hover:not(:disabled) {
+  border-color: #b45309;
+  background: #b45309;
+}
+.btn-import:disabled {
+  border-color: #fcd34d;
+  background: #fde68a;
+  color: #fffbeb;
+}
 .btn-copy {
   border-color: #0f766e;
   background: #0f766e;
@@ -2066,6 +2979,26 @@ async function onConfirmPackageAction() {
 .component-switcher-head small {
   color: #0f766e;
 }
+.group-view-switch {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.3rem;
+  margin-bottom: 0.4rem;
+}
+.group-view-btn {
+  height: 1.8rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  color: #475569;
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+.group-view-btn.active {
+  border-color: #2563eb;
+  background: #dbeafe;
+  color: #1d4ed8;
+}
 .component-search {
   width: 100%;
   height: 1.8rem;
@@ -2141,12 +3074,33 @@ async function onConfirmPackageAction() {
   background: #eff6ff;
 }
 .item-title {
-  font-size: 0.8125rem;
-  font-weight: 600;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.35rem;
+}
+.item-kind {
+  color: #334155;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+.item-name-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  margin-top: 0.1rem;
+}
+.item-name {
+  display: block;
+  min-width: 0;
+  flex: 1;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #0f172a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .card-delete-btn {
   width: 1.2rem;
@@ -2169,17 +3123,26 @@ async function onConfirmPackageAction() {
   opacity: 0.95;
 }
 .draft-tag {
-  margin-left: 0.35rem;
   border: 1px solid #f59e0b;
   background: #fffbeb;
   color: #92400e;
   border-radius: 999px;
   font-size: 0.66rem;
   padding: 0.05rem 0.35rem;
+  flex-shrink: 0;
 }
 .item-sub {
   font-size: 0.75rem;
   color: #64748b;
+  margin-top: 0.12rem;
+}
+.item-meta {
+  font-size: 0.7rem;
+  color: #94a3b8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 0.08rem;
 }
 .editor-panel {
   display: flex;
@@ -2247,9 +3210,71 @@ async function onConfirmPackageAction() {
   align-items: center;
   gap: 0.55rem;
 }
+.create-toolbar {
+  display: flex;
+  align-items: end;
+  gap: 0.75rem;
+  padding: 0.65rem 0.75rem;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f8fafc;
+  flex-wrap: wrap;
+}
+.create-field {
+  min-width: 220px;
+  flex: 1;
+}
+.create-toolbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
 .editor {
   flex: 1;
   min-height: 260px;
+}
+.editor-empty-state {
+  flex: 1;
+  min-height: 260px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  padding: 1.5rem;
+  text-align: center;
+  background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
+}
+.editor-empty-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 3.2rem;
+  height: 3.2rem;
+  padding: 0 0.9rem;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 0.92rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.editor-empty-title {
+  font-size: 0.98rem;
+  font-weight: 600;
+  color: #0f172a;
+}
+.editor-empty-desc {
+  max-width: 360px;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  color: #64748b;
+}
+.editor-empty-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  justify-content: center;
 }
 .message {
   margin: 0.35rem 0.5rem 0.25rem;
@@ -2308,6 +3333,13 @@ async function onConfirmPackageAction() {
 }
 .history-item:hover {
   filter: brightness(0.98);
+}
+.preview-tip {
+  padding: 0 0.25rem 0.5rem;
+}
+.create-preview-list {
+  display: grid;
+  gap: 0.45rem;
 }
 .empty {
   color: #94a3b8;
@@ -2441,6 +3473,12 @@ async function onConfirmPackageAction() {
   box-shadow: 0 24px 48px rgba(15, 23, 42, 0.24);
   overflow: hidden;
 }
+.apply-flow-modal {
+  width: min(92vw, 760px);
+}
+.import-modal {
+  width: min(92vw, 760px);
+}
 .apply-head {
   padding: 0.75rem 0.9rem;
   border-bottom: 1px solid #e2e8f0;
@@ -2471,6 +3509,184 @@ async function onConfirmPackageAction() {
 .copy-tip {
   font-size: 0.75rem;
   color: #64748b;
+}
+.import-file-input {
+  display: none;
+}
+.import-upload-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border: 1px dashed #cbd5e1;
+  border-radius: 10px;
+  background: #fff7ed;
+  padding: 0.8rem;
+}
+.import-upload-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.8rem;
+  color: #9a3412;
+}
+.import-text-panel {
+  display: grid;
+  gap: 0.65rem;
+}
+.import-textarea {
+  min-height: 220px;
+  resize: vertical;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 0.65rem 0.75rem;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  background: #fff;
+}
+.import-text-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.import-input {
+  width: 100%;
+}
+.import-preview {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  overflow: hidden;
+}
+.import-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.65rem 0.8rem;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f8fafc;
+  font-size: 0.8rem;
+  color: #334155;
+}
+.import-preview-head small {
+  color: #64748b;
+}
+.import-risk-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  padding: 0.55rem 0.8rem 0;
+  background: #fff;
+}
+.risk-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.08rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+.risk-pill.error {
+  background: #fee2e2;
+  color: #991b1b;
+}
+.risk-pill.warning {
+  background: #fef3c7;
+  color: #92400e;
+}
+.risk-pill.notice {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+.import-preview-list {
+  max-height: 320px;
+  overflow: auto;
+  padding: 0.6rem;
+  display: grid;
+  gap: 0.45rem;
+  background: #fff;
+}
+.import-preview-item {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 0.55rem 0.65rem;
+  display: grid;
+  gap: 0.28rem;
+}
+.import-preview-item.valid {
+  border-color: #86efac;
+  background: #f0fdf4;
+}
+.import-preview-item.conflict {
+  border-color: #fbbf24;
+  background: #fffbeb;
+}
+.import-preview-item.invalid {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+.import-preview-title-row,
+.import-preview-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  min-width: 0;
+}
+.import-preview-name-row,
+.import-preview-meta {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.import-preview-type {
+  color: #334155;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+.import-preview-name {
+  display: block;
+  width: 100%;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #0f172a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.import-preview-doc,
+.import-preview-main span,
+.import-preview-main small {
+  color: #64748b;
+}
+.import-preview-main {
+  justify-content: flex-start;
+  gap: 0.4rem;
+}
+.import-preview-main span,
+.import-preview-main small {
+  font-size: 0.74rem;
+}
+.import-preview-meta {
+  justify-content: flex-start;
+}
+.import-preview-source {
+  color: #94a3b8;
+  font-size: 0.7rem;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.import-preview-tip {
+  font-size: 0.75rem;
+  color: #92400e;
+}
+.import-preview-tip.error-tip {
+  color: #b91c1c;
 }
 .apply-body {
   display: grid;
@@ -2504,6 +3720,83 @@ async function onConfirmPackageAction() {
 .apply-option-desc {
   font-size: 0.78rem;
   color: #64748b;
+}
+.apply-flow-subtitle {
+  margin-top: 0.3rem;
+  font-size: 0.76rem;
+  color: #64748b;
+}
+.apply-flow-body {
+  gap: 0.75rem;
+}
+.apply-flow-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.apply-flow-list {
+  max-height: 420px;
+  overflow: auto;
+  display: grid;
+  gap: 0.55rem;
+}
+.apply-flow-item {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 0.65rem 0.75rem;
+  background: #fff;
+  display: grid;
+  gap: 0.28rem;
+}
+.apply-flow-item.status-running {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+.apply-flow-item.status-success {
+  border-color: #86efac;
+  background: #f0fdf4;
+}
+.apply-flow-item.status-failed {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+.apply-flow-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  min-width: 0;
+}
+.apply-flow-kind {
+  color: #334155;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+.apply-flow-status {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #475569;
+}
+.apply-flow-name {
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: #0f172a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.apply-flow-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.75rem;
+  font-size: 0.74rem;
+  color: #64748b;
+}
+.apply-flow-error {
+  font-size: 0.74rem;
+  color: #b91c1c;
+  line-height: 1.45;
 }
 .apply-foot {
   display: flex;
