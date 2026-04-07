@@ -188,6 +188,9 @@ const editorOptions = {
 const manifestsByEnv = computed(() =>
   manifests.value.filter((m) => m.env_id === selectedEnvId.value)
 );
+const selectedEnvironment = computed(() =>
+  environments.value.find((env) => env.id === selectedEnvId.value) ?? null
+);
 
 const components = computed(() => {
   const names = new Set<string>();
@@ -1891,90 +1894,67 @@ async function onConfirmPackageAction() {
 <template>
   <div class="orchestrator-layout">
     <header class="toolbar">
-      <span class="title">编排中心</span>
-      <div class="view-switch">
+      <div class="toolbar-start">
+        <div class="toolbar-brand">
+          <span class="title">编排中心</span>
+          <span v-if="activeView === 'resources'" class="toolbar-subtitle">
+            {{
+              createYamlActive
+                ? "当前正在编辑新建草稿"
+                : `${resourceGroupView === "component" ? "组件" : resourceGroupView === "file" ? "文件" : "批次"}：${activeGroupLabel || "-"}（${manifestsInActiveGroup.length} 资源）`
+            }}
+          </span>
+        </div>
+        <div class="view-switch">
+          <button
+            type="button"
+            class="switch-btn"
+            :class="{ active: activeView === 'resources' }"
+            @click="activeView = 'resources'"
+          >
+            资源
+          </button>
+          <button
+            type="button"
+            class="switch-btn"
+            :class="{ active: activeView === 'packages' }"
+            @click="activeView = 'packages'"
+          >
+            应用包
+          </button>
+        </div>
         <button
+          v-if="activeView === 'resources'"
           type="button"
-          class="switch-btn"
-          :class="{ active: activeView === 'resources' }"
-          @click="activeView = 'resources'"
+          class="btn btn-create"
+          :disabled="!selectedEnvId"
+          @click="openCreateYamlDialog"
         >
-          资源
-        </button>
-        <button
-          type="button"
-          class="switch-btn"
-          :class="{ active: activeView === 'packages' }"
-          @click="activeView = 'packages'"
-        >
-          应用包
+          新建资源
         </button>
       </div>
-      <select v-model="selectedEnvId" class="select">
-        <option value="" disabled>选择环境</option>
-        <option v-for="env in environments" :key="env.id" :value="env.id">
-          {{ env.display_name }}
-        </option>
-      </select>
-      <span v-if="activeView === 'resources'" class="hint">
-        {{
-          createYamlActive
-            ? "当前正在编辑新建草稿"
-            : `${resourceGroupView === "component" ? "组件" : resourceGroupView === "file" ? "文件" : "批次"}：${activeGroupLabel || "-"}（${manifestsInActiveGroup.length} 资源）`
-        }}
-      </span>
-      <button
-        v-if="activeView === 'resources'"
-        type="button"
-        class="btn btn-create"
-        :disabled="!selectedEnvId"
-        @click="openCreateYamlDialog"
-      >
-        新建 YAML
-      </button>
-      <button
-        v-if="activeView === 'resources'"
-        type="button"
-        class="btn btn-save"
-        :disabled="!selectedManifestId || createYamlActive"
-        @click="onSaveYaml"
-      >
-        保存
-      </button>
-      <button
-        v-if="activeView === 'resources'"
-        type="button"
-        class="btn btn-primary"
-        :disabled="!canOpenApplyDialog || applying || createYamlActive"
-        @click="openApplyDialog"
-      >
-        {{ applying ? "应用中…" : "应用" }}
-      </button>
-      <button
-        v-if="activeView === 'resources'"
-        type="button"
-        class="btn btn-diff"
-        :disabled="!selectedManifestId || diffLoading || createYamlActive"
-        @click="loadDiff"
-      >
-        {{ diffLoading ? "生成中…" : "查看差异" }}
-      </button>
-      <button
-        v-if="activeView === 'resources'"
-        type="button"
-        class="btn btn-copy"
-        :disabled="!canOpenCopyDialog || copyLoading || createYamlActive"
-        @click="openCopyDialog"
-      >
-        {{ copyLoading ? "复制中…" : "复制到环境" }}
-      </button>
     </header>
 
     <div v-if="activeView === 'resources'" class="body">
       <aside class="list">
-        <div v-if="!selectedEnvId" class="empty">请先选择环境</div>
-        <template v-else>
-          <div class="component-switcher">
+        <div class="component-switcher">
+          <label class="env-select-card env-select-card-sidebar">
+            <span class="env-select-label">当前环境</span>
+            <div class="env-select-main">
+              <select v-model="selectedEnvId" class="select env-select">
+                <option value="" disabled>选择环境</option>
+                <option v-for="env in environments" :key="env.id" :value="env.id">
+                  {{ env.display_name }}
+                </option>
+              </select>
+              <div class="env-current-chip" :class="{ empty: !selectedEnvironment }">
+                <span class="env-current-dot" />
+                <span class="env-current-text">{{ selectedEnvironment?.display_name || "未选择环境" }}</span>
+              </div>
+            </div>
+          </label>
+          <div v-if="!selectedEnvId" class="empty">请先选择环境</div>
+          <template v-else>
             <div class="component-switcher-head">
               <span>资源视图</span>
               <small v-if="manifestDraftCount > 0">未保存草稿 {{ manifestDraftCount }}</small>
@@ -2074,7 +2054,6 @@ async function onConfirmPackageAction() {
                 {{ resourceGroupView === "component" ? "没有匹配的组件" : resourceGroupView === "file" ? "没有匹配的文件" : "没有匹配的批次" }}
               </div>
             </div>
-          </div>
 
           <div class="list-title">
             <span>资源列表</span>
@@ -2115,7 +2094,8 @@ async function onConfirmPackageAction() {
               {{ resourceGroupView === "component" ? "当前组件暂无资源" : resourceGroupView === "file" ? "当前文件暂无资源" : "当前批次暂无资源" }}
             </div>
           </div>
-        </template>
+          </template>
+        </div>
       </aside>
 
       <section class="editor-panel">
@@ -2130,7 +2110,7 @@ async function onConfirmPackageAction() {
         <div v-if="createYamlActive" class="meta-row">
           <div class="meta-component-editor">
             <div class="meta-field">
-              <span>新建 YAML</span>
+              <span>新建资源</span>
               <strong class="meta-component-name">{{ importComponent || selectedComponent || "default" }}</strong>
             </div>
           </div>
@@ -2154,10 +2134,42 @@ async function onConfirmPackageAction() {
             <div class="meta-field">
               <span>当前所属组件</span>
               <strong class="meta-component-name">{{ selectedManifest.component }}</strong>
-              <button type="button" class="btn btn-move-component" @click="openComponentAssignDialog">变更组件</button>
             </div>
           </div>
           <div class="meta-actions">
+            <button type="button" class="btn btn-move-component" @click="openComponentAssignDialog">变更组件</button>
+            <button
+              type="button"
+              class="btn btn-diff"
+              :disabled="!selectedManifestId || diffLoading || createYamlActive"
+              @click="loadDiff"
+            >
+              {{ diffLoading ? "生成中…" : "查看差异" }}
+            </button>
+            <button
+              type="button"
+              class="btn btn-save"
+              :disabled="!selectedManifestId || createYamlActive"
+              @click="onSaveYaml"
+            >
+              保存
+            </button>
+            <button
+              type="button"
+              class="btn btn-copy"
+              :disabled="!canOpenCopyDialog || copyLoading || createYamlActive"
+              @click="openCopyDialog"
+            >
+              {{ copyLoading ? "复制中…" : "复制到其他环境" }}
+            </button>
+            <button
+              type="button"
+              class="btn btn-primary"
+              :disabled="!canOpenApplyDialog || applying || createYamlActive"
+              @click="openApplyDialog"
+            >
+              {{ applying ? "应用中…" : "应用到当前环境" }}
+            </button>
             <span class="hint">资源：{{ selectedManifest.resource_kind }}/{{ selectedManifest.resource_name }}</span>
             <span v-if="selectedManifest.source_file_name" class="hint">
               来源：{{ selectedManifest.source_file_name }}#{{ selectedManifest.source_doc_index ?? 1 }}
@@ -2221,7 +2233,7 @@ async function onConfirmPackageAction() {
             可以从左侧选择一个已有资源继续编辑，或者直接新建一份 YAML 草稿。
           </div>
           <div class="editor-empty-actions">
-            <button type="button" class="btn btn-primary" @click="openCreateYamlDialog">新建 YAML</button>
+            <button type="button" class="btn btn-primary" @click="openCreateYamlDialog">新建资源</button>
             <button
               v-if="manifestsInActiveGroup.length"
               type="button"
@@ -2796,44 +2808,144 @@ async function onConfirmPackageAction() {
 .toolbar {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 0.75rem;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  padding: 0.75rem 0.9rem;
   border-bottom: 1px solid #e2e8f0;
-  background: #fff;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+}
+.toolbar-start,
+.toolbar-brand {
+  display: flex;
+  align-items: center;
+}
+.toolbar-start {
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  width: 100%;
+}
+.toolbar-brand {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.1rem;
+  margin-right: 0.25rem;
 }
 .title {
-  font-size: 0.9375rem;
-  font-weight: 600;
-  margin-right: 0.5rem;
+  font-size: 1rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+.toolbar-subtitle {
+  font-size: 0.75rem;
+  color: #64748b;
 }
 .view-switch {
   display: inline-flex;
-  border: 1px solid #cbd5e1;
-  border-radius: 8px;
+  padding: 0.15rem;
+  border: 1px solid #dbe3ef;
+  border-radius: 10px;
   overflow: hidden;
+  background: linear-gradient(180deg, #f8fbff 0%, #eef2ff 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
 }
 .switch-btn {
   height: 1.9rem;
   border: none;
-  border-right: 1px solid #cbd5e1;
-  background: #f8fafc;
+  border-radius: 8px;
+  background: transparent;
   color: #475569;
   font-size: 0.78rem;
-  padding: 0 0.6rem;
+  padding: 0 0.8rem;
   cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
 }
-.switch-btn:last-child {
-  border-right: none;
+.switch-btn:hover:not(.active) {
+  background: rgba(148, 163, 184, 0.16);
+  color: #334155;
 }
 .switch-btn.active {
   background: #2563eb;
   color: #fff;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
+}
+.env-select-card {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  min-height: 2.6rem;
+  padding: 0.45rem 0.55rem 0.45rem 0.8rem;
+  border: 1px solid #dbe3ef;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  box-shadow: 0 8px 18px rgba(148, 163, 184, 0.12);
+}
+.env-select-label {
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: #475569;
+  white-space: nowrap;
+  line-height: 2rem;
+}
+.env-select-main {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
 }
 .select {
   height: 2rem;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  padding: 0 0.5rem;
+  min-width: 12rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 0 0.7rem;
+  background: #fff;
+  color: #0f172a;
+}
+.env-select {
+  min-width: 13.5rem;
+  border-color: #bfdbfe;
+  background:
+    linear-gradient(180deg, #ffffff 0%, #eff6ff 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+.env-current-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 2rem;
+  max-width: 16rem;
+  padding: 0 0.75rem;
+  border: 1px solid #93c5fd;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%);
+  color: #1d4ed8;
+  font-size: 0.8rem;
+  font-weight: 700;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+.env-current-chip.empty {
+  border-color: #cbd5e1;
+  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+  color: #64748b;
+  font-weight: 600;
+}
+.env-current-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 999px;
+  background: #2563eb;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+  flex: 0 0 auto;
+}
+.env-current-chip.empty .env-current-dot {
+  background: #94a3b8;
+  box-shadow: 0 0 0 4px rgba(148, 163, 184, 0.12);
+}
+.env-current-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .btn {
   height: 2rem;
@@ -2845,13 +2957,22 @@ async function onConfirmPackageAction() {
   cursor: pointer;
 }
 .btn:disabled {
-  opacity: 0.6;
+  opacity: 1;
   cursor: not-allowed;
 }
 .btn-primary {
   border-color: #2563eb;
   background: #2563eb;
   color: #fff;
+}
+.btn-primary:hover:not(:disabled) {
+  border-color: #1d4ed8;
+  background: #1d4ed8;
+}
+.btn-primary:disabled {
+  border-color: #93c5fd;
+  background: #eff6ff;
+  color: #1e3a8a;
 }
 .btn-create {
   border-color: #0891b2;
@@ -2863,9 +2984,9 @@ async function onConfirmPackageAction() {
   background: #0e7490;
 }
 .btn-create:disabled {
-  border-color: #a5f3fc;
-  background: #cffafe;
-  color: #ecfeff;
+  border-color: #67e8f9;
+  background: #ecfeff;
+  color: #155e75;
 }
 .btn-save {
   border-color: #16a34a;
@@ -2878,8 +2999,8 @@ async function onConfirmPackageAction() {
 }
 .btn-save:disabled {
   border-color: #86efac;
-  background: #dcfce7;
-  color: #f0fdf4;
+  background: #f0fdf4;
+  color: #166534;
 }
 .btn-import {
   border-color: #d97706;
@@ -2892,8 +3013,8 @@ async function onConfirmPackageAction() {
 }
 .btn-import:disabled {
   border-color: #fcd34d;
-  background: #fde68a;
-  color: #fffbeb;
+  background: #fffbeb;
+  color: #92400e;
 }
 .btn-copy {
   border-color: #0f766e;
@@ -2906,8 +3027,8 @@ async function onConfirmPackageAction() {
 }
 .btn-copy:disabled {
   border-color: #99f6e4;
-  background: #ccfbf1;
-  color: #f0fdfa;
+  background: #f0fdfa;
+  color: #115e59;
 }
 .btn-move-component {
   border-color: #0284c7;
@@ -2920,8 +3041,8 @@ async function onConfirmPackageAction() {
 }
 .btn-move-component:disabled {
   border-color: #bae6fd;
-  background: #e0f2fe;
-  color: #f0f9ff;
+  background: #f0f9ff;
+  color: #0c4a6e;
 }
 .btn-diff {
   border-color: #7c3aed;
@@ -2934,8 +3055,8 @@ async function onConfirmPackageAction() {
 }
 .btn-diff:disabled {
   border-color: #c4b5fd;
-  background: #ddd6fe;
-  color: #f5f3ff;
+  background: #f5f3ff;
+  color: #5b21b6;
 }
 .btn-danger {
   border-color: #dc2626;
@@ -2950,81 +3071,118 @@ async function onConfirmPackageAction() {
   min-height: 0;
   display: grid;
   grid-template-columns: 260px 1fr 240px;
+  background: #f8fafc;
 }
 .list,
 .history {
   border-right: 1px solid #e2e8f0;
   overflow: auto;
-  padding: 0.5rem;
+  padding: 0.75rem;
 }
 .history {
   border-left: 1px solid #e2e8f0;
   border-right: none;
+  background: linear-gradient(180deg, #fbfdff 0%, #f8fafc 100%);
+}
+.list {
+  background: linear-gradient(180deg, #fbfdff 0%, #f8fafc 100%);
 }
 .component-switcher {
-  border: 1px solid #bfdbfe;
-  border-radius: 8px;
-  background: #eff6ff;
-  padding: 0.45rem;
-  margin-bottom: 0.5rem;
+  border: 1px solid #dbe3ef;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #f8fbff 0%, #eff6ff 100%);
+  padding: 0.65rem;
+  margin-bottom: 0.7rem;
+  box-shadow: 0 10px 24px rgba(148, 163, 184, 0.12);
+}
+.env-select-card-sidebar {
+  width: 100%;
+  margin-bottom: 0.7rem;
+}
+.env-select-card-sidebar .env-select-main {
+  width: 100%;
+}
+.env-select-card-sidebar .env-select {
+  width: 100%;
+  min-width: 0;
+}
+.env-select-card-sidebar .env-current-chip {
+  width: 100%;
+  max-width: none;
+  justify-content: flex-start;
 }
 .component-switcher-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 0.35rem;
-  font-size: 0.76rem;
-  color: #334155;
+  margin-bottom: 0.55rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #1e293b;
 }
 .component-switcher-head small {
   color: #0f766e;
+  font-weight: 600;
 }
 .group-view-switch {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 0.3rem;
-  margin-bottom: 0.4rem;
+  gap: 0.35rem;
+  margin-bottom: 0.55rem;
 }
 .group-view-btn {
-  height: 1.8rem;
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  background: #fff;
+  height: 1.95rem;
+  border: 1px solid #d5deea;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.88);
   color: #475569;
   font-size: 0.74rem;
   cursor: pointer;
+  transition: all 0.18s ease;
+}
+.group-view-btn:hover:not(.active) {
+  border-color: #bfdbfe;
+  background: #f8fbff;
+  color: #334155;
 }
 .group-view-btn.active {
   border-color: #2563eb;
-  background: #dbeafe;
+  background: linear-gradient(180deg, #dbeafe 0%, #bfdbfe 100%);
   color: #1d4ed8;
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.16);
 }
 .component-search {
   width: 100%;
-  height: 1.8rem;
+  height: 2rem;
   border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  padding: 0 0.45rem;
+  border-radius: 8px;
+  padding: 0 0.6rem;
   font-size: 0.75rem;
-  margin-bottom: 0.4rem;
+  margin-bottom: 0.55rem;
+  background: rgba(255, 255, 255, 0.92);
 }
 .component-list {
   display: grid;
-  gap: 0.25rem;
-  max-height: 180px;
+  gap: 0.35rem;
+  max-height: 220px;
   overflow: auto;
 }
 .component-item {
   border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  background: #fff;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.92);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.25rem 0.4rem;
+  padding: 0.42rem 0.55rem;
   font-size: 0.74rem;
   color: #0f172a;
   cursor: pointer;
+  transition: all 0.18s ease;
+}
+.component-item:hover {
+  border-color: #bfdbfe;
+  background: #f8fbff;
 }
 .component-item-name {
   min-width: 0;
@@ -3042,36 +3200,47 @@ async function onConfirmPackageAction() {
 }
 .component-item.active {
   border-color: #2563eb;
-  background: #eff6ff;
+  background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%);
+  box-shadow: 0 10px 20px rgba(37, 99, 235, 0.12);
 }
 .list-title {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 0.76rem;
-  color: #475569;
-  margin: 0.3rem 0 0.4rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #1e293b;
+  margin: 0 0 0.45rem;
+  padding: 0 0.1rem;
 }
 .list-title small {
   color: #64748b;
+  font-weight: 600;
 }
 .resource-list-panel {
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #ffffff;
-  padding: 0.35rem;
+  border: 1px solid #dbe3ef;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  padding: 0.45rem;
+  box-shadow: 0 10px 24px rgba(148, 163, 184, 0.1);
 }
 .item {
-  padding: 0.45rem 0.5rem;
+  padding: 0.5rem 0.6rem;
   border: 1px solid #e2e8f0;
-  border-radius: 6px;
+  border-radius: 10px;
   margin-bottom: 0.4rem;
   cursor: pointer;
   background: #fff;
+  transition: all 0.18s ease;
+}
+.item:hover {
+  border-color: #cbd5e1;
+  background: #fbfdff;
 }
 .item.active {
   border-color: #2563eb;
-  background: #eff6ff;
+  background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%);
+  box-shadow: 0 10px 20px rgba(37, 99, 235, 0.12);
 }
 .item-title {
   display: flex;
@@ -3155,9 +3324,9 @@ async function onConfirmPackageAction() {
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
-  padding: 0.5rem;
+  padding: 0.75rem 0.9rem;
   border-bottom: 1px solid #e2e8f0;
-  background: #f8fafc;
+  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
 }
 .meta-field {
   display: inline-flex;
@@ -3209,6 +3378,8 @@ async function onConfirmPackageAction() {
   display: inline-flex;
   align-items: center;
   gap: 0.55rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 .create-toolbar {
   display: flex;
@@ -3843,7 +4014,7 @@ async function onConfirmPackageAction() {
   min-height: 0;
   display: grid;
   grid-template-columns: 300px 1fr 360px;
-  background: #f8fafc;
+  background: linear-gradient(180deg, #fbfdff 0%, #f8fafc 100%);
 }
 .pkg-side,
 .pkg-main,
@@ -3859,25 +4030,26 @@ async function onConfirmPackageAction() {
   border-right: 1px solid #e2e8f0;
 }
 .pkg-panel {
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  background: #fff;
-  padding: 0.7rem;
+  border: 1px solid #dbe3ef;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  padding: 0.8rem;
+  box-shadow: 0 10px 24px rgba(148, 163, 184, 0.1);
 }
 .pkg-side-title,
 .pkg-block-title {
-  font-size: 0.83rem;
-  font-weight: 600;
+  font-size: 0.84rem;
+  font-weight: 700;
   color: #1e293b;
-  margin-bottom: 0.45rem;
+  margin-bottom: 0.55rem;
 }
 .pkg-side-subtitle {
-  margin-top: 0.5rem;
+  margin-top: 0.6rem;
   font-size: 0.75rem;
   color: #64748b;
 }
 .pkg-create-panel {
-  margin-bottom: 0.65rem;
+  margin-bottom: 0.8rem;
 }
 .pkg-list-panel {
   min-height: 0;
@@ -3889,25 +4061,27 @@ async function onConfirmPackageAction() {
 .pkg-input {
   height: 2rem;
   border: 1px solid #d1d5db;
-  border-radius: 6px;
-  padding: 0 0.5rem;
+  border-radius: 8px;
+  padding: 0 0.6rem;
+  background: rgba(255, 255, 255, 0.96);
 }
 .pkg-item {
   border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #fff;
-  padding: 0.45rem 0.55rem;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.96);
+  padding: 0.55rem 0.65rem;
   margin-bottom: 0.45rem;
   cursor: pointer;
-  transition: border-color 0.15s ease, background 0.15s ease;
+  transition: all 0.18s ease;
 }
 .pkg-item:hover {
-  border-color: #cbd5e1;
-  background: #f8fafc;
+  border-color: #bfdbfe;
+  background: #f8fbff;
 }
 .pkg-item.active {
   border-color: #2563eb;
-  background: #eff6ff;
+  background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%);
+  box-shadow: 0 10px 20px rgba(37, 99, 235, 0.12);
 }
 .pkg-item-title {
   font-size: 0.82rem;
@@ -3948,10 +4122,10 @@ async function onConfirmPackageAction() {
 .pkg-summary-pill {
   font-size: 0.72rem;
   color: #0f172a;
-  border: 1px solid #cbd5e1;
-  background: #f8fafc;
+  border: 1px solid #dbe3ef;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
   border-radius: 999px;
-  padding: 0.12rem 0.45rem;
+  padding: 0.16rem 0.5rem;
 }
 .pkg-main-grid {
   display: grid;
@@ -3984,18 +4158,24 @@ async function onConfirmPackageAction() {
 }
 .pkg-version-item {
   border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #f8fafc;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
   text-align: left;
-  padding: 0.5rem 0.6rem;
+  padding: 0.55rem 0.7rem;
   cursor: pointer;
   display: flex;
   flex-direction: column;
   gap: 0.2rem;
+  transition: all 0.18s ease;
+}
+.pkg-version-item:hover {
+  border-color: #bfdbfe;
+  background: #f8fbff;
 }
 .pkg-version-item.active {
   border-color: #2563eb;
-  background: #eff6ff;
+  background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%);
+  box-shadow: 0 10px 20px rgba(37, 99, 235, 0.12);
 }
 .pkg-version-item small {
   color: #64748b;
@@ -4085,9 +4265,9 @@ async function onConfirmPackageAction() {
 .pkg-resource-item,
 .pkg-deploy-item {
   border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #fff;
-  padding: 0.4rem 0.5rem;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.96);
+  padding: 0.5rem 0.6rem;
   display: flex;
   flex-direction: column;
   gap: 0.15rem;
@@ -4099,9 +4279,9 @@ async function onConfirmPackageAction() {
 }
 .pkg-empty-card {
   border: 1px dashed #cbd5e1;
-  border-radius: 10px;
-  background: #fff;
-  padding: 0.9rem;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  padding: 1rem;
 }
 @media (max-width: 1480px) {
   .pkg-layout {
@@ -4119,6 +4299,17 @@ async function onConfirmPackageAction() {
   }
   .pkg-main-grid {
     grid-template-columns: 1fr;
+  }
+  .toolbar-start,
+  .toolbar-start {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  .env-select-card {
+    order: 4;
+  }
+  .btn-create {
+    order: 5;
   }
 }
 </style>
