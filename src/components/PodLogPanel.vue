@@ -122,14 +122,58 @@ const orderedEntries = computed(() => {
   return ordered.map((line, index) => ({ line, sourceIndex: index }));
 });
 
+/** 按日志行中的等级标记筛选（括号、[level] JSON、logfmt、常见大写等级词），不根据业务词汇。 */
+function matchFrameworkErrorLevel(line: string): boolean {
+  return (
+    /\[\s*(?:error|fatal|panic|critical|err)\s*\]/i.test(line) ||
+    /["']level["']\s*:\s*["'](?:error|fatal|panic|critical)/i.test(line) ||
+    /\blevel\s*=\s*(?:error|fatal|panic|critical|err)\b/i.test(line) ||
+    /\bseverity["']?\s*[:=]\s*["']?(?:ERROR|FATAL|CRITICAL)\b/.test(line) ||
+    /"severity"\s*:\s*"(?:ERROR|FATAL|CRITICAL|ALERT|EMERGENCY)"/.test(line) ||
+    /\b(?:ERROR|FATAL|PANIC|CRITICAL)\b/.test(line)
+  );
+}
+
+function matchFrameworkWarnLevel(line: string): boolean {
+  return (
+    /\[\s*(?:warn|warning|wrn)\s*\]/i.test(line) ||
+    /["']level["']\s*:\s*["'](?:warn|warning)/i.test(line) ||
+    /\blevel\s*=\s*(?:warn|warning)\b/i.test(line) ||
+    /\bseverity["']?\s*[:=]\s*["']?WARN(?:ING)?\b/.test(line) ||
+    /"severity"\s*:\s*"(?:WARNING|WARN)"/.test(line) ||
+    /\b(?:WARN|WARNING)\b/.test(line)
+  );
+}
+
+function matchFrameworkInfoLevel(line: string): boolean {
+  return (
+    /\[\s*info\s*\]/i.test(line) ||
+    /["']level["']\s*:\s*["']info["']/.test(line) ||
+    /\blevel\s*=\s*info\b/i.test(line) ||
+    /\bseverity["']?\s*[:=]\s*["']?INFO\b/.test(line) ||
+    /"severity"\s*:\s*"(?:INFO|NOTICE)"/.test(line) ||
+    /\bINFO\b/.test(line)
+  );
+}
+
+function matchFrameworkDebugLevel(line: string): boolean {
+  return (
+    /\[\s*(?:debug|trace|verbose)\s*\]/i.test(line) ||
+    /["']level["']\s*:\s*["'](?:debug|trace|verbose|silly)/i.test(line) ||
+    /\blevel\s*=\s*(?:debug|trace|verbose)\b/i.test(line) ||
+    /\bseverity["']?\s*[:=]\s*["']?(?:DEBUG|TRACE|VERBOSE)\b/.test(line) ||
+    /"severity"\s*:\s*"(?:DEBUG|TRACE|VERBOSE)"/.test(line) ||
+    /\b(?:DEBUG|TRACE|VERBOSE)\b/.test(line)
+  );
+}
+
 function matchQuickFilter(line: string): boolean {
   if (selectedLevels.value.size === 0) return true;
-  const lower = line.toLowerCase();
-  const matches = {
-    error: /(error|exception|fail|fatal|panic|oom|backoff)/i.test(lower),
-    warn: /(warn|warning|retry|timeout|throttle)/i.test(lower),
-    info: /\binfo\b/.test(lower),
-    debug: /\bdebug\b/.test(lower),
+  const matches: Record<LogQuickFilter, boolean> = {
+    error: matchFrameworkErrorLevel(line),
+    warn: matchFrameworkWarnLevel(line),
+    info: matchFrameworkInfoLevel(line),
+    debug: matchFrameworkDebugLevel(line),
   };
   return Array.from(selectedLevels.value).some((level) => matches[level]);
 }
@@ -330,8 +374,12 @@ watch(
   async ([envId, ns, name]) => {
     if (envId && ns && name) {
       await stopFollow();
-      follow.value = false;
-      loadContainers();
+      const hadFollow = follow.value;
+      await loadContainers();
+      follow.value = true;
+      if (hadFollow) {
+        await startFollow();
+      }
     } else {
       await stopFollow();
       follow.value = false;
