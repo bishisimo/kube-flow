@@ -4,11 +4,13 @@ use crate::config::{app_settings_config_path, AppSettingsConfig, LogLevel, Resou
 use crate::debug_log;
 use crate::env::EnvService;
 use crate::kube::{
-    apply_resource_yaml, delete_resource, deploy_resource_yaml, describe_resource, get_pod_container_names,
-    get_pod_logs, get_related_targets, get_resource_topology, get_resource_yaml, patch_container_images,
+    apply_resource_yaml, delete_dynamic_resource, delete_resource, deploy_resource_yaml, describe_dynamic_resource,
+    describe_resource, get_dynamic_resource_yaml, get_pod_container_names,
+    get_pod_logs, get_related_targets, get_resource_topology, get_resource_yaml, list_crd_instances,
+    patch_container_images,
     run_pod_exec, run_pod_log_stream, start_watch, KubeClientStore, PodExecStore, PodLogStreamStore,
-    RelatedTarget,
-    ResourceTopology, WatchStore,
+    DynamicCrdInstanceItem, RelatedTarget, ResourceAliasCacheStore, ResourceAliasRefreshResult,
+    ResolvedAliasTarget, ResourceTopology, WatchStore,
     list_cluster_role_bindings, list_cluster_roles, list_config_maps, list_cron_jobs,
     list_daemon_sets, list_deployments, list_endpoint_slices, list_endpoints,
     list_horizontal_pod_autoscalers, list_ingress_classes, list_ingresses, list_jobs,
@@ -829,6 +831,92 @@ pub async fn kube_get_resource(
 }
 
 #[tauri::command]
+pub async fn kube_list_crd_instances(
+    store: State<'_, KubeClientStore>,
+    env_id: String,
+    api_version: String,
+    kind: String,
+    namespace: Option<String>,
+    label_selector: Option<String>,
+) -> Result<Vec<DynamicCrdInstanceItem>, String> {
+    let env = EnvService::list()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|e| e.id == env_id)
+        .ok_or_else(|| "environment not found".to_string())?;
+    let client = store.get_or_build(&env).await.map_err(|e| e.to_string())?;
+    let ns = namespace.as_deref();
+    let sel = label_selector.as_deref();
+    with_list_log(
+        &format!("CRD:{kind}"),
+        &env_id,
+        list_crd_instances(&client, &api_version, &kind, ns, sel),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn kube_get_dynamic_resource(
+    store: State<'_, KubeClientStore>,
+    env_id: String,
+    api_version: String,
+    kind: String,
+    name: String,
+    namespace: Option<String>,
+) -> Result<String, String> {
+    let env = EnvService::list()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|e| e.id == env_id)
+        .ok_or_else(|| "environment not found".to_string())?;
+    let client = store.get_or_build(&env).await.map_err(|e| e.to_string())?;
+    let ns = namespace.as_deref();
+    get_dynamic_resource_yaml(&client, &api_version, &kind, &name, ns).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn kube_describe_dynamic_resource(
+    store: State<'_, KubeClientStore>,
+    env_id: String,
+    api_version: String,
+    kind: String,
+    name: String,
+    namespace: Option<String>,
+) -> Result<crate::kube::DescribeResult, String> {
+    let env = EnvService::list()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|e| e.id == env_id)
+        .ok_or_else(|| "environment not found".to_string())?;
+    let client = store.get_or_build(&env).await.map_err(|e| e.to_string())?;
+    let ns = namespace.as_deref();
+    describe_dynamic_resource(&client, &api_version, &kind, &name, ns)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn kube_delete_dynamic_resource(
+    store: State<'_, KubeClientStore>,
+    env_id: String,
+    api_version: String,
+    kind: String,
+    name: String,
+    namespace: Option<String>,
+) -> Result<(), String> {
+    let env = EnvService::list()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|e| e.id == env_id)
+        .ok_or_else(|| "environment not found".to_string())?;
+    let client = store.get_or_build(&env).await.map_err(|e| e.to_string())?;
+    let ns = namespace.as_deref();
+    delete_dynamic_resource(&client, &api_version, &kind, &name, ns)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn kube_delete_resource(
     store: State<'_, KubeClientStore>,
     env_id: String,
@@ -941,9 +1029,43 @@ pub fn kube_get_tunnel_local_port(store: State<'_, KubeClientStore>, env_id: Str
 pub async fn kube_remove_client(
     store: State<'_, KubeClientStore>,
     watch_store: State<'_, Arc<WatchStore>>,
+    alias_store: State<'_, Arc<ResourceAliasCacheStore>>,
     env_id: String,
 ) -> Result<(), String> {
     watch_store.stop(&env_id).await;
+    alias_store.remove_env(&env_id).await;
     store.remove(&env_id).await;
     Ok(())
+}
+
+/// 按当前集群重建资源别名索引（shortNames、plural、kind、singular），写入按环境缓存。
+#[tauri::command]
+pub async fn kube_refresh_resource_aliases(
+    store: State<'_, KubeClientStore>,
+    alias_store: State<'_, Arc<ResourceAliasCacheStore>>,
+    env_id: String,
+) -> Result<ResourceAliasRefreshResult, String> {
+    let env = EnvService::list()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|e| e.id == env_id)
+        .ok_or_else(|| "environment not found".to_string())?;
+    let client = store.get_or_build(&env).await.map_err(|e| e.to_string())?;
+    alias_store
+        .refresh(&env_id, &client)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 在已刷新的发现缓存中解析别名；`preferred_group` 非空时优先匹配该 API 组。
+#[tauri::command]
+pub async fn kube_resolve_resource_alias(
+    alias_store: State<'_, Arc<ResourceAliasCacheStore>>,
+    env_id: String,
+    query: String,
+    preferred_group: Option<String>,
+) -> Result<Vec<ResolvedAliasTarget>, String> {
+    alias_store
+        .resolve(&env_id, &query, preferred_group.as_deref())
+        .await
 }

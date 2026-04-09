@@ -9,7 +9,7 @@ pub mod terminal_commands;
 
 use crate::config::AppSettingsConfig;
 use crate::credentials::new_from_settings;
-use crate::kube::{KubeClientStore, PodExecStore, PodLogStreamStore, WatchStore};
+use crate::kube::{KubeClientStore, PodExecStore, PodLogStreamStore, ResourceAliasCacheStore, WatchStore};
 use terminal_commands::HostShellStore;
 use credential_commands::StrongholdAutoLockController;
 use std::sync::Arc;
@@ -18,6 +18,7 @@ use tauri::Manager;
 pub fn setup_app_state(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     app.manage(KubeClientStore::new(app.handle().clone()));
     app.manage(Arc::new(WatchStore::new()));
+    app.manage(Arc::new(ResourceAliasCacheStore::new()));
     app.manage(Arc::new(PodLogStreamStore::new()));
     app.manage(Arc::new(PodExecStore::new()));
     app.manage(Arc::new(HostShellStore::new()));

@@ -844,6 +844,110 @@ export function kubeGetTunnelLocalPort(envId: string): Promise<number | null> {
   return invoke<number | null>("kube_get_tunnel_local_port", { envId });
 }
 
+/** 发现缓存：shortNames / plural / kind 等别名索引，供解析 CRD 与内置资源别名。 */
+export interface ResolvedAliasTarget {
+  group: string;
+  version: string;
+  api_version: string;
+  kind: string;
+  plural: string;
+  namespaced: boolean;
+}
+
+export interface ResourceAliasRefreshResult {
+  resource_count: number;
+  alias_key_count: number;
+}
+
+export function kubeRefreshResourceAliases(envId: string): Promise<ResourceAliasRefreshResult> {
+  return invoke("kube_refresh_resource_aliases", { envId });
+}
+
+export function kubeResolveResourceAlias(
+  envId: string,
+  query: string,
+  preferredGroup?: string | null
+): Promise<ResolvedAliasTarget[]> {
+  return invoke("kube_resolve_resource_alias", {
+    envId,
+    query,
+    preferredGroup: preferredGroup?.trim() || null,
+  });
+}
+
+/** 动态 API 资源（如 CRD 实例）列表行。 */
+export interface DynamicCrdInstanceItem {
+  name: string;
+  namespace?: string | null;
+  creation_time?: string | null;
+}
+
+export function kubeListCrdInstances(
+  envId: string,
+  params: {
+    apiVersion: string;
+    kind: string;
+    namespace?: string | null;
+    labelSelector?: string | null;
+  }
+): Promise<DynamicCrdInstanceItem[]> {
+  return invoke("kube_list_crd_instances", {
+    envId,
+    apiVersion: params.apiVersion,
+    kind: params.kind,
+    namespace: params.namespace ?? null,
+    labelSelector: params.labelSelector?.trim() || null,
+  });
+}
+
+export function kubeGetDynamicResource(
+  envId: string,
+  apiVersion: string,
+  kind: string,
+  name: string,
+  namespace?: string | null
+): Promise<string> {
+  return invoke("kube_get_dynamic_resource", {
+    envId,
+    apiVersion,
+    kind,
+    name,
+    namespace: namespace ?? null,
+  });
+}
+
+export function kubeDescribeDynamicResource(
+  envId: string,
+  apiVersion: string,
+  kind: string,
+  name: string,
+  namespace?: string | null
+): Promise<DescribeResult> {
+  return invoke("kube_describe_dynamic_resource", {
+    envId,
+    apiVersion,
+    kind,
+    name,
+    namespace: namespace ?? null,
+  });
+}
+
+export function kubeDeleteDynamicResource(
+  envId: string,
+  apiVersion: string,
+  kind: string,
+  name: string,
+  namespace?: string | null
+): Promise<void> {
+  return invoke("kube_delete_dynamic_resource", {
+    envId,
+    apiVersion,
+    kind,
+    name,
+    namespace: namespace ?? null,
+  });
+}
+
 export function kubeRemoveClient(envId: string): Promise<void> {
   return invoke("kube_remove_client", { envId });
 }

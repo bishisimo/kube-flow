@@ -730,3 +730,26 @@ fn append_events_table(md: &mut String, events: &[EventRow]) {
     }
     md.push('\n');
 }
+
+/// CRD 等动态资源：拉取 YAML 后生成通用 Describe（含命名空间内 Events）。
+pub async fn describe_dynamic_resource(
+    client: &Client,
+    api_version: &str,
+    kind: &str,
+    name: &str,
+    namespace: Option<&str>,
+) -> Result<DescribeResult, ResourceError> {
+    use crate::kube::resource_dynamic;
+    let yaml_str =
+        resource_dynamic::get_dynamic_resource_yaml(client, api_version, kind, name, namespace).await?;
+    let obj: serde_json::Value = serde_yaml::from_str(&yaml_str).map_err(|e| {
+        ResourceError::Serialize(format!("yaml parse: {}", e))
+    })?;
+    let mut md = String::new();
+    append_minimal_describe(&mut md, &obj, name, namespace);
+    if let Some(ns) = namespace {
+        let events = fetch_events(client, kind, name, ns).await.unwrap_or_default();
+        append_events_table(&mut md, &events);
+    }
+    Ok(DescribeResult { markdown: md })
+}

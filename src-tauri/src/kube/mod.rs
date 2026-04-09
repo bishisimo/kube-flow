@@ -1,6 +1,7 @@
 //! K8s 客户端构建与缓存、资源列表等；按环境 id 复用 Client；SSH 隧道支持。
 
 mod client;
+mod resource_alias_cache;
 pub mod resource_apply;
 pub mod resource_delete;
 pub mod resource_watch;
@@ -13,13 +14,20 @@ pub mod related_targets;
 pub mod resource_topology;
 pub mod resources;
 mod tunnel;
+mod resource_dynamic;
 
 pub use client::KubeClientStore;
+pub use resource_alias_cache::{
+    ResourceAliasCacheStore, ResourceAliasRefreshResult, ResolvedAliasTarget,
+};
 pub use resource_watch::{start_watch, WatchStore};
 pub use resource_apply::{apply_resource_yaml, deploy_resource_yaml};
 pub use resource_delete::delete_resource;
 pub use resource_patch::{patch_container_images, ContainerImagePatch};
-pub use resource_describe::{describe_resource, DescribeResult};
+pub use resource_describe::{describe_dynamic_resource, describe_resource, DescribeResult};
+pub use resource_dynamic::{
+    delete_dynamic_resource, get_dynamic_resource_yaml, list_crd_instances, DynamicCrdInstanceItem,
+};
 pub use resource_get::get_resource_yaml;
 pub use resource_exec::{run_pod_exec, PodExecStore};
 pub use resource_log::{

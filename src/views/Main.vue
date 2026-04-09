@@ -4,6 +4,7 @@ import * as jsYaml from "js-yaml";
 import { useEnvStore } from "../stores/env";
 import EnvBar from "../components/EnvBar.vue";
 import { RESOURCE_GROUPS, RESOURCE_KINDS_FLAT, type ResourceKind } from "../constants/resourceKinds";
+import { resourceKindMatchesSearch } from "../constants/resourceAliases";
 import {
   fetchResourceList,
   resourceIsClusterScoped,
@@ -15,7 +16,13 @@ import ResourceDetailDrawer from "../components/ResourceDetailDrawer.vue";
 import ChangeImageModal from "../components/ChangeImageModal.vue";
 import DeleteConfirmModal from "../components/DeleteConfirmModal.vue";
 import { listen } from "@tauri-apps/api/event";
-import { kubeDeleteResource, kubeRemoveClient } from "../api/kube";
+import {
+  kubeDeleteDynamicResource,
+  kubeDeleteResource,
+  kubeListCrdInstances,
+  kubeRemoveClient,
+  type DynamicCrdInstanceItem,
+} from "../api/kube";
 import { useConnectionStore, isConnectionError } from "../stores/connection";
 import { useSshAuthStore } from "../stores/sshAuth";
 import { useStrongholdAuthStore } from "../stores/strongholdAuth";
@@ -36,6 +43,9 @@ import {
   kubeListServices,
   kubeStartWatch,
   kubeStopWatch,
+  kubeRefreshResourceAliases,
+  kubeResolveResourceAlias,
+  type ResolvedAliasTarget,
   type NamespaceItem,
   type PodItem,
   type DeploymentItem,
@@ -113,6 +123,8 @@ function setEnvBarCollapsed(v: boolean) {
 
 const selectedNamespace = ref<string | null>(null);
 const selectedKind = ref<ResourceKind>("namespaces");
+const selectedCustomTarget = ref<ResolvedAliasTarget | null>(null);
+const dynamicCrdItems = ref<DynamicCrdInstanceItem[]>([]);
 
 /** 钻取来源：从某资源跳转到关联列表时保留，用于面包屑与侧栏点击时清除 */
 const drillFrom = ref<{ kind: string; name: string; namespace: string | null } | null>(null);
@@ -121,6 +133,7 @@ const drillFrom = ref<{ kind: string; name: string; namespace: string | null } |
 const VALID_KINDS = new Set<string>(RESOURCE_KINDS.map((k) => k.id));
 
 function restoreEnvViewState(envId: string) {
+  selectedCustomTarget.value = null;
   const stored = getEnvViewState(envId);
   if (stored) {
     selectedNamespace.value = stored.namespace;
@@ -134,6 +147,7 @@ function restoreEnvViewState(envId: string) {
 
 /** 选择资源类型并退出钻取（侧栏/下拉点击） */
 function selectKindAndClearDrill(kind: ResourceKind) {
+  selectedCustomTarget.value = null;
   selectedKind.value = kind;
   touchRecentKind(kind);
   kindDropdownOpen.value = false;
@@ -144,6 +158,22 @@ function selectKindAndClearDrill(kind: ResourceKind) {
   podIpFilter.value = "";
   selectedRowKeys.value = new Set();
   batchDeleteMode.value = false;
+}
+
+function selectCustomKindOption(target: ResolvedAliasTarget) {
+  selectedCustomTarget.value = target;
+  customResourceResolveMessage.value = `→ ${target.api_version} ${target.kind} · ${target.plural} · ${
+    target.namespaced ? "命名空间资源" : "集群资源"
+  }`;
+  kindDropdownOpen.value = false;
+  drillFrom.value = null;
+  labelSelector.value = "";
+  nameFilter.value = "";
+  nodeFilter.value = "all";
+  podIpFilter.value = "";
+  selectedRowKeys.value = new Set();
+  batchDeleteMode.value = false;
+  void loadList();
 }
 
 /** 仅清除钻取上下文并刷新（面包屑点击 namespace 时） */
@@ -231,6 +261,143 @@ const horizontalPodAutoscalers = ref<HorizontalPodAutoscalerItem[]>([]);
 const podDisruptionBudgets = ref<PodDisruptionBudgetItem[]>([]);
 const nsDropdownOpen = ref(false);
 const kindDropdownOpen = ref(false);
+/** 自定义资源：连接成功后自动拉取发现缓存；输入防抖解析 */
+const aliasDiscoveryForEnvId = ref<string | null>(null);
+const aliasDiscoveryLoading = ref(false);
+const aliasDiscoveryError = ref<string | null>(null);
+const customResourceQuery = ref("");
+let customResourceResolveTimer: number | null = null;
+const customResourceResolving = ref(false);
+const customResourceHits = ref<ResolvedAliasTarget[]>([]);
+const customResourceResolveMessage = ref("");
+
+function resetCustomResourceInline() {
+  customResourceQuery.value = kindFilter.value.trim();
+  customResourceHits.value = [];
+  customResourceResolveMessage.value = "";
+  if (customResourceResolveTimer != null) {
+    clearTimeout(customResourceResolveTimer);
+    customResourceResolveTimer = null;
+  }
+  customResourceResolving.value = false;
+}
+
+function scheduleCustomResourceResolve(immediate = false) {
+  const run = () => {
+    void runCustomResourceResolve();
+  };
+  if (customResourceResolveTimer != null) {
+    clearTimeout(customResourceResolveTimer);
+    customResourceResolveTimer = null;
+  }
+  if (immediate) {
+    run();
+    return;
+  }
+  customResourceResolveTimer = window.setTimeout(() => {
+    customResourceResolveTimer = null;
+    run();
+  }, 340);
+}
+
+async function runCustomResourceResolve() {
+  const q = kindFilter.value.trim();
+  customResourceQuery.value = q;
+  const id = currentId.value;
+  if (!q) {
+    customResourceHits.value = [];
+    customResourceResolveMessage.value = "";
+    customResourceResolving.value = false;
+    return;
+  }
+  if (!id || getState(id) !== "connected") {
+    customResourceHits.value = [];
+    customResourceResolveMessage.value = "请先连接环境";
+    return;
+  }
+  if (aliasDiscoveryLoading.value) {
+    customResourceResolveMessage.value = "正在同步 API 发现…";
+    return;
+  }
+  if (aliasDiscoveryForEnvId.value !== id) {
+    customResourceResolveMessage.value =
+      aliasDiscoveryError.value || "发现未就绪，请稍候或点击刷新重连";
+    return;
+  }
+  customResourceResolving.value = true;
+  try {
+    const hits = await kubeResolveResourceAlias(id, q, null);
+    customResourceHits.value = hits;
+    if (hits.length === 0) {
+      customResourceResolveMessage.value = "无匹配，请检查拼写或是否已安装对应 CRD";
+    } else if (hits.length === 1) {
+      const h = hits[0]!;
+      customResourceResolveMessage.value = `→ ${h.api_version} ${h.kind} · ${h.plural} · ${
+        h.namespaced ? "命名空间资源" : "集群资源"
+      }`;
+    } else {
+      customResourceResolveMessage.value = `多项匹配（${hits.length}），请输入更精确的短名、Kind 或 plural`;
+    }
+  } catch (e) {
+    customResourceHits.value = [];
+    customResourceResolveMessage.value = extractErrorMessage(e);
+  } finally {
+    customResourceResolving.value = false;
+  }
+}
+
+async function primeAliasDiscoveryForCurrentEnv() {
+  const id = currentId.value;
+  if (!id || getState(id) !== "connected") return;
+  if (aliasDiscoveryForEnvId.value === id && !aliasDiscoveryError.value) {
+    scheduleCustomResourceResolve(true);
+    return;
+  }
+  aliasDiscoveryLoading.value = true;
+  aliasDiscoveryError.value = null;
+  try {
+    await kubeRefreshResourceAliases(id);
+    aliasDiscoveryForEnvId.value = id;
+    scheduleCustomResourceResolve(true);
+  } catch (e) {
+    aliasDiscoveryError.value = extractErrorMessage(e);
+    aliasDiscoveryForEnvId.value = null;
+  } finally {
+    aliasDiscoveryLoading.value = false;
+  }
+}
+
+const customResourceHintLine = computed(() => {
+  if (customResourceResolveMessage.value) return customResourceResolveMessage.value;
+  const id = currentId.value;
+  if (!id) return "";
+  const state = getState(id);
+  if (state === "connecting") return "连接中…";
+  if (state !== "connected") return "";
+  if (aliasDiscoveryLoading.value) return "正在同步 API 发现…";
+  if (aliasDiscoveryError.value) return `发现同步失败：${aliasDiscoveryError.value}`;
+  if (aliasDiscoveryForEnvId.value === id) return "已同步 API 发现，输入即可解析";
+  return "";
+});
+
+const customResourceStatusClass = computed(() => {
+  if (aliasDiscoveryLoading.value || customResourceResolving.value) return "toolbar-cr-hint loading";
+  const line = customResourceHintLine.value;
+  if (!line) return "toolbar-cr-hint muted";
+  if (line.startsWith("→")) return "toolbar-cr-hint ok";
+  if (line.includes("多项匹配") || line.includes("无匹配")) return "toolbar-cr-hint warn";
+  if (
+    line.includes("失败") ||
+    line.includes("未连接") ||
+    line.includes("断开") ||
+    line.includes("未就绪")
+  ) {
+    return "toolbar-cr-hint err";
+  }
+  if (line.startsWith("已同步")) return "toolbar-cr-hint muted";
+  if (line === "连接中…" || line.includes("正在同步")) return "toolbar-cr-hint loading";
+  return "toolbar-cr-hint muted";
+});
 const nsDropdownRef = ref<HTMLElement | null>(null);
 const kindDropdownRef = ref<HTMLElement | null>(null);
 const nsMenuRef = ref<HTMLElement | null>(null);
@@ -343,6 +510,7 @@ function clearWatchToken(envId: string) {
 }
 
 function clearResourceCollections() {
+  dynamicCrdItems.value = [];
   namespaceOptions.value = [];
   pods.value = [];
   deployments.value = [];
@@ -611,11 +779,10 @@ const namespaceOthers = computed(() => {
 
 /** 按分组过滤后的资源类型，供下拉使用 */
 const filteredKindGroups = computed(() => {
-  const q = kindFilter.value.trim().toLowerCase();
-  if (!q) return RESOURCE_GROUPS;
+  if (!kindFilter.value.trim()) return RESOURCE_GROUPS;
   return RESOURCE_GROUPS.map((g) => ({
     ...g,
-    kinds: g.kinds.filter((k) => k.label.toLowerCase().includes(q)),
+    kinds: g.kinds.filter((k) => resourceKindMatchesSearch(k.id, k.label, kindFilter.value)),
   })).filter((g) => g.kinds.length > 0);
 });
 
@@ -636,7 +803,26 @@ const podNodeOptions = computed(() => {
 });
 
 const selectedKindLabel = computed(() => RESOURCE_KINDS.find((k) => k.id === selectedKind.value)?.label ?? selectedKind.value);
-const nsSelectionDisabled = computed(() => resourceIsClusterScoped(selectedKind.value));
+const workbenchKindLabel = computed(() => {
+  const target = selectedCustomTarget.value;
+  if (!target) return selectedKindLabel.value;
+  return `${target.kind}（CRD）`;
+});
+const customKindCandidates = computed(() => {
+  const q = kindFilter.value.trim();
+  if (!q) return [] as ResolvedAliasTarget[];
+  const dedup = new Map<string, ResolvedAliasTarget>();
+  for (const hit of customResourceHits.value) {
+    const key = `${hit.api_version}/${hit.kind}/${hit.plural}`;
+    if (!dedup.has(key)) dedup.set(key, hit);
+  }
+  return Array.from(dedup.values()).slice(0, 8);
+});
+const nsSelectionDisabled = computed(() => {
+  const target = selectedCustomTarget.value;
+  if (target) return !target.namespaced;
+  return resourceIsClusterScoped(selectedKind.value);
+});
 
 const favoriteNamespaces = ref<Set<string>>(new Set());
 const recentNamespaces = ref<string[]>([]);
@@ -745,6 +931,7 @@ function toggleNamespaceDropdown() {
 }
 
 function openKindSelector() {
+  selectedCustomTarget.value = null;
   kindDropdownOpen.value = true;
   kindFilter.value = "";
   nsDropdownOpen.value = false;
@@ -761,12 +948,13 @@ const API_KIND_TO_ID: Record<string, ResourceKind> = Object.fromEntries(
   RESOURCE_KINDS.map((k) => [k.label, k.id])
 ) as Record<string, ResourceKind>;
 
-/** 集群级资源，无需 namespace */
+/** 集群级资源，无需 namespace；CRD 等动态资源带 dynamic 走专用 API */
 type SelectedResourceRef = {
   kind: string;
   name: string;
   namespace: string | null;
   nodeName: string | null;
+  dynamic?: { api_version: string; namespaced: boolean };
 };
 
 const selectedResource = ref<SelectedResourceRef | null>(null);
@@ -820,7 +1008,7 @@ const syncRelatedTotalCount = computed(() => syncOrchestratorRelatedRefs.value.l
 const syncAllRelatedSelected = computed(
   () => syncOrchestratorRelatedRefs.value.length > 0 && syncOrchestratorSelectedRefKeys.value.length === syncOrchestratorRelatedRefs.value.length
 );
-const deleteConfirmResources = ref<{ kind: string; name: string; namespace: string | null }[]>([]);
+const deleteConfirmResources = ref<SelectedResourceRef[]>([]);
 const deleteConfirmDeleting = ref(false);
 const deleteConfirmError = ref<string | null>(null);
 const selectedRowKeys = ref<Set<string>>(new Set());
@@ -838,9 +1026,21 @@ const deleteActionArmed = ref(false);
 const ACTION_MENU_OFFSET = 6;
 const ACTION_MENU_VIEWPORT_GAP = 10;
 
-function selectResourceFromRow(row: Record<string, unknown>) {
+function selectResourceFromRow(row: Record<string, unknown>): SelectedResourceRef | null {
   const name = row.name as string | undefined;
   if (!name) return null;
+  const crd = selectedCustomTarget.value;
+  if (crd) {
+    const envDefaultNs = currentEnv.value ? defaultNamespace(currentEnv.value) : null;
+    const rowNs = typeof row.ns === "string" && row.ns !== "—" ? row.ns : null;
+    return {
+      kind: crd.kind,
+      name,
+      namespace: crd.namespaced ? (rowNs ?? envDefaultNs ?? "default") : null,
+      nodeName: null,
+      dynamic: { api_version: crd.api_version, namespaced: crd.namespaced },
+    };
+  }
   const kindLabel = RESOURCE_KINDS.find((k) => k.id === selectedKind.value)?.label ?? "";
   if (!kindLabel) return null;
   const isCluster = resourceIsClusterScoped(selectedKind.value);
@@ -861,6 +1061,13 @@ function selectResourceFromRow(row: Record<string, unknown>) {
 function getRowKey(row: Record<string, unknown>): string {
   const name = row.name as string | undefined;
   if (!name) return "";
+  const crd = selectedCustomTarget.value;
+  if (crd) {
+    if (!crd.namespaced) return name;
+    const envDefaultNs = currentEnv.value ? defaultNamespace(currentEnv.value) : null;
+    const rowNs = typeof row.ns === "string" && row.ns !== "—" ? row.ns : null;
+    return `${rowNs ?? envDefaultNs ?? "default"}/${name}`;
+  }
   const isCluster = resourceIsClusterScoped(selectedKind.value);
   const envDefaultNs = currentEnv.value ? defaultNamespace(currentEnv.value) : null;
   return isCluster ? name : `${(row.ns as string) ?? envDefaultNs ?? "default"}/${name}`;
@@ -1447,6 +1654,7 @@ function exitBatchDeleteMode() {
 }
 
 function openBatchDeleteConfirm() {
+  if (selectedCustomTarget.value) return;
   const kindLabel = RESOURCE_KINDS.find((k) => k.id === selectedKind.value)?.label ?? "";
   if (!kindLabel || selectedRowKeys.value.size === 0) return;
   const resources = tableRows.value
@@ -1467,7 +1675,11 @@ async function onDeleteConfirm() {
   const failed: string[] = [];
   for (const r of deleteConfirmResources.value) {
     try {
-      await kubeDeleteResource(envId, r.kind, r.name, r.namespace);
+      if (r.dynamic) {
+        await kubeDeleteDynamicResource(envId, r.dynamic.api_version, r.kind, r.name, r.namespace);
+      } else {
+        await kubeDeleteResource(envId, r.kind, r.name, r.namespace);
+      }
     } catch (e) {
       failed.push(`${r.namespace ? `${r.namespace}/` : ""}${r.name}: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -1645,6 +1857,14 @@ const effectiveNamespace = computed(() => {
 });
 
 const rawTableRows = computed(() => {
+  const crd = selectedCustomTarget.value;
+  if (crd) {
+    return dynamicCrdItems.value.map((it) => ({
+      name: it.name,
+      ns: crd.namespaced ? (it.namespace != null && it.namespace !== "" ? it.namespace : "—") : "—",
+      creationTime: it.creation_time ?? "-",
+    }));
+  }
   switch (selectedKind.value) {
     case "namespaces":
       return namespaceOptions.value.map((n) => ({ name: n.name, creationTime: n.creation_time ?? "-" }));
@@ -1986,8 +2206,15 @@ function clearFilterChip(id: ActiveFilterChip["id"]) {
   else if (id === "node") nodeFilter.value = "all";
   else if (id === "podIp") podIpFilter.value = "";
   else if (id === "label") labelSelector.value = "";
-  if (watchEnabled.value && resourceSupportsWatch(selectedKind.value)) applyWatch();
-  else loadList();
+  if (
+    watchEnabled.value &&
+    resourceSupportsWatch(selectedKind.value) &&
+    !selectedCustomTarget.value
+  ) {
+    applyWatch();
+  } else {
+    loadList();
+  }
 }
 
 function clearAllFilters() {
@@ -1995,8 +2222,15 @@ function clearAllFilters() {
   nodeFilter.value = "all";
   podIpFilter.value = "";
   labelSelector.value = "";
-  if (watchEnabled.value && resourceSupportsWatch(selectedKind.value)) applyWatch();
-  else loadList();
+  if (
+    watchEnabled.value &&
+    resourceSupportsWatch(selectedKind.value) &&
+    !selectedCustomTarget.value
+  ) {
+    applyWatch();
+  } else {
+    loadList();
+  }
 }
 
 function normalizeStatus(raw: unknown): string {
@@ -2096,14 +2330,26 @@ function isSelectedRow(row: Record<string, unknown>): boolean {
   if (!selectedResource.value) return false;
   const resource = selectResourceFromRow(row);
   if (!resource) return false;
+  const cur = selectedResource.value;
+  const dynMatch =
+    (!!resource.dynamic && !!cur.dynamic && resource.dynamic.api_version === cur.dynamic.api_version) ||
+    (!resource.dynamic && !cur.dynamic);
   return (
-    resource.kind === selectedResource.value.kind &&
-    resource.name === selectedResource.value.name &&
-    resource.namespace === selectedResource.value.namespace
+    dynMatch &&
+    resource.kind === cur.kind &&
+    resource.name === cur.name &&
+    resource.namespace === cur.namespace
   );
 }
 
 const tableColumns = computed(() => {
+  if (selectedCustomTarget.value) {
+    return [
+      { key: "name", label: "名称" },
+      { key: "ns", label: "Namespace" },
+      { key: "creationTime", label: "创建时间" },
+    ];
+  }
   switch (selectedKind.value) {
     case "namespaces":
       return [
@@ -2354,11 +2600,79 @@ async function loadList() {
   const sessionId = viewSessionId.value;
   const ns = selectedNamespace.value ?? ALL_NAMESPACES_SENTINEL;
   const labelSel = labelSelector.value.trim() || null;
+  const crdTarget = selectedCustomTarget.value;
+  listError.value = null;
+  if (getState(id) !== "connected") setConnecting(id);
+
+  if (crdTarget) {
+    listLoading.value = dynamicCrdItems.value.length === 0;
+    try {
+      await touchEnv(id);
+      if (isStaleView(id, sessionId, requestId)) return;
+      await loadEnvironments();
+      if (isStaleView(id, sessionId, requestId)) return;
+      const nextNamespaces = await kubeListNamespaces(id, labelSel);
+      if (isStaleView(id, sessionId, requestId)) return;
+      namespaceCache.set(id, [...nextNamespaces]);
+      const defaultNs = currentEnv.value ? defaultNamespace(currentEnv.value) ?? "default" : "default";
+      const nsForCrd = crdTarget.namespaced
+        ? ns === ALL_NAMESPACES_SENTINEL
+          ? "__all__"
+          : (selectedNamespace.value ?? defaultNs)
+        : null;
+      const items = await kubeListCrdInstances(id, {
+        apiVersion: crdTarget.api_version,
+        kind: crdTarget.kind,
+        namespace: nsForCrd,
+        labelSelector: labelSel,
+      });
+      if (isStaleView(id, sessionId, requestId)) return;
+      clearResourceCollections();
+      namespaceOptions.value = nextNamespaces;
+      dynamicCrdItems.value = items;
+      envSwitching.value = false;
+      listLoading.value = false;
+      setConnected(id);
+    } catch (e: unknown) {
+      if (isStaleView(id, sessionId, requestId)) return;
+      const msg = extractErrorMessage(e);
+      const isStrongholdRequired = await strongholdAuth.checkAndHandle(
+        msg,
+        () => {
+          loadList();
+        },
+        {
+          title: "解锁环境凭证",
+          description: "当前环境连接需要访问已保存凭证，请先输入 Stronghold 主密码解锁。",
+        }
+      );
+      if (isStrongholdRequired) {
+        setConnecting(id);
+        return;
+      }
+      const isAuthRequired = await sshAuth.checkAndHandle(msg, () => {
+        loadList();
+      });
+      if (isAuthRequired) {
+        setConnecting(id);
+        return;
+      }
+      listError.value = msg;
+      if (id && isConnectionError(msg)) {
+        setDisconnected(id, msg);
+      }
+      clearResourceCollections();
+      envSwitching.value = false;
+    } finally {
+      if (isStaleView(id, sessionId, requestId)) return;
+      listLoading.value = false;
+    }
+    return;
+  }
+
   const namespaceKey = selectedKind.value === "namespaces" || selectedKind.value === "nodes" ? null : ns;
   const hasCache = applyCachedView(id, selectedKind.value, namespaceKey, labelSel);
   listLoading.value = !hasCache;
-  listError.value = null;
-  if (getState(id) !== "connected") setConnecting(id);
   try {
     await touchEnv(id);
     if (isStaleView(id, sessionId, requestId)) return;
@@ -2460,12 +2774,14 @@ onUnmounted(() => {
   stopNodeAllocationPolling();
 });
 watch(selectedKind, () => {
+  selectedCustomTarget.value = null;
   sortBy.value = "creationTime";
   sortOrder.value = "desc";
   nodeFilter.value = "all";
   podIpFilter.value = "";
 });
 watch(currentId, (id) => {
+  selectedCustomTarget.value = null;
   beginEnvSwitch(id);
   recentNamespaces.value = loadRecentNamespaces(id);
   if (id) restoreEnvViewState(id);
@@ -2480,7 +2796,11 @@ watch(nsDropdownOpen, (open) => {
   });
 });
 watch(kindDropdownOpen, (open) => {
-  if (!open) return;
+  if (!open) {
+    customResourceHits.value = [];
+    customResourceResolveMessage.value = "";
+    return;
+  }
   nextTick(() => {
     const active = kindMenuRef.value?.querySelector(".combobox-item.active");
     if (active && "scrollIntoView" in active) {
@@ -2488,10 +2808,50 @@ watch(kindDropdownOpen, (open) => {
     }
   });
 });
+watch(kindFilter, (q) => {
+  if (!kindDropdownOpen.value) return;
+  const query = q.trim();
+  if (!query) {
+    customResourceQuery.value = "";
+    customResourceHits.value = [];
+    customResourceResolveMessage.value = "";
+    return;
+  }
+  scheduleCustomResourceResolve(false);
+});
 watch([selectedNamespace, selectedKind], () => {
   const id = currentId.value;
   if (id) saveEnvViewState(id);
 });
+
+watch(
+  () => ({
+    id: currentId.value,
+    state: currentId.value ? getState(currentId.value) : null,
+  }),
+  async ({ id, state }) => {
+    if (!id) {
+      aliasDiscoveryForEnvId.value = null;
+      aliasDiscoveryError.value = null;
+      aliasDiscoveryLoading.value = false;
+      resetCustomResourceInline();
+      return;
+    }
+    if (state !== "connected") {
+      aliasDiscoveryForEnvId.value = null;
+      if (kindFilter.value.trim()) {
+        customResourceResolveMessage.value =
+          state === "connecting" ? "连接中…" : "未连接或已断开，重连后将自动同步发现";
+        customResourceHits.value = [];
+      } else {
+        customResourceResolveMessage.value = "";
+      }
+      return;
+    }
+    await primeAliasDiscoveryForCurrentEnv();
+  },
+  { immediate: true }
+);
 watch(
   [currentId, selectedKind, labelSelector, nodeResourceUsageEnabled],
   () => {
@@ -2500,9 +2860,14 @@ watch(
   { immediate: true }
 );
 watch(
-  [currentId, selectedNamespace, selectedKind],
+  [currentId, selectedNamespace, selectedKind, selectedCustomTarget],
   () => {
     const id = currentId.value;
+    if (selectedCustomTarget.value) {
+      if (id) kubeStopWatch(id).catch(() => {});
+      loadList();
+      return;
+    }
     if (watchEnabled.value && resourceSupportsWatch(selectedKind.value)) {
       applyWatch();
     } else {
@@ -2516,6 +2881,11 @@ watch(
 function applyWatch() {
   const id = currentId.value;
   if (!id) return;
+  if (selectedCustomTarget.value) {
+    kubeStopWatch(id).catch(() => {});
+    loadList();
+    return;
+  }
   const sessionId = viewSessionId.value;
   const watchToken = nextToken("watch");
   const ns =
@@ -2562,6 +2932,11 @@ function applyWatch() {
 watch(watchEnabled, () => {
   const id = currentId.value;
   if (!id) return;
+  if (selectedCustomTarget.value) {
+    kubeStopWatch(id).catch(() => {});
+    loadList();
+    return;
+  }
   if (watchEnabled.value) {
     if (resourceSupportsWatch(selectedKind.value)) {
       applyWatch();
@@ -2586,6 +2961,7 @@ onMounted(async () => {
     (ev) => {
       const payload = ev.payload;
       if (!payload) return;
+      if (selectedCustomTarget.value) return;
       const envId = payload.envId;
       if (!envId) return;
       if (payload.watchToken !== activeWatchTokens.value[envId]) return;
@@ -2678,14 +3054,14 @@ onUnmounted(() => {
               </button>
               <template v-if="(API_KIND_TO_ID[drillFrom!.kind] ?? 'services') !== selectedKind">
                 <span class="breadcrumb-sep">›</span>
-                <span class="breadcrumb-seg breadcrumb-current" :title="selectedKindLabel">{{ selectedKindLabel }}</span>
+                <span class="breadcrumb-seg breadcrumb-current" :title="workbenchKindLabel">{{ workbenchKindLabel }}</span>
               </template>
               <span v-else class="breadcrumb-seg breadcrumb-current" :title="drillFrom!.name">{{ drillFrom!.name }}</span>
             </template>
             <template v-else>
               <span class="breadcrumb-seg breadcrumb-base" :title="effectiveNamespace">{{ effectiveNamespace }}</span>
               <span class="breadcrumb-sep">›</span>
-              <span class="breadcrumb-seg breadcrumb-current" :title="selectedKindLabel">{{ selectedKindLabel }}</span>
+              <span class="breadcrumb-seg breadcrumb-current" :title="workbenchKindLabel">{{ workbenchKindLabel }}</span>
             </template>
           </div>
         </nav>
@@ -2830,27 +3206,30 @@ onUnmounted(() => {
                   class="combobox-trigger"
                   :class="{ open: kindDropdownOpen, 'combobox-trigger-strong': true }"
                   title="资源类型：输入筛选后选择"
-                  @click="kindDropdownOpen = !kindDropdownOpen; if (kindDropdownOpen) { kindFilter = ''; nsDropdownOpen = false }"
+                  @click="kindDropdownOpen = !kindDropdownOpen; if (kindDropdownOpen) { if (!selectedCustomTarget) kindFilter = ''; nsDropdownOpen = false }"
                 >
                   <span class="combobox-trigger-main">
                     <span class="combobox-label">资源类型</span>
-                    <span class="combobox-value">{{ selectedKindLabel }}</span>
+                    <span class="combobox-value">{{ workbenchKindLabel }}</span>
                   </span>
                   <span class="combobox-arrow">▼</span>
                 </button>
                 <div v-show="kindDropdownOpen" ref="kindMenuRef" class="combobox-menu combobox-menu-grouped">
                   <div class="combobox-panel-head">
                     <div class="combobox-panel-title">选择资源类型</div>
-                    <div class="combobox-panel-subtitle">快速切换当前工作台的资源视图</div>
+                    <div class="combobox-panel-subtitle">内置资源按分组浏览；CRD 在下方专区搜索后选择</div>
                   </div>
                   <div class="combobox-search">
                     <input
                       v-model="kindFilter"
                       type="text"
                       class="combobox-input"
-                      placeholder="搜索资源类型…"
+                      placeholder="筛选内置类型，或在 CRD 专区匹配 Kind / plural / 短名…"
                       autocomplete="off"
                     />
+                  </div>
+                  <div v-if="kindFilter.trim() && customResourceHintLine" class="kind-custom-hint-wrap">
+                    <span :class="customResourceStatusClass">{{ customResourceHintLine }}</span>
                   </div>
                   <div v-if="recentKindItems.length > 0 && !kindFilter.trim()" class="recent-kind-panel">
                     <div class="recent-kind-title">最近使用</div>
@@ -2860,7 +3239,7 @@ onUnmounted(() => {
                         :key="`recent-kind-${k.id}`"
                         type="button"
                         class="recent-kind-pill"
-                        :class="{ active: selectedKind === k.id }"
+                        :class="{ active: !selectedCustomTarget && selectedKind === k.id }"
                         @click="selectKindAndClearDrill(k.id)"
                       >
                         {{ k.label }}
@@ -2874,20 +3253,42 @@ onUnmounted(() => {
                       :key="k.id"
                       type="button"
                       class="combobox-item"
-                      :class="{ active: selectedKind === k.id }"
+                      :class="{ active: !selectedCustomTarget && selectedKind === k.id }"
                       @click="selectKindAndClearDrill(k.id)"
                     >
                       <span class="combobox-item-main">
                         <span class="combobox-item-title">{{ k.label }}</span>
                       </span>
-                      <span class="combobox-item-check">{{ selectedKind === k.id ? "✓" : "" }}</span>
+                      <span class="combobox-item-check">{{ !selectedCustomTarget && selectedKind === k.id ? "✓" : "" }}</span>
+                    </button>
+                  </template>
+                  <div class="combobox-group-label">CRD（自定义资源）</div>
+                  <div v-if="!kindFilter.trim()" class="kind-crd-empty-hint">
+                    在上方输入框搜索后，此处列出与集群发现匹配的 CRD 类型；选中后表格展示该资源的实例列表。
+                  </div>
+                  <template v-if="kindFilter.trim() && customKindCandidates.length > 0">
+                    <button
+                      v-for="target in customKindCandidates"
+                      :key="`${target.api_version}/${target.kind}/${target.plural}`"
+                      type="button"
+                      class="combobox-item"
+                      :class="{ active: selectedCustomTarget?.api_version === target.api_version && selectedCustomTarget?.kind === target.kind && selectedCustomTarget?.plural === target.plural }"
+                      @click="selectCustomKindOption(target)"
+                    >
+                      <span class="combobox-item-main">
+                        <span class="combobox-item-title">{{ target.kind }}</span>
+                        <span class="combobox-item-subtitle">{{ target.api_version }} · {{ target.plural }} · {{ target.namespaced ? "Namespaced" : "Cluster" }}</span>
+                      </span>
+                      <span class="combobox-item-check">
+                        {{ selectedCustomTarget?.api_version === target.api_version && selectedCustomTarget?.kind === target.kind && selectedCustomTarget?.plural === target.plural ? "✓" : "" }}
+                      </span>
                     </button>
                   </template>
                 </div>
               </div>
               <div class="toolbar-actions">
                 <button
-                  v-if="currentId && resourceSupportsWatch(selectedKind)"
+                  v-if="currentId && resourceSupportsWatch(selectedKind) && !selectedCustomTarget"
                   type="button"
                   class="btn-watch"
                   :class="{ active: watchEnabled }"
@@ -2899,7 +3300,7 @@ onUnmounted(() => {
                 <button type="button" class="btn-refresh" :disabled="listLoading" @click="loadList">
                   {{ listLoading ? "刷新中…" : "刷新" }}
                 </button>
-                <template v-if="currentId">
+                <template v-if="currentId && !selectedCustomTarget">
                   <button
                     v-if="!batchDeleteMode"
                     type="button"
@@ -2941,7 +3342,7 @@ onUnmounted(() => {
                   placeholder="Label 筛选，如 app=nginx"
                   autocomplete="off"
                   title="K8s label selector，如 app=nginx 或 env in (prod,staging)"
-                  @keyup.enter="watchEnabled && resourceSupportsWatch(selectedKind) ? applyWatch() : loadList()"
+                  @keyup.enter="watchEnabled && resourceSupportsWatch(selectedKind) && !selectedCustomTarget ? applyWatch() : loadList()"
                 />
               </div>
               <div v-if="selectedKind === 'pods' || selectedKind === 'services'" class="toolbar-filters-secondary">
@@ -3488,6 +3889,7 @@ onUnmounted(() => {
       @close="deleteConfirmVisible = false"
       @confirm="onDeleteConfirm"
     />
+
   </div>
 </template>
 
@@ -4122,6 +4524,42 @@ onUnmounted(() => {
 .combobox-group-label:first-of-type {
   border-top: none;
   padding-top: 0.25rem;
+}
+.toolbar-cr-hint-wrap {
+  min-height: 1rem;
+  padding-left: 0.1rem;
+}
+.kind-custom-hint-wrap {
+  padding: 0 0.75rem 0.35rem;
+}
+.kind-crd-empty-hint {
+  padding: 0.35rem 0.75rem 0.6rem;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  color: #64748b;
+}
+.toolbar-cr-hint {
+  font-size: 0.7rem;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.toolbar-cr-hint.muted {
+  color: #94a3b8;
+}
+.toolbar-cr-hint.loading {
+  color: #2563eb;
+}
+.toolbar-cr-hint.ok {
+  color: #047857;
+}
+.toolbar-cr-hint.warn {
+  color: #b45309;
+}
+.toolbar-cr-hint.err {
+  color: #b91c1c;
 }
 .resource-table tbody tr.row-clickable {
   cursor: pointer;

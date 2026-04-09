@@ -12,7 +12,9 @@ import ResourceSnapshotPanel from "./ResourceSnapshotPanel.vue";
 import ResourceSnapshotViewer from "./ResourceSnapshotViewer.vue";
 import {
   kubeApplyResource,
+  kubeDescribeDynamicResource,
   kubeDescribeResource,
+  kubeGetDynamicResource,
   kubeGetResource,
 } from "../api/kube";
 import { useYamlMonacoTheme } from "../stores/yamlTheme";
@@ -37,6 +39,8 @@ export interface SelectedResource {
   kind: string;
   name: string;
   namespace: string | null;
+  /** 动态 API 资源（如 CRD）：走专用 get/describe。 */
+  dynamic?: { api_version: string; namespaced: boolean };
 }
 
 interface NodeTaintDraft {
@@ -314,12 +318,20 @@ async function fetchYaml() {
   error.value = null;
   rawYaml.value = "";
   try {
-    rawYaml.value = await kubeGetResource(
-      props.envId,
-      props.resource.kind,
-      props.resource.name,
-      props.resource.namespace
-    );
+    rawYaml.value = props.resource.dynamic
+      ? await kubeGetDynamicResource(
+          props.envId,
+          props.resource.dynamic.api_version,
+          props.resource.kind,
+          props.resource.name,
+          props.resource.namespace
+        )
+      : await kubeGetResource(
+          props.envId,
+          props.resource.kind,
+          props.resource.name,
+          props.resource.namespace
+        );
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     const isStrongholdRequired = await handleStrongholdLocked(msg, () => {
@@ -338,12 +350,20 @@ async function fetchDescribe() {
   describeError.value = null;
   describeMarkdown.value = "";
   try {
-    const res = await kubeDescribeResource(
-      props.envId,
-      props.resource.kind,
-      props.resource.name,
-      props.resource.namespace
-    );
+    const res = props.resource.dynamic
+      ? await kubeDescribeDynamicResource(
+          props.envId,
+          props.resource.dynamic.api_version,
+          props.resource.kind,
+          props.resource.name,
+          props.resource.namespace
+        )
+      : await kubeDescribeResource(
+          props.envId,
+          props.resource.kind,
+          props.resource.name,
+          props.resource.namespace
+        );
     describeMarkdown.value = res.markdown;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -473,7 +493,7 @@ watch(
         nextTab = "logs";
       } else if (initialTab === "taints" && kind === "Node") {
         nextTab = "taints";
-      } else if (initialTab === "topology") {
+      } else if (initialTab === "topology" && !props.resource?.dynamic) {
         nextTab = "topology";
       }
 
@@ -618,6 +638,7 @@ watch(
                 <span class="tab-title">配置</span>
               </button>
               <button
+                v-if="resource && !resource.dynamic"
                 type="button"
                 class="tab-btn tab-compact"
                 :class="{ active: activeTab === 'topology' }"
