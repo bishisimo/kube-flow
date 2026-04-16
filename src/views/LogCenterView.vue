@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+
+defineOptions({ name: "LogCenterView" });
 import LogView from "./LogView.vue";
 import PodLogPanel from "../components/PodLogPanel.vue";
 import WorkloadLogPanel from "../components/WorkloadLogPanel.vue";

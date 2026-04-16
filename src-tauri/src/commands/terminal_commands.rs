@@ -1,4 +1,5 @@
-use crate::config::{app_settings_config_path, ssh_config_get_host_config, AppSettingsConfig};
+use crate::commands::kube_command_context::{err_str, load_app_settings, CommandResult};
+use crate::config::ssh_config_get_host_config;
 use crate::credentials::{AuthMethod, CredentialKey, CredentialManager};
 use crate::env::{EnvService, EnvironmentSource};
 use crate::kube::{resource_get, KubeClientStore};
@@ -253,7 +254,7 @@ async fn resolve_pod_debug_command(
     env: &crate::env::Environment,
     target: &PodDebugTargetRequest,
 ) -> Result<String, String> {
-    let client = kube_store.get_or_build(env).await.map_err(|e| e.to_string())?;
+    let client = kube_store.get_or_build(env).await.map_err(err_str)?;
     let pod_value = resource_get::get_resource_value(
         &client,
         "Pod",
@@ -261,7 +262,7 @@ async fn resolve_pod_debug_command(
         Some(&target.namespace),
     )
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(err_str)?;
     let container_id = if target.pid.is_some() {
         None
     } else {
@@ -358,7 +359,7 @@ impl HostShellStore {
     pub async fn send_stdin(&self, stream_id: &str, data: Vec<u8>) -> Result<(), String> {
         let guard = self.sessions.read().await;
         let session = guard.get(stream_id).ok_or_else(|| "session not found".to_string())?;
-        session.stdin_tx.send(data).await.map_err(|e| e.to_string())
+        session.stdin_tx.send(data).await.map_err(err_str)
     }
 
     pub async fn stop(&self, stream_id: &str) {
@@ -371,7 +372,7 @@ impl HostShellStore {
         let guard = self.sessions.read().await;
         let session = guard.get(stream_id).ok_or_else(|| "session not found".to_string())?;
         if let Some(ref tx) = session.resize_tx {
-            tx.send((cols, rows)).await.map_err(|e| e.to_string())
+            tx.send((cols, rows)).await.map_err(err_str)
         } else {
             Err("session has no tty".to_string())
         }
@@ -382,11 +383,6 @@ impl Default for HostShellStore {
     fn default() -> Self {
         Self::new()
     }
-}
-
-fn load_settings() -> Result<AppSettingsConfig, String> {
-    let path = app_settings_config_path().ok_or("app data dir 不可用".to_string())?;
-    AppSettingsConfig::load(&path).map_err(|e| e.to_string())
 }
 
 fn build_local_shell_command() -> Command {
@@ -537,10 +533,10 @@ if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi";
     #[cfg(unix)]
     {
         if tunnel.has_saved_credential {
-            let settings = load_settings()?;
+            let settings = load_app_settings()?;
             let password = manager
                 .get(&CredentialKey::new(&tunnel.id), &settings.security)
-                .map_err(|e| e.to_string())?;
+                .map_err(err_str)?;
             if let Some(ref pwd) = password {
                 let askpass = SshAskpassGuard::new(pwd)
                     .map_err(|e| format!("创建 SSH_ASKPASS 失败: {}", e))?;
@@ -597,7 +593,7 @@ async fn resolve_host_shell_automation(
         if credential_id.trim().is_empty() {
             None
         } else {
-            let settings = load_settings()?;
+            let settings = load_app_settings()?;
             manager.get(&CredentialKey::new(credential_id), &settings.security)?
         }
     } else {
@@ -900,9 +896,9 @@ pub async fn host_shell_start(
     kube_store: State<'_, KubeClientStore>,
     env_id: String,
     bootstrap: Option<HostShellBootstrapRequest>,
-) -> Result<String, String> {
+) -> CommandResult<String> {
     let env = EnvService::list()
-        .map_err(|e| e.to_string())?
+        .map_err(err_str)?
         .into_iter()
         .find(|e| e.id == env_id)
         .ok_or_else(|| "environment not found".to_string())?;
@@ -937,7 +933,7 @@ pub async fn host_shell_start(
                 .clone()
                 .ok_or_else(|| "环境缺少 ssh_tunnel_id".to_string())?;
             let tunnel = EnvService::get_ssh_tunnel(&tunnel_id)
-                .map_err(|e| e.to_string())?
+                .map_err(err_str)?
                 .ok_or_else(|| format!("未找到隧道配置: {}", tunnel_id))?;
             let (cmd, askpass_guard) =
                 build_remote_shell_command(&tunnel, &manager, bootstrap_command)?;
@@ -963,7 +959,7 @@ pub async fn host_shell_stdin(
     store: State<'_, Arc<HostShellStore>>,
     stream_id: String,
     data: Vec<u8>,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     store.send_stdin(&stream_id, data).await
 }
 
@@ -973,7 +969,7 @@ pub async fn host_shell_resize(
     stream_id: String,
     cols: u16,
     rows: u16,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     store.send_resize(&stream_id, cols, rows).await
 }
 
@@ -981,7 +977,7 @@ pub async fn host_shell_resize(
 pub async fn host_shell_stop(
     store: State<'_, Arc<HostShellStore>>,
     stream_id: String,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     store.stop(&stream_id).await;
     Ok(())
 }

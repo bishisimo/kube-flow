@@ -24,7 +24,6 @@ use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding, Role, RoleBind
 use k8s_openapi::api::storage::v1::StorageClass;
 use kube::runtime::watcher::{watcher, Config as WatcherConfig};
 use kube::{api::ResourceExt, Api, Client};
-use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
@@ -66,30 +65,6 @@ impl WatchStore {
     }
 }
 
-#[derive(Debug, Serialize)]
-#[serde(tag = "kind", content = "items")]
-#[allow(non_camel_case_types, dead_code)]
-pub enum WatchPayload {
-    namespaces(Vec<NamespaceItem>),
-    nodes(Vec<NodeItem>),
-    pods(Vec<PodItem>),
-    deployments(Vec<DeploymentItem>),
-    services(Vec<ServiceItem>),
-    statefulsets(Vec<StatefulSetItem>),
-    configmaps(Vec<ConfigMapItem>),
-    secrets(Vec<SecretItem>),
-    serviceaccounts(Vec<ServiceAccountItem>),
-    roles(Vec<RoleItem>),
-    rolebindings(Vec<RoleBindingItem>),
-    clusterroles(Vec<ClusterRoleItem>),
-    clusterrolebindings(Vec<ClusterRoleBindingItem>),
-    daemonsets(Vec<DaemonSetItem>),
-    persistentvolumeclaims(Vec<PersistentVolumeClaimItem>),
-    persistentvolumes(Vec<PersistentVolumeItem>),
-    storageclasses(Vec<StorageClassItem>),
-    endpoints(Vec<EndpointsItem>),
-    endpointslices(Vec<EndpointSliceItem>),
-}
 
 fn pod_to_item(p: Pod, ns: &str) -> PodItem {
     let total = p
@@ -235,7 +210,6 @@ fn node_to_item(n: Node) -> NodeItem {
     }
 }
 
-#[allow(dead_code)]
 fn statefulset_to_item(s: StatefulSet, ns: &str, pod_rollup: WorkloadPodRollup) -> StatefulSetItem {
     let replicas = s.spec.as_ref().and_then(|sp| sp.replicas);
     let ready = s.status.and_then(|st| st.ready_replicas);
@@ -251,7 +225,6 @@ fn statefulset_to_item(s: StatefulSet, ns: &str, pod_rollup: WorkloadPodRollup) 
     }
 }
 
-#[allow(dead_code)]
 fn configmap_to_item(c: ConfigMap, ns: &str) -> ConfigMapItem {
     let keys = c.data.as_ref().map(|d| d.len() as u32);
     ConfigMapItem {
@@ -262,7 +235,6 @@ fn configmap_to_item(c: ConfigMap, ns: &str) -> ConfigMapItem {
     }
 }
 
-#[allow(dead_code)]
 fn secret_to_item(s: Secret, ns: &str) -> SecretItem {
     let keys = s.data.as_ref().map(|d| d.len() as u32);
     SecretItem {
@@ -274,7 +246,6 @@ fn secret_to_item(s: Secret, ns: &str) -> SecretItem {
     }
 }
 
-#[allow(dead_code)]
 fn serviceaccount_to_item(s: ServiceAccount, ns: &str) -> ServiceAccountItem {
     ServiceAccountItem {
         name: s.metadata.name.unwrap_or_default(),
@@ -283,7 +254,6 @@ fn serviceaccount_to_item(s: ServiceAccount, ns: &str) -> ServiceAccountItem {
     }
 }
 
-#[allow(dead_code)]
 fn role_to_item(r: Role, ns: &str) -> RoleItem {
     RoleItem {
         name: r.metadata.name.unwrap_or_default(),
@@ -292,7 +262,6 @@ fn role_to_item(r: Role, ns: &str) -> RoleItem {
     }
 }
 
-#[allow(dead_code)]
 fn rolebinding_to_item(r: RoleBinding, ns: &str) -> RoleBindingItem {
     let rr = &r.role_ref;
     let role_ref = Some(format!("{}/{}", rr.kind, rr.name));
@@ -322,7 +291,6 @@ fn rolebinding_to_item(r: RoleBinding, ns: &str) -> RoleBindingItem {
     }
 }
 
-#[allow(dead_code)]
 fn clusterrole_to_item(r: ClusterRole) -> ClusterRoleItem {
     ClusterRoleItem {
         name: r.metadata.name.unwrap_or_default(),
@@ -330,7 +298,6 @@ fn clusterrole_to_item(r: ClusterRole) -> ClusterRoleItem {
     }
 }
 
-#[allow(dead_code)]
 fn clusterrolebinding_to_item(r: ClusterRoleBinding) -> ClusterRoleBindingItem {
     let rr = &r.role_ref;
     let role_ref = Some(format!("{}/{}", rr.kind, rr.name));
@@ -359,7 +326,6 @@ fn clusterrolebinding_to_item(r: ClusterRoleBinding) -> ClusterRoleBindingItem {
     }
 }
 
-#[allow(dead_code)]
 fn daemonset_to_item(d: DaemonSet, ns: &str, pod_rollup: WorkloadPodRollup) -> DaemonSetItem {
     let desired = d.status.as_ref().map(|s| s.desired_number_scheduled);
     let ready = d.status.map(|s| s.number_ready);
@@ -375,7 +341,6 @@ fn daemonset_to_item(d: DaemonSet, ns: &str, pod_rollup: WorkloadPodRollup) -> D
     }
 }
 
-#[allow(dead_code)]
 fn pvc_to_item(p: PersistentVolumeClaim, ns: &str) -> PersistentVolumeClaimItem {
     let status = p.status.as_ref().and_then(|s| s.phase.clone());
     let capacity = p
@@ -397,7 +362,6 @@ fn pvc_to_item(p: PersistentVolumeClaim, ns: &str) -> PersistentVolumeClaimItem 
     }
 }
 
-#[allow(dead_code)]
 fn pv_to_item(p: PersistentVolume) -> PersistentVolumeItem {
     let status = p.status.as_ref().and_then(|s| s.phase.clone());
     let capacity = p
@@ -414,7 +378,6 @@ fn pv_to_item(p: PersistentVolume) -> PersistentVolumeItem {
     }
 }
 
-#[allow(dead_code)]
 fn storageclass_to_item(s: StorageClass) -> StorageClassItem {
     StorageClassItem {
         name: s.metadata.name.unwrap_or_default(),
@@ -424,7 +387,6 @@ fn storageclass_to_item(s: StorageClass) -> StorageClassItem {
     }
 }
 
-#[allow(dead_code)]
 fn endpoints_to_item(e: Endpoints, ns: &str) -> EndpointsItem {
     let subsets = e.subsets.as_ref().map(|s| s.len() as u32);
     EndpointsItem {
@@ -435,7 +397,6 @@ fn endpoints_to_item(e: Endpoints, ns: &str) -> EndpointsItem {
     }
 }
 
-#[allow(dead_code)]
 fn endpointslice_to_item(e: EndpointSlice, ns: &str) -> EndpointSliceItem {
     let endpoints = Some(e.endpoints.len() as u32);
     EndpointSliceItem {

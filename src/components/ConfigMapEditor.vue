@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, computed } from "vue";
 import * as jsYaml from "js-yaml";
+import { extractErrorMessage } from "../utils/errorMessage";
 import ValueEditor from "./ValueEditor.vue";
 
 export interface KeyValueRow {
@@ -178,7 +179,7 @@ function doApply() {
     const yaml = buildYaml();
     emit("save", yaml);
   } catch (e) {
-    emit("error", e instanceof Error ? e.message : String(e));
+    emit("error", extractErrorMessage(e));
   }
 }
 

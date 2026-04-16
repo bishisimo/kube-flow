@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
+import { useSaveable } from "../features/settings/useSaveable";
 import { CodeEditor } from "monaco-editor-vue3";
 import {
   logGetLevel,
@@ -37,6 +38,7 @@ import {
   type ResourceDeployStrategy,
   type TunnelMappingMode,
 } from "../api/config";
+import { extractErrorMessage } from "../utils/errorMessage";
 import { useAppSettingsStore } from "../stores/appSettings";
 import { useEnvStore } from "../stores/env";
 import { useStrongholdStatusStore } from "../stores/strongholdStatus";
@@ -85,8 +87,7 @@ const currentLogActiveStreamLimit = ref(3);
 const currentNodeResourceUsageEnabled = ref(false);
 const builtinGpuResourceNames = ref<string[]>([]);
 const customGpuResourceRules = ref<GpuResourceRule[]>([]);
-const saving = ref(false);
-const message = ref<string | null>(null);
+const { saving, message, runSave } = useSaveable();
 const yamlThemePreview = `apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -213,7 +214,7 @@ async function handleSetCredentialStore(store: CredentialStoreKind) {
     await refreshStrongholdStatus();
     showSecurityMsg("已保存");
   } catch (e) {
-    showSecurityMsg(e instanceof Error ? e.message : String(e), true);
+    showSecurityMsg(extractErrorMessage(e), true);
   } finally {
     securityLoading.value = false;
   }
@@ -225,7 +226,7 @@ async function handleAutoLockChange(minutes: number) {
     securityCfg.value.auto_lock_minutes = minutes;
     showSecurityMsg("已保存");
   } catch (e) {
-    showSecurityMsg(e instanceof Error ? e.message : String(e), true);
+    showSecurityMsg(extractErrorMessage(e), true);
   }
 }
 
@@ -239,7 +240,7 @@ async function handleSaveStrongholdPath() {
     editingStrongholdPath.value = false;
     showSecurityMsg("路径已更新");
   } catch (e) {
-    showSecurityMsg(e instanceof Error ? e.message : String(e), true);
+    showSecurityMsg(extractErrorMessage(e), true);
   } finally {
     securityLoading.value = false;
   }
@@ -258,7 +259,7 @@ async function handleStrongholdInit() {
     masterPasswordConfirm.value = "";
     showSecurityMsg("Stronghold 已初始化并解锁");
   } catch (e) {
-    showSecurityMsg(e instanceof Error ? e.message : String(e), true);
+    showSecurityMsg(extractErrorMessage(e), true);
   } finally {
     securityLoading.value = false;
   }
@@ -277,7 +278,7 @@ async function handleStrongholdUnlock() {
     savedCredentials.value = await credentialList();
     showSecurityMsg("已解锁");
   } catch (e) {
-    showSecurityMsg(e instanceof Error ? e.message : String(e), true);
+    showSecurityMsg(extractErrorMessage(e), true);
   } finally {
     securityLoading.value = false;
   }
@@ -297,105 +298,58 @@ async function handleDeleteCredential(tunnelId: string) {
     savedCredentials.value = savedCredentials.value.filter((c) => c.tunnel_id !== tunnelId);
     showSecurityMsg("凭证已删除");
   } catch (e) {
-    showSecurityMsg(e instanceof Error ? e.message : String(e), true);
+    showSecurityMsg(extractErrorMessage(e), true);
   } finally {
     securityLoading.value = false;
   }
 }
 
 async function saveSshTunnelMode(mode: TunnelMappingMode) {
-  saving.value = true;
-  message.value = null;
-  try {
+  await runSave(async () => {
     await appSettingsSetSshTunnelMode(mode);
     currentSshTunnelMode.value = mode;
-    message.value = "已保存";
-    setTimeout(() => (message.value = null), 2000);
-  } catch (e) {
-    message.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    saving.value = false;
-  }
+  });
 }
 
 async function saveAutoSnapshotEnabled(enabled: boolean) {
-  saving.value = true;
-  message.value = null;
-  try {
+  await runSave(async () => {
     await appSettingsSetAutoSnapshotEnabled(enabled);
     currentAutoSnapshotEnabled.value = enabled;
     autoSnapshotEnabled.value = enabled;
-    message.value = "已保存";
-    setTimeout(() => (message.value = null), 2000);
-  } catch (e) {
-    message.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    saving.value = false;
-  }
+  });
 }
 
 async function saveAutoSnapshotLimitPerResource(limit: number) {
-  saving.value = true;
-  message.value = null;
-  try {
+  await runSave(async () => {
     const normalized = Math.max(0, Math.min(100, Math.floor(Number.isFinite(limit) ? limit : 10)));
     await appSettingsSetAutoSnapshotLimitPerResource(normalized);
     currentAutoSnapshotLimitPerResource.value = normalized;
     autoSnapshotLimitPerResource.value = normalized;
-    message.value = "已保存";
-    setTimeout(() => (message.value = null), 2000);
-  } catch (e) {
-    message.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    saving.value = false;
-  }
+  });
 }
 
 async function saveTerminalInstanceCacheLimit(limit: number) {
   const normalized = Math.min(20, Math.max(1, Math.floor(Number.isFinite(limit) ? limit : 6)));
   currentTerminalInstanceCacheLimit.value = normalized;
-  saving.value = true;
-  message.value = null;
-  try {
+  await runSave(async () => {
     await appSettingsSetTerminalInstanceCacheLimit(normalized);
     terminalInstanceCacheLimit.value = normalized;
-    message.value = "已保存";
-  } catch (e) {
-    message.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    saving.value = false;
-  }
+  });
 }
 
 async function saveResourceDeployStrategy(strategy: ResourceDeployStrategy) {
-  saving.value = true;
-  message.value = null;
-  try {
+  await runSave(async () => {
     await appSettingsSetResourceDeployStrategy(strategy);
     currentResourceDeployStrategy.value = strategy;
-    message.value = "已保存";
-    setTimeout(() => (message.value = null), 2000);
-  } catch (e) {
-    message.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    saving.value = false;
-  }
+  });
 }
 
 async function saveNodeResourceUsageEnabled(enabled: boolean) {
-  saving.value = true;
-  message.value = null;
-  try {
+  await runSave(async () => {
     await appSettingsSetNodeResourceUsageEnabled(enabled);
     currentNodeResourceUsageEnabled.value = enabled;
     nodeResourceUsageEnabled.value = enabled;
-    message.value = "已保存";
-    setTimeout(() => (message.value = null), 2000);
-  } catch (e) {
-    message.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    saving.value = false;
-  }
+  });
 }
 
 function addGpuRuleRow() {
@@ -410,9 +364,7 @@ function removeGpuRuleRow(index: number) {
 }
 
 async function saveCustomGpuResourceNames() {
-  saving.value = true;
-  message.value = null;
-  try {
+  await runSave(async () => {
     const rules = customGpuResourceRules.value
       .map((item) => ({
         display_name: item.display_name.trim(),
@@ -421,79 +373,42 @@ async function saveCustomGpuResourceNames() {
       .filter((item) => item.resource_name.length > 0);
     await appSettingsSetCustomGpuResourceRules(rules);
     customGpuResourceRules.value = rules.length ? rules : [{ display_name: "", resource_name: "" }];
-    message.value = "已保存";
-    setTimeout(() => (message.value = null), 2000);
-  } catch (e) {
-    message.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    saving.value = false;
-  }
+  });
 }
 
 async function saveLogActiveStreamLimit(limit: number) {
   const normalized = Math.min(12, Math.max(1, Math.floor(Number.isFinite(limit) ? limit : 3)));
   currentLogActiveStreamLimit.value = normalized;
-  saving.value = true;
-  message.value = null;
-  try {
+  await runSave(async () => {
     await appSettingsSetLogActiveStreamLimit(normalized);
     logActiveStreamLimit.value = normalized;
-    message.value = "已保存";
-  } catch (e) {
-    message.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    saving.value = false;
-  }
+  });
 }
 
 async function saveLevel(level: LogLevel) {
-  saving.value = true;
-  message.value = null;
-  try {
+  await runSave(async () => {
     await logSetLevel(level);
     currentLevel.value = level;
-    message.value = "已保存";
-    setTimeout(() => (message.value = null), 2000);
     triggerLogRefresh();
-  } catch (e) {
-    message.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    saving.value = false;
-  }
+  });
 }
 
 async function saveDisplaySettings(order: LogDisplayOrder, format: LogDisplayFormat) {
-  saving.value = true;
-  message.value = null;
-  try {
+  await runSave(async () => {
     await logSetDisplaySettings(order, format, currentLogTailLines.value);
     currentOrder.value = order;
     currentFormat.value = format;
-    message.value = "已保存";
-    setTimeout(() => (message.value = null), 2000);
     triggerLogRefresh();
-  } catch (e) {
-    message.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    saving.value = false;
-  }
+  });
 }
 
 async function saveLogTailLines(lines: number) {
-  saving.value = true;
-  message.value = null;
-  try {
+  await runSave(async () => {
     const normalized = Math.max(1, Math.min(5000, Math.floor(Number.isFinite(lines) ? lines : 100)));
     await logSetDisplaySettings(currentOrder.value, currentFormat.value, normalized);
     currentLogTailLines.value = normalized;
-    message.value = "已保存";
-    setTimeout(() => (message.value = null), 2000);
     triggerLogRefresh();
-  } catch (e) {
-    message.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    saving.value = false;
-  }
+  });
 }
 
 onMounted(() => {

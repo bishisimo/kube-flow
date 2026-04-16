@@ -1,4 +1,5 @@
 import { computed, ref } from "vue";
+import { uid } from "../utils/uid";
 
 export interface LogCenterSession {
   id: string;
@@ -29,9 +30,6 @@ export const switchToLogCenterRequested = ref(0);
 const sessions = ref<LogCenterSession[]>([]);
 const currentSessionId = ref<string | null>(null);
 
-function createId(): string {
-  return `log-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
 
 export function useLogCenterStore() {
   const currentSession = computed(() =>
@@ -66,7 +64,7 @@ export function useLogCenterStore() {
       currentSessionId.value = existing.id;
       return existing.id;
     }
-    const id = createId();
+    const id = uid("log");
     sessions.value.unshift({ ...input, id });
     currentSessionId.value = id;
     return id;

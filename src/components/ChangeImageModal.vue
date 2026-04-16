@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import * as jsYaml from "js-yaml";
+import { extractErrorMessage } from "../utils/errorMessage";
 import { kubeGetResource, kubePatchContainerImages } from "../api/kube";
 import {
   createResourceSnapshot,
@@ -116,7 +117,7 @@ async function fetchAndParse() {
     resourceYaml.value = yaml;
     containers.value = parseContainersFromYaml(yaml);
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
+    error.value = extractErrorMessage(e);
   } finally {
     loading.value = false;
   }
@@ -162,7 +163,7 @@ async function applyPatch() {
     emit("success");
     emit("close");
   } catch (e) {
-    imagePatchError.value = e instanceof Error ? e.message : String(e);
+    imagePatchError.value = extractErrorMessage(e);
   } finally {
     imagePatchSaving.value = false;
   }

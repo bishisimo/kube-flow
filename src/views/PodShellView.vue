@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+
+defineOptions({ name: "PodShellView" });
 import { useShellStore } from "../stores/shell";
 import { useEnvStore } from "../stores/env";
 import {
@@ -11,6 +13,8 @@ import {
   type PodItem,
 } from "../api/kube";
 import { hostShellStart, hostShellStdin, hostShellStop } from "../api/terminal";
+import { extractErrorMessage } from "../utils/errorMessage";
+import { isConnectionError } from "../stores/connection";
 import { useStrongholdAuthStore } from "../stores/strongholdAuth";
 import { useAppSettingsStore } from "../stores/appSettings";
 import PodShellTerminal from "../components/PodShellTerminal.vue";
@@ -101,10 +105,6 @@ function sessionLabel(session: (typeof sessions.value)[number]): string {
   return `${session.podName || "-"}${session.container ? ` (${session.container})` : ""}`;
 }
 
-function extractErrorMessage(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
-
 async function handleStrongholdLocked(message: string, onConfirmed: () => void): Promise<boolean> {
   return strongholdAuth.checkAndHandle(message, onConfirmed, {
     title: "解锁终端凭证",
@@ -112,23 +112,6 @@ async function handleStrongholdLocked(message: string, onConfirmed: () => void):
   });
 }
 
-function isLikelyConnectionError(message?: string): boolean {
-  if (!message) return false;
-  const m = message.toLowerCase();
-  return [
-    "timeout",
-    "timed out",
-    "connection reset",
-    "broken pipe",
-    "eof",
-    "disconnected",
-    "unreachable",
-    "transport",
-    "ssh",
-    "tcp",
-    "session not found",
-  ].some((k) => m.includes(k));
-}
 
 function isNonRetryableTerminalError(message?: string): boolean {
   if (!message) return false;
@@ -299,7 +282,7 @@ function scheduleReconnect(sessionId: string, reason?: string) {
   });
   const timer = setTimeout(async () => {
     reconnectTimerMap.delete(sessionId);
-    const resetClient = isLikelyConnectionError(reason);
+    const resetClient = isConnectionError(reason ?? "");
     const ok = await tryReconnectSession(sessionId, resetClient);
     if (!ok) {
       const latest = sessions.value.find((item) => item.id === sessionId);

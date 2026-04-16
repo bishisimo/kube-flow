@@ -8,6 +8,7 @@ import {
   type LogDisplayFormat,
 } from "../api/log";
 import { useLogStore } from "../stores/log";
+import { extractErrorMessage } from "../utils/errorMessage";
 
 const props = defineProps<{ visible?: boolean }>();
 const { logRefreshTrigger } = useLogStore();
@@ -83,7 +84,7 @@ async function refresh() {
     displayOrder.value = settings.order;
     displayFormat.value = settings.format;
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
+    error.value = extractErrorMessage(e);
   } finally {
     loading.value = false;
   }
@@ -96,7 +97,7 @@ async function clear() {
     await logClear();
     rawContent.value = "";
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
+    error.value = extractErrorMessage(e);
   } finally {
     clearing.value = false;
   }

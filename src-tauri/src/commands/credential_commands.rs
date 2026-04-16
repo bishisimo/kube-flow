@@ -12,7 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tauri::{Manager, State};
 
-use crate::config::{app_settings_config_path, ensure_app_data_dir, AppSettingsConfig, SecurityConfig};
+use crate::commands::kube_command_context::{err_str, load_app_settings, CommandResult};
+use crate::config::{app_settings_config_path, ensure_app_data_dir, SecurityConfig};
 use crate::credentials::{CredentialInfo, CredentialKey, CredentialManager, CredentialStoreKind, StrongholdStatus};
 
 /// Stronghold 自动锁定调度器：通过递增序号取消旧计时任务。
@@ -58,21 +59,16 @@ impl StrongholdAutoLockController {
 // 安全设置
 // ──────────────────────────────────────────
 
-fn load_settings() -> Result<AppSettingsConfig, String> {
-    let path = app_settings_config_path().ok_or("app data dir 不可用")?;
-    AppSettingsConfig::load(&path).map_err(|e| e.to_string())
-}
-
-fn save_settings(cfg: &AppSettingsConfig) -> Result<(), String> {
+fn save_settings(cfg: &crate::config::AppSettingsConfig) -> CommandResult<()> {
     ensure_app_data_dir().ok_or("无法创建 app data dir")?;
     let path = app_settings_config_path().ok_or("app data dir 不可用")?;
-    cfg.save(&path).map_err(|e| e.to_string())
+    cfg.save(&path).map_err(err_str)
 }
 
 /// 读取安全配置（凭证存储类型、Stronghold 路径、自动锁定时间）。
 #[tauri::command]
-pub fn security_get_settings() -> Result<SecurityConfig, String> {
-    Ok(load_settings()?.security)
+pub fn security_get_settings() -> CommandResult<SecurityConfig> {
+    Ok(load_app_settings()?.security)
 }
 
 /// 更新凭证存储后端类型（os_keychain / stronghold）。
@@ -82,9 +78,9 @@ pub fn security_set_credential_store(
     store: String,
     manager: State<'_, CredentialManager>,
     auto_lock: State<'_, StrongholdAutoLockController>,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     let kind = CredentialStoreKind::from_str(&store);
-    let mut cfg = load_settings()?;
+    let mut cfg = load_app_settings()?;
     cfg.security.credential_store = kind;
     save_settings(&cfg)?;
     auto_lock.cancel();
@@ -104,8 +100,8 @@ pub fn security_set_stronghold_path(
     path: String,
     manager: State<'_, CredentialManager>,
     auto_lock: State<'_, StrongholdAutoLockController>,
-) -> Result<(), String> {
-    let mut cfg = load_settings()?;
+) -> CommandResult<()> {
+    let mut cfg = load_app_settings()?;
     cfg.security.stronghold_snapshot_path = path.clone();
     save_settings(&cfg)?;
     auto_lock.cancel();
@@ -121,8 +117,8 @@ pub fn security_set_auto_lock_minutes(
     manager: State<'_, CredentialManager>,
     auto_lock: State<'_, StrongholdAutoLockController>,
     app: tauri::AppHandle,
-) -> Result<(), String> {
-    let mut cfg = load_settings()?;
+) -> CommandResult<()> {
+    let mut cfg = load_app_settings()?;
     cfg.security.auto_lock_minutes = minutes;
     save_settings(&cfg)?;
     if manager.stronghold_status() == StrongholdStatus::Unlocked {
@@ -139,8 +135,8 @@ pub fn security_set_auto_lock_minutes(
 
 /// 保存 SSH 隧道密码到持久化后端，同时更新 TOML 中的 has_saved_credential 标记。
 #[tauri::command]
-pub fn credential_save(tunnel_id: String, password: String, manager: State<'_, CredentialManager>) -> Result<(), String> {
-    let cfg = load_settings()?;
+pub fn credential_save(tunnel_id: String, password: String, manager: State<'_, CredentialManager>) -> CommandResult<()> {
+    let cfg = load_app_settings()?;
     let key = CredentialKey::new(&tunnel_id);
     manager.save(&key, &password, &cfg.security)?;
     // 更新 has_saved_credential 标记
@@ -150,8 +146,8 @@ pub fn credential_save(tunnel_id: String, password: String, manager: State<'_, C
 
 /// 从持久化后端删除凭证，同时清除内存缓存和 TOML 标记。
 #[tauri::command]
-pub fn credential_delete(tunnel_id: String, manager: State<'_, CredentialManager>) -> Result<(), String> {
-    let cfg = load_settings()?;
+pub fn credential_delete(tunnel_id: String, manager: State<'_, CredentialManager>) -> CommandResult<()> {
+    let cfg = load_app_settings()?;
     let key = CredentialKey::new(&tunnel_id);
     manager.delete(&key, &cfg.security)?;
     update_has_saved_credential(&tunnel_id, false)?;
@@ -160,24 +156,24 @@ pub fn credential_delete(tunnel_id: String, manager: State<'_, CredentialManager
 
 /// 检查指定隧道在持久化后端中是否有已保存的凭证。
 #[tauri::command]
-pub fn credential_exists(tunnel_id: String, manager: State<'_, CredentialManager>) -> Result<bool, String> {
-    let cfg = load_settings()?;
+pub fn credential_exists(tunnel_id: String, manager: State<'_, CredentialManager>) -> CommandResult<bool> {
+    let cfg = load_app_settings()?;
     let key = CredentialKey::new(&tunnel_id);
     Ok(manager.exists_in_backend(&key, &cfg.security))
 }
 
 /// 读取指定 key 对应的凭证内容；不存在时返回 None。
 #[tauri::command]
-pub fn credential_get(tunnel_id: String, manager: State<'_, CredentialManager>) -> Result<Option<String>, String> {
-    let cfg = load_settings()?;
+pub fn credential_get(tunnel_id: String, manager: State<'_, CredentialManager>) -> CommandResult<Option<String>> {
+    let cfg = load_app_settings()?;
     let key = CredentialKey::new(&tunnel_id);
     manager.get(&key, &cfg.security)
 }
 
 /// 列出持久化后端中所有已保存凭证的摘要（不含密码）。
 #[tauri::command]
-pub fn credential_list(manager: State<'_, CredentialManager>) -> Result<Vec<CredentialInfo>, String> {
-    let cfg = load_settings()?;
+pub fn credential_list(manager: State<'_, CredentialManager>) -> CommandResult<Vec<CredentialInfo>> {
+    let cfg = load_app_settings()?;
     Ok(manager.list(&cfg.security))
 }
 
@@ -204,9 +200,9 @@ pub fn stronghold_initialize(
     manager: State<'_, CredentialManager>,
     auto_lock: State<'_, StrongholdAutoLockController>,
     app: tauri::AppHandle,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     manager.stronghold_initialize(&master_password)?;
-    let minutes = load_settings()?.security.auto_lock_minutes;
+    let minutes = load_app_settings()?.security.auto_lock_minutes;
     auto_lock.schedule(app, minutes);
     Ok(())
 }
@@ -218,9 +214,9 @@ pub fn stronghold_unlock(
     manager: State<'_, CredentialManager>,
     auto_lock: State<'_, StrongholdAutoLockController>,
     app: tauri::AppHandle,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     manager.stronghold_unlock(&master_password)?;
-    let minutes = load_settings()?.security.auto_lock_minutes;
+    let minutes = load_app_settings()?.security.auto_lock_minutes;
     auto_lock.schedule(app, minutes);
     Ok(())
 }
@@ -240,14 +236,14 @@ pub fn stronghold_lock(
 // ──────────────────────────────────────────
 
 /// 更新指定隧道的 has_saved_credential 字段并写回 TOML。
-fn update_has_saved_credential(tunnel_id: &str, value: bool) -> Result<(), String> {
+fn update_has_saved_credential(tunnel_id: &str, value: bool) -> CommandResult<()> {
     use crate::config::{KubeFlowConfigFile, kube_flow_config_path};
     let path = kube_flow_config_path().ok_or("config path unavailable")?;
-    let mut cfg = KubeFlowConfigFile::load(&path).map_err(|e| e.to_string())?;
+    let mut cfg = KubeFlowConfigFile::load(&path).map_err(err_str)?;
     if let Some(t) = cfg.ssh_tunnels.iter_mut().find(|t| t.id == tunnel_id) {
         t.has_saved_credential = value;
     }
-    KubeFlowConfigFile::save(&cfg, &path).map_err(|e| e.to_string())
+    KubeFlowConfigFile::save(&cfg, &path).map_err(err_str)
 }
 
 // ──────────────────────────────────────────

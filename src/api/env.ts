@@ -32,9 +32,6 @@ export interface KubeContextInfo {
   namespace?: string | null;
 }
 
-/** 隧道映射方式：ssh=系统 ssh -L 子进程，builtin=libssh2 内置 */
-export type TunnelMappingMode = "ssh" | "builtin";
-
 export interface SshTunnel {
   id: string;
   name: string;

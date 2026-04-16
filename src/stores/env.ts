@@ -5,35 +5,45 @@ import { ref, computed } from "vue";
 import type { Environment } from "../api/env";
 import { envList, envTouch, envDelete } from "../api/env";
 import { kubeRemoveClient } from "../api/kube";
+import { createStorage, type Storage } from "../utils/storage";
 
-const ENV_VIEW_STATE_KEY = "kube-flow:env-view";
+const ENV_VIEW_STATE_KEY_PREFIX = "kube-flow:env-view";
 
 export interface EnvViewState {
   namespace: string | null;
   kind: string;
 }
 
+const envViewStorageCache = new Map<string, Storage<EnvViewState>>();
+function getEnvViewStorage(envId: string): Storage<EnvViewState> {
+  if (!envViewStorageCache.has(envId)) {
+    envViewStorageCache.set(
+      envId,
+      createStorage<EnvViewState>({
+        key: `${ENV_VIEW_STATE_KEY_PREFIX}:${envId}`,
+        version: 1,
+        fallback: { namespace: null, kind: "namespaces" },
+        migrate: (old) => {
+          const o = old as { namespace?: string | null; kind?: string } | null;
+          return {
+            namespace: o?.namespace ?? null,
+            kind: typeof o?.kind === "string" ? o.kind : "namespaces",
+          };
+        },
+      })
+    );
+  }
+  return envViewStorageCache.get(envId)!;
+}
+
 function getEnvViewStateFromStorage(envId: string): EnvViewState | null {
-  try {
-    const raw = localStorage.getItem(`${ENV_VIEW_STATE_KEY}:${envId}`);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as { namespace?: string | null; kind?: string };
-    if (parsed && typeof parsed === "object") {
-      return {
-        namespace: parsed.namespace ?? null,
-        kind: typeof parsed.kind === "string" ? parsed.kind : "namespaces",
-      };
-    }
-  } catch {}
-  return null;
+  const stored = getEnvViewStorage(envId).read();
+  return stored.kind ? stored : null;
 }
 
 function setEnvViewStateToStorage(envId: string, state: Partial<EnvViewState>) {
-  try {
-    const existing = getEnvViewStateFromStorage(envId) ?? { namespace: null, kind: "namespaces" };
-    const next = { ...existing, ...state };
-    localStorage.setItem(`${ENV_VIEW_STATE_KEY}:${envId}`, JSON.stringify(next));
-  } catch {}
+  const existing = getEnvViewStateFromStorage(envId) ?? { namespace: null, kind: "namespaces" };
+  getEnvViewStorage(envId).write({ ...existing, ...state });
 }
 
 const environments = ref<Environment[]>([]);

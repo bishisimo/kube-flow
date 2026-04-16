@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
 import { kubeGetResourceTopology, type TopologyItem, type ResourceTopology } from "../api/kube";
+import { extractErrorMessage } from "../utils/errorMessage";
 
 export interface ResourceRef {
   kind: string;
@@ -53,7 +54,7 @@ async function fetchTopology() {
       props.resource.namespace
     );
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
+    error.value = extractErrorMessage(e);
   } finally {
     loading.value = false;
   }

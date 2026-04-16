@@ -1,64 +1,37 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+
+defineOptions({ name: "ResourceOrchestratorView" });
 import * as jsYaml from "js-yaml";
 import { CodeEditor } from "monaco-editor-vue3";
 import { kubeDeployResource, kubeGetResource } from "../api/kube";
 import { appSettingsGetResourceDeployStrategy } from "../api/config";
+import { extractErrorMessage } from "../utils/errorMessage";
+import { formatDateTime } from "../utils/dateFormat";
+import { parseKubeObject, type KubeObjectIdentity } from "../utils/yaml";
+import {
+  buildDiffRows,
+  formatCodeCell,
+  normalizeYamlForDiff,
+  type DiffRow,
+} from "../features/orchestrator/yamlDiff";
+import {
+  useOrchestratorApplyFlow,
+} from "../features/orchestrator/useOrchestratorApplyFlow";
+import { useOrchestratorImportPreview } from "../features/orchestrator/useOrchestratorImportPreview";
 import { useEnvStore } from "../stores/env";
 import { useYamlMonacoTheme } from "../stores/yamlTheme";
 import {
   useOrchestratorStore,
   type OrchestratorImportBatch,
   type OrchestratorManifest,
-  type OrchestratorPackage,
-  type OrchestratorPackageVersion,
   type OrchestratorPackageResourceSnapshot,
 } from "../stores/orchestrator";
-
-interface ParseIdentity {
-  kind: string;
-  name: string;
-  namespace: string | null;
-}
-
-interface DiffRow {
-  type: "context" | "added" | "removed" | "modified";
-  leftLineNo: number | null;
-  rightLineNo: number | null;
-  leftText: string;
-  rightText: string;
-}
-
-interface TokenOp {
-  op: "=" | "-" | "+";
-  text: string;
-}
-
-interface ImportPreviewItem {
-  id: string;
-  fileName: string;
-  docIndex: number;
-  kind: string;
-  name: string;
-  namespace: string | null;
-  yaml: string;
-  valid: boolean;
-  errors: string[];
-  warnings: string[];
-  conflict: boolean;
-  duplicate: boolean;
-}
-
-interface ComponentApplyItem {
-  manifestId: string;
-  kind: string;
-  name: string;
-  namespace: string | null;
-  yaml: string;
-  fileName: string | null;
-  status: "pending" | "running" | "success" | "failed";
-  error: string | null;
-}
+import {
+  useOrchestratorPackagesStore,
+  type OrchestratorPackage,
+  type OrchestratorPackageVersion,
+} from "../stores/orchestratorPackages";
 
 const APPLY_ORDER: Record<string, number> = {
   CustomResourceDefinition: 0,
@@ -98,7 +71,6 @@ const APPLY_ORDER: Record<string, number> = {
 const { environments, currentId } = useEnvStore();
 const {
   manifests,
-  packages,
   importBatches,
   orchestratorFocusTarget,
   saveManifestYaml,
@@ -106,7 +78,9 @@ const {
   setManifestComponent,
   deleteManifest,
   importManifestsToEnv,
-  copyComponentToEnv,
+} = useOrchestratorStore();
+const {
+  packages,
   createPackage,
   deletePackage,
   createPackageVersion,
@@ -114,7 +88,8 @@ const {
   deletePackageVersion,
   syncPackageVersionToEnv,
   recordPackageDeployment,
-} = useOrchestratorStore();
+  copyComponentToEnv,
+} = useOrchestratorPackagesStore();
 const { monacoTheme } = useYamlMonacoTheme();
 
 const activeView = ref<"resources" | "packages">("resources");
@@ -130,9 +105,6 @@ const validationErrors = ref<string[]>([]);
 const validationWarnings = ref<string[]>([]);
 const opMessage = ref<string | null>(null);
 const opError = ref<string | null>(null);
-const applying = ref(false);
-const applyDialogVisible = ref(false);
-const componentApplyDialogVisible = ref(false);
 const createYamlActive = ref(false);
 const copyDialogVisible = ref(false);
 const copyTargetEnvId = ref("");
@@ -166,16 +138,6 @@ const listContextTarget = ref<
   | { type: "component"; component: string; count: number }
   | null
 >(null);
-const importLoading = ref(false);
-const importComponent = ref("");
-const importOverwrite = ref(true);
-const importPreviewItems = ref<ImportPreviewItem[]>([]);
-const importSummaryMessage = ref<string | null>(null);
-const importFileInput = ref<HTMLInputElement | null>(null);
-const importTextDraft = ref("");
-const importParseTimer = ref<number | null>(null);
-const componentApplyItems = ref<ComponentApplyItem[]>([]);
-const componentApplyPhase = ref<"idle" | "applying" | "completed">("idle");
 
 const editorOptions = {
   fontSize: 13,
@@ -231,6 +193,16 @@ const filteredComponentItems = computed(() => {
   if (!keyword) return componentItems.value;
   return componentItems.value.filter((item) => item.name.toLowerCase().includes(keyword));
 });
+const filteredSourceFileItems = computed(() =>
+  sourceFileItems.value.filter((entry) =>
+    entry.name.toLowerCase().includes(componentFilterKeyword.value.trim().toLowerCase())
+  )
+);
+const filteredBatchItems = computed(() =>
+  batchItems.value.filter((entry) =>
+    entry.name.toLowerCase().includes(componentFilterKeyword.value.trim().toLowerCase())
+  )
+);
 
 const manifestsByComponent = computed(() =>
   manifestsByEnv.value.filter((m) => m.component === selectedComponent.value)
@@ -297,9 +269,6 @@ const selectedManifest = computed<OrchestratorManifest | null>(
 );
 
 const selectedHistory = computed(() => selectedManifest.value?.history ?? []);
-const canApplyCurrent = computed(() => Boolean(selectedEnvId.value && selectedManifestId.value));
-const canApplyComponent = computed(() => Boolean(selectedEnvId.value && selectedComponent.value && resourceGroupView.value === "component"));
-const canOpenApplyDialog = computed(() => canApplyCurrent.value || canApplyComponent.value);
 const componentApplyPlan = computed(() => {
   const list = [...manifestsByComponent.value];
   const delayedWebhookKeys = buildDelayedWebhookKeys(list);
@@ -319,19 +288,6 @@ const componentApplyPlan = computed(() => {
     return a.resource_name.localeCompare(b.resource_name);
   });
 });
-const componentApplySummary = computed(() => {
-  const success = componentApplyItems.value.filter((item) => item.status === "success").length;
-  const failed = componentApplyItems.value.filter((item) => item.status === "failed").length;
-  const running = componentApplyItems.value.filter((item) => item.status === "running").length;
-  const pending = componentApplyItems.value.filter((item) => item.status === "pending").length;
-  return {
-    total: componentApplyItems.value.length,
-    success,
-    failed,
-    running,
-    pending,
-  };
-});
 const canOpenCopyDialog = computed(
   () => Boolean(selectedEnvId.value && selectedComponent.value && environments.value.length > 1 && resourceGroupView.value === "component")
 );
@@ -346,12 +302,71 @@ const diffStats = computed(() => {
   }
   return { added, removed, modified };
 });
-const importValidItems = computed(() => importPreviewItems.value.filter((item) => item.valid));
-const importInvalidItems = computed(() => importPreviewItems.value.filter((item) => !item.valid));
-const importWarningItems = computed(() => importValidItems.value.filter((item) => item.warnings.length > 0));
-const canConfirmImport = computed(
-  () => Boolean(selectedEnvId.value && importValidItems.value.length && !importLoading.value)
-);
+const {
+  importLoading,
+  importComponent,
+  importOverwrite,
+  importPreviewItems,
+  importSummaryMessage,
+  importFileInput,
+  importTextDraft,
+  importValidItems,
+  importInvalidItems,
+  importWarningItems,
+  canConfirmImport,
+  refreshImportPreviewChecks,
+  onImportFilesSelected,
+  triggerImportFileSelect,
+  openCreateYamlDialog: openCreateYamlDialogState,
+  clearParseTimer,
+  onDraftVisibilityOrContentChange,
+  buildImportResources,
+  extractRefWarningsFromInventory,
+} = useOrchestratorImportPreview({
+  selectedEnvId,
+  manifestsByEnv,
+  parseIdentity,
+});
+const {
+  applying,
+  applyDialogVisible,
+  componentApplyDialogVisible,
+  componentApplyItems,
+  componentApplyPhase,
+  canApplyCurrent,
+  canApplyComponent,
+  canOpenApplyDialog,
+  componentApplySummary,
+  closeComponentApplyDialog,
+  openApplyDialog,
+  closeApplyDialog,
+  onApplyCurrentFromDialog,
+  onApplyComponentFromDialog,
+  startComponentApplyFromDialog,
+} = useOrchestratorApplyFlow({
+  selectedEnvId,
+  selectedComponent,
+  selectedManifestId,
+  resourceGroupView,
+  selectedManifest,
+  componentApplyPlan,
+  editYaml,
+  validateCurrent,
+  parseIdentity,
+  deployYamlToEnv,
+  setManifestComponent,
+  setManifestIdentity,
+  saveManifestYaml,
+  clearManifestDraft: (manifestId) => {
+    delete manifestDraftCache.value[manifestId];
+  },
+  setOpError: (message) => {
+    opError.value = message;
+  },
+  setOpMessage: (message) => {
+    opMessage.value = message;
+  },
+});
 
 function onSelectComponent(componentName: string) {
   if (!componentName || componentName === selectedComponent.value) return;
@@ -419,35 +434,8 @@ function openDeleteResourceDialog(manifest: OrchestratorManifest) {
   listDeleteDialogVisible.value = true;
 }
 
-function makeImportPreviewId(fileName: string, docIndex: number) {
-  return `${fileName}:${docIndex}`;
-}
-
-function existingManifestConflict(kind: string, name: string, namespace: string | null) {
-  return manifests.value.some(
-    (m) =>
-      m.env_id === selectedEnvId.value &&
-      m.resource_kind === kind &&
-      m.resource_name === name &&
-      (m.resource_namespace ?? null) === (namespace ?? null)
-  );
-}
-
-function buildImportYaml(doc: unknown): string {
-  return jsYaml.dump(doc, { lineWidth: -1 });
-}
-
 function resourceIdentityKey(kind: string, name: string, namespace: string | null) {
   return `${kind}|${namespace ?? ""}|${name}`;
-}
-
-function parseYamlObject(yaml: string): Record<string, unknown> | null {
-  try {
-    const parsed = jsYaml.load(yaml);
-    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
-  } catch {
-    return null;
-  }
 }
 
 function isWebhookConfigurationKind(kind: string) {
@@ -459,7 +447,7 @@ function isWorkloadKind(kind: string) {
 }
 
 function extractWebhookServiceKeys(yaml: string): string[] {
-  const obj = parseYamlObject(yaml);
+  const obj = parseKubeObject(yaml)?.raw ?? null;
   if (!obj) return [];
   const webhooks = Array.isArray(obj.webhooks) ? (obj.webhooks as Array<Record<string, unknown>>) : [];
   const keys: string[] = [];
@@ -515,297 +503,16 @@ function applyWeight(kind: string, delayedWebhook = false) {
   return APPLY_ORDER[kind] ?? 999;
 }
 
-function buildKnownResourceKeySet(items: Array<{ kind: string; name: string; namespace: string | null }>) {
-  return new Set(items.map((item) => resourceIdentityKey(item.kind, item.name, item.namespace)));
-}
-
-function extractImportRefWarnings(
-  yaml: string,
-  knownResources: Set<string>
-): string[] {
-  const warnings: string[] = [];
-  let parsed: unknown;
-  try {
-    parsed = jsYaml.load(yaml);
-  } catch {
-    return warnings;
-  }
-  if (!parsed || typeof parsed !== "object") return warnings;
-  const obj = parsed as Record<string, unknown>;
-  const kind = typeof obj.kind === "string" ? obj.kind : "";
-  const metadata = obj.metadata as Record<string, unknown> | undefined;
-  const namespace =
-    metadata && typeof metadata.namespace === "string" && metadata.namespace.trim()
-      ? metadata.namespace.trim()
-      : null;
-
-  const checkRef = (targetKind: "ConfigMap" | "Secret" | "ServiceAccount" | "PersistentVolumeClaim", name: string) => {
-    const exact = resourceIdentityKey(targetKind, name, namespace);
-    const fallback = resourceIdentityKey(targetKind, name, null);
-    if (!knownResources.has(exact) && !knownResources.has(fallback)) {
-      warnings.push(`引用资源缺失：${targetKind}/${name}`);
-    }
-  };
-
-  if (kind === "Deployment" || kind === "StatefulSet" || kind === "DaemonSet") {
-    const spec = obj.spec as Record<string, unknown> | undefined;
-    const template = spec?.template as Record<string, unknown> | undefined;
-    const podSpec = template?.spec as Record<string, unknown> | undefined;
-    if (podSpec && typeof podSpec.serviceAccountName === "string" && podSpec.serviceAccountName) {
-      checkRef("ServiceAccount", podSpec.serviceAccountName);
-    }
-    const volumes = Array.isArray(podSpec?.volumes) ? (podSpec?.volumes as Array<Record<string, unknown>>) : [];
-    for (const v of volumes) {
-      const cm = v.configMap as Record<string, unknown> | undefined;
-      if (cm && typeof cm.name === "string" && cm.name) checkRef("ConfigMap", cm.name);
-      const sec = v.secret as Record<string, unknown> | undefined;
-      if (sec && typeof sec.secretName === "string" && sec.secretName) checkRef("Secret", sec.secretName);
-      const pvc = v.persistentVolumeClaim as Record<string, unknown> | undefined;
-      if (pvc && typeof pvc.claimName === "string" && pvc.claimName) checkRef("PersistentVolumeClaim", pvc.claimName);
-    }
-    const containers = [
-      ...(Array.isArray(podSpec?.containers) ? (podSpec.containers as Array<Record<string, unknown>>) : []),
-      ...(Array.isArray(podSpec?.initContainers) ? (podSpec.initContainers as Array<Record<string, unknown>>) : []),
-    ];
-    for (const c of containers) {
-      const envFrom = Array.isArray(c.envFrom) ? (c.envFrom as Array<Record<string, unknown>>) : [];
-      for (const ef of envFrom) {
-        const cm = ef.configMapRef as Record<string, unknown> | undefined;
-        if (cm && typeof cm.name === "string" && cm.name) checkRef("ConfigMap", cm.name);
-        const sec = ef.secretRef as Record<string, unknown> | undefined;
-        if (sec && typeof sec.name === "string" && sec.name) checkRef("Secret", sec.name);
-      }
-      const env = Array.isArray(c.env) ? (c.env as Array<Record<string, unknown>>) : [];
-      for (const e of env) {
-        const vf = e.valueFrom as Record<string, unknown> | undefined;
-        const cm = vf?.configMapKeyRef as Record<string, unknown> | undefined;
-        if (cm && typeof cm.name === "string" && cm.name) checkRef("ConfigMap", cm.name);
-        const sec = vf?.secretKeyRef as Record<string, unknown> | undefined;
-        if (sec && typeof sec.name === "string" && sec.name) checkRef("Secret", sec.name);
-      }
-    }
-  }
-
-  return Array.from(new Set(warnings));
-}
-
-function applyImportBatchPrecheck(items: ImportPreviewItem[]): ImportPreviewItem[] {
-  const duplicateCounts = new Map<string, number>();
-  for (const item of items) {
-    if (!item.valid) continue;
-    const key = resourceIdentityKey(item.kind, item.name, item.namespace);
-    duplicateCounts.set(key, (duplicateCounts.get(key) ?? 0) + 1);
-  }
-
-  const knownResources = buildKnownResourceKeySet([
-    ...manifestsByEnv.value.map((m) => ({
-      kind: m.resource_kind,
-      name: m.resource_name,
-      namespace: m.resource_namespace,
-    })),
-    ...items
-      .filter((item) => item.valid)
-      .map((item) => ({
-        kind: item.kind,
-        name: item.name,
-        namespace: item.namespace,
-      })),
-  ]);
-
-  return items.map((item) => {
-    if (!item.valid) return item;
-    const key = resourceIdentityKey(item.kind, item.name, item.namespace);
-    const duplicate = (duplicateCounts.get(key) ?? 0) > 1;
-    const warnings = [...item.warnings];
-    if (duplicate) warnings.push("批次内存在重复资源身份，导入后可能相互覆盖。");
-    if (item.conflict) warnings.push(`环境内已存在同名资源，导入时将${importOverwrite.value ? "覆盖" : "跳过"}。`);
-    warnings.push(...extractImportRefWarnings(item.yaml, knownResources));
-    return {
-      ...item,
-      duplicate,
-      warnings: Array.from(new Set(warnings)),
-    };
-  });
-}
-
-function refreshImportPreviewChecks() {
-  if (!importPreviewItems.value.length) return;
-  importPreviewItems.value = applyImportBatchPrecheck(
-    importPreviewItems.value.map((item) => ({
-      ...item,
-      warnings: [],
-      conflict: item.valid ? existingManifestConflict(item.kind, item.name, item.namespace) : false,
-      duplicate: false,
-    }))
-  );
-}
-
-function buildImportPreviewFromText(fileName: string, content: string): ImportPreviewItem[] {
-  const docs: unknown[] = [];
-  try {
-    jsYaml.loadAll(content, (doc) => {
-      docs.push(doc);
-    });
-  } catch (e) {
-    return [
-      {
-        id: makeImportPreviewId(fileName, 1),
-        fileName,
-        docIndex: 1,
-        kind: "-",
-        name: "-",
-        namespace: null,
-        yaml: content,
-        valid: false,
-        errors: [`YAML 解析失败：${e instanceof Error ? e.message : String(e)}`],
-        warnings: [],
-        conflict: false,
-        duplicate: false,
-      },
-    ];
-  }
-
-  const items: ImportPreviewItem[] = [];
-  let docIndex = 0;
-  for (const doc of docs) {
-    if (doc == null) continue;
-    docIndex += 1;
-    if (typeof doc !== "object") {
-      items.push({
-        id: makeImportPreviewId(fileName, docIndex),
-        fileName,
-        docIndex,
-        kind: "-",
-        name: "-",
-        namespace: null,
-        yaml: String(doc),
-        valid: false,
-        errors: ["该 document 不是对象结构，无法作为 Kubernetes 资源导入。"],
-        warnings: [],
-        conflict: false,
-        duplicate: false,
-      });
-      continue;
-    }
-    const yaml = buildImportYaml(doc);
-    const identity = parseIdentity(yaml);
-    if (!identity) {
-      items.push({
-        id: makeImportPreviewId(fileName, docIndex),
-        fileName,
-        docIndex,
-        kind: "-",
-        name: "-",
-        namespace: null,
-        yaml,
-        valid: false,
-        errors: ["缺少 kind 或 metadata.name，无法识别资源身份。"],
-        warnings: [],
-        conflict: false,
-        duplicate: false,
-      });
-      continue;
-    }
-    const errors: string[] = [];
-    const parsed = doc as Record<string, unknown>;
-    if (typeof parsed.apiVersion !== "string" || !parsed.apiVersion.trim()) {
-      errors.push("缺少 apiVersion。");
-    }
-    items.push({
-      id: makeImportPreviewId(fileName, docIndex),
-      fileName,
-      docIndex,
-      kind: identity.kind,
-      name: identity.name,
-      namespace: identity.namespace,
-      yaml,
-      valid: errors.length === 0,
-      errors,
-      warnings: [],
-      conflict: existingManifestConflict(identity.kind, identity.name, identity.namespace),
-      duplicate: false,
-    });
-  }
-
-  if (items.length > 0) return items;
-  return [
-    {
-      id: makeImportPreviewId(fileName, 1),
-      fileName,
-      docIndex: 1,
-      kind: "-",
-      name: "-",
-      namespace: null,
-      yaml: content,
-      valid: false,
-      errors: ["文件中未解析出可导入的 YAML document。"],
-      warnings: [],
-      conflict: false,
-      duplicate: false,
-    },
-  ];
-}
-
-async function onImportFilesSelected(event: Event) {
-  const input = event.target as HTMLInputElement | null;
-  const files = Array.from(input?.files ?? []);
-  if (!files.length) return;
-  importLoading.value = true;
-  try {
-    const chunks: string[] = [];
-    for (const file of files) {
-      const text = await file.text();
-      chunks.push([
-        "# ========================================",
-        `# 导入文件: ${file.name}`,
-        "# ========================================",
-        text.trim(),
-      ].join("\n"));
-    }
-    const merged = chunks.join("\n\n---\n\n");
-    importTextDraft.value = importTextDraft.value.trim()
-      ? `${importTextDraft.value.trim()}\n\n---\n\n${merged}`
-      : merged;
-    parseImportTextDraft();
-  } finally {
-    importLoading.value = false;
-    if (input) input.value = "";
-  }
-}
-
-function triggerImportFileSelect() {
-  importFileInput.value?.click();
-}
-
-function parseImportTextDraft() {
-  const name = "当前草稿";
-  const content = importTextDraft.value.trim();
-  if (!content) {
-    importPreviewItems.value = [];
-    importSummaryMessage.value = "请输入 YAML 文本后再解析。";
-    return;
-  }
-  const rows = applyImportBatchPrecheck(buildImportPreviewFromText(name, content));
-  importPreviewItems.value = rows;
-  importSummaryMessage.value = `已解析当前草稿，共 ${rows.length} 个条目；有效 ${rows.filter((r) => r.valid).length}，无效 ${rows.filter((r) => !r.valid).length}，批次内重复 ${rows.filter((r) => r.duplicate).length}。`;
-}
-
 function openCreateYamlDialog() {
   if (!selectedEnvId.value) return;
-  importComponent.value = selectedComponent.value || "default";
-  importOverwrite.value = true;
-  importPreviewItems.value = [];
-  importSummaryMessage.value = null;
-  importTextDraft.value = "";
-  createYamlActive.value = true;
+  if (openCreateYamlDialogState(selectedComponent.value)) {
+    createYamlActive.value = true;
+  }
 }
 
 function closeCreateYamlDialog() {
   if (importLoading.value) return;
-  if (importParseTimer.value) {
-    window.clearTimeout(importParseTimer.value);
-    importParseTimer.value = null;
-  }
+  clearParseTimer();
   createYamlActive.value = false;
 }
 
@@ -813,16 +520,7 @@ async function onConfirmImport() {
   if (!selectedEnvId.value) return;
   const env = environments.value.find((item) => item.id === selectedEnvId.value);
   if (!env) return;
-  const component = importComponent.value.trim() || selectedComponent.value || "default";
-  const resources = importValidItems.value.map((item) => ({
-    component,
-    kind: item.kind,
-    name: item.name,
-    namespace: item.namespace,
-    yaml: item.yaml,
-    source_file_name: item.fileName,
-    source_doc_index: item.docIndex,
-  }));
+  const { component, resources } = buildImportResources(selectedComponent.value);
   if (!resources.length) {
     opError.value = "没有可导入的有效资源。";
     return;
@@ -857,7 +555,7 @@ async function onConfirmImport() {
     createYamlActive.value = false;
     opMessage.value = `保存完成：新增 ${result.created}，更新 ${result.updated}，跳过 ${result.skipped}。`;
   } catch (e) {
-    opError.value = e instanceof Error ? e.message : String(e);
+    opError.value = extractErrorMessage(e);
   } finally {
     importLoading.value = false;
   }
@@ -1034,21 +732,7 @@ watch(
 watch(
   () => [createYamlActive.value, importTextDraft.value] as const,
   ([visible, draft]) => {
-    if (importParseTimer.value) {
-      window.clearTimeout(importParseTimer.value);
-      importParseTimer.value = null;
-    }
-    if (!visible) return;
-    if (!draft.trim()) {
-      importPreviewItems.value = [];
-      importSummaryMessage.value = "可以直接编写 YAML，也可以先导入文件到当前草稿。";
-      return;
-    }
-    importSummaryMessage.value = "正在解析当前草稿…";
-    importParseTimer.value = window.setTimeout(() => {
-      parseImportTextDraft();
-      importParseTimer.value = null;
-    }, 350);
+    onDraftVisibilityOrContentChange(visible, draft);
   }
 );
 
@@ -1159,31 +843,10 @@ watch(
   { immediate: true }
 );
 
-function parseIdentity(yaml: string): ParseIdentity | null {
-  const parsed = jsYaml.load(yaml);
-  if (!parsed || typeof parsed !== "object") return null;
-  const obj = parsed as Record<string, unknown>;
-  const kind = typeof obj.kind === "string" ? obj.kind.trim() : "";
-  const metadata = obj.metadata && typeof obj.metadata === "object" ? (obj.metadata as Record<string, unknown>) : null;
-  const name = metadata && typeof metadata.name === "string" ? metadata.name.trim() : "";
-  const namespace =
-    metadata && typeof metadata.namespace === "string" && metadata.namespace.trim()
-      ? metadata.namespace.trim()
-      : null;
-  if (!kind || !name) return null;
-  return { kind, name, namespace };
+function parseIdentity(yaml: string): KubeObjectIdentity | null {
+  return parseKubeObject(yaml);
 }
 
-function extractRefCheckWarnings(yaml: string, inventory: OrchestratorManifest[]): string[] {
-  const known = buildKnownResourceKeySet(
-    inventory.map((m) => ({
-      kind: m.resource_kind,
-      name: m.resource_name,
-      namespace: m.resource_namespace,
-    }))
-  );
-  return extractImportRefWarnings(yaml, known);
-}
 
 function validateCurrent(): boolean {
   validationErrors.value = [];
@@ -1196,7 +859,7 @@ function validateCurrent(): boolean {
   try {
     parsed = jsYaml.load(editYaml.value);
   } catch (e) {
-    validationErrors.value.push(`YAML 语法错误：${e instanceof Error ? e.message : String(e)}`);
+    validationErrors.value.push(`YAML 语法错误：${extractErrorMessage(e)}`);
     return false;
   }
   if (!parsed || typeof parsed !== "object") {
@@ -1213,7 +876,7 @@ function validateCurrent(): boolean {
   }
   if (validationErrors.value.length > 0) return false;
 
-  validationWarnings.value = extractRefCheckWarnings(editYaml.value, manifestsInActiveGroup.value);
+  validationWarnings.value = extractRefWarningsFromInventory(editYaml.value, manifestsInActiveGroup.value);
   return true;
 }
 
@@ -1239,97 +902,6 @@ async function deployYamlToEnv(envId: string, yaml: string) {
   await kubeDeployResource(envId, yaml, strategy);
 }
 
-async function onApplyCurrent() {
-  if (!selectedManifest.value || !selectedEnvId.value) return;
-  const ok = validateCurrent();
-  if (!ok) return;
-  applying.value = true;
-  opError.value = null;
-  opMessage.value = null;
-  try {
-    const identity = parseIdentity(editYaml.value);
-    if (!identity) throw new Error("无法解析资源身份信息。");
-    await deployYamlToEnv(selectedEnvId.value, editYaml.value);
-    setManifestComponent(selectedManifest.value.id, selectedComponent.value);
-    setManifestIdentity(selectedManifest.value.id, identity);
-    saveManifestYaml(selectedManifest.value.id, editYaml.value, "apply");
-    delete manifestDraftCache.value[selectedManifest.value.id];
-    opMessage.value = `应用成功：${identity.kind}/${identity.name}`;
-  } catch (e) {
-    opError.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    applying.value = false;
-  }
-}
-
-function buildComponentApplyItems(): ComponentApplyItem[] {
-  return componentApplyPlan.value.map((item) => ({
-    manifestId: item.id,
-    kind: item.resource_kind,
-    name: item.resource_name,
-    namespace: item.resource_namespace,
-    yaml: item.yaml,
-    fileName: item.source_file_name ?? null,
-    status: "pending",
-    error: null,
-  }));
-}
-
-function openComponentApplyFlow() {
-  componentApplyItems.value = buildComponentApplyItems();
-  componentApplyPhase.value = "idle";
-  componentApplyDialogVisible.value = true;
-}
-
-function closeComponentApplyDialog() {
-  if (componentApplyPhase.value === "applying") return;
-  componentApplyDialogVisible.value = false;
-}
-
-async function onApplyComponent() {
-  if (!selectedEnvId.value || !selectedComponent.value) return;
-  if (!componentApplyItems.value.length) {
-    componentApplyItems.value = buildComponentApplyItems();
-  }
-  if (!componentApplyItems.value.length) return;
-  applying.value = true;
-  componentApplyPhase.value = "applying";
-  opError.value = null;
-  opMessage.value = null;
-  const failed: string[] = [];
-  for (const item of componentApplyItems.value) {
-    item.status = "running";
-    item.error = null;
-    try {
-      await deployYamlToEnv(selectedEnvId.value, item.yaml);
-      saveManifestYaml(item.manifestId, item.yaml, "apply");
-      delete manifestDraftCache.value[item.manifestId];
-      item.status = "success";
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      item.status = "failed";
-      item.error = message;
-      failed.push(`${item.kind}/${item.name}: ${message}`);
-    }
-  }
-  applying.value = false;
-  componentApplyPhase.value = "completed";
-  if (failed.length) {
-    opError.value = `组件应用部分失败：${failed.join("；")}`;
-  } else {
-    opMessage.value = `组件 ${selectedComponent.value} 已完成应用。`;
-  }
-}
-
-function openApplyDialog() {
-  if (!canOpenApplyDialog.value || applying.value) return;
-  applyDialogVisible.value = true;
-}
-
-function closeApplyDialog() {
-  applyDialogVisible.value = false;
-}
-
 function openCopyDialog() {
   if (!canOpenCopyDialog.value || copyLoading.value) return;
   copyDialogVisible.value = true;
@@ -1351,28 +923,6 @@ function closePackageActionDialog() {
   packageActionDialogVisible.value = false;
 }
 
-async function onApplyCurrentFromDialog() {
-  if (!canApplyCurrent.value || applying.value) return;
-  applyDialogVisible.value = false;
-  await onApplyCurrent();
-}
-
-async function onApplyComponentFromDialog() {
-  if (!canApplyComponent.value || applying.value) return;
-  applyDialogVisible.value = false;
-  openComponentApplyFlow();
-}
-
-async function startComponentApplyFromDialog() {
-  if (applying.value || !componentApplyItems.value.length) return;
-  componentApplyItems.value = componentApplyItems.value.map((item) => ({
-    ...item,
-    status: "pending",
-    error: null,
-  }));
-  await onApplyComponent();
-}
-
 async function loadDiff() {
   if (!selectedManifest.value || !selectedEnvId.value) return;
   diffLoading.value = true;
@@ -1390,7 +940,7 @@ async function loadDiff() {
     const draftNormalized = normalizeYamlForDiff(editYaml.value);
     diffRows.value = buildDiffRows(remoteNormalized, draftNormalized);
   } catch (e) {
-    opError.value = e instanceof Error ? e.message : String(e);
+    opError.value = extractErrorMessage(e);
   } finally {
     diffLoading.value = false;
   }
@@ -1398,203 +948,6 @@ async function loadDiff() {
 
 function closeDiff() {
   diffRows.value = [];
-}
-
-function buildDiffRows(oldText: string, newText: string): DiffRow[] {
-  const a = oldText.replace(/\r\n/g, "\n").split("\n");
-  const b = newText.replace(/\r\n/g, "\n").split("\n");
-  const dp: number[][] = Array.from({ length: a.length + 1 }, () => Array(b.length + 1).fill(0));
-  for (let i = a.length - 1; i >= 0; i--) {
-    for (let j = b.length - 1; j >= 0; j--) {
-      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-    }
-  }
-  const ops: Array<{ op: "=" | "-" | "+"; text: string }> = [];
-  let i = 0;
-  let j = 0;
-  while (i < a.length && j < b.length) {
-    if (a[i] === b[j]) {
-      ops.push({ op: "=", text: a[i] });
-      i++;
-      j++;
-      continue;
-    }
-    if (dp[i + 1][j] >= dp[i][j + 1]) {
-      ops.push({ op: "-", text: a[i] });
-      i++;
-    } else {
-      ops.push({ op: "+", text: b[j] });
-      j++;
-    }
-  }
-  while (i < a.length) ops.push({ op: "-", text: a[i++] });
-  while (j < b.length) ops.push({ op: "+", text: b[j++] });
-
-  const rows: DiffRow[] = [];
-  let leftNo = 1;
-  let rightNo = 1;
-  let p = 0;
-  while (p < ops.length) {
-    const cur = ops[p];
-    if (cur.op === "=") {
-      rows.push({
-        type: "context",
-        leftLineNo: leftNo++,
-        rightLineNo: rightNo++,
-        leftText: cur.text,
-        rightText: cur.text,
-      });
-      p++;
-      continue;
-    }
-
-    const delBuf: string[] = [];
-    const addBuf: string[] = [];
-    while (p < ops.length && ops[p].op !== "=") {
-      if (ops[p].op === "-") delBuf.push(ops[p].text);
-      if (ops[p].op === "+") addBuf.push(ops[p].text);
-      p++;
-    }
-    const modifiedCount = Math.min(delBuf.length, addBuf.length);
-    for (let k = 0; k < modifiedCount; k++) {
-      rows.push({
-        type: "modified",
-        leftLineNo: leftNo++,
-        rightLineNo: rightNo++,
-        leftText: delBuf[k],
-        rightText: addBuf[k],
-      });
-    }
-    for (let k = modifiedCount; k < delBuf.length; k++) {
-      rows.push({
-        type: "removed",
-        leftLineNo: leftNo++,
-        rightLineNo: null,
-        leftText: delBuf[k],
-        rightText: "",
-      });
-    }
-    for (let k = modifiedCount; k < addBuf.length; k++) {
-      rows.push({
-        type: "added",
-        leftLineNo: null,
-        rightLineNo: rightNo++,
-        leftText: "",
-        rightText: addBuf[k],
-      });
-    }
-  }
-  return rows;
-}
-
-function normalizeYamlForDiff(yaml: string): string {
-  try {
-    const parsed = jsYaml.load(yaml);
-    if (!parsed || typeof parsed !== "object") return yaml;
-    const obj = deepClone(parsed as Record<string, unknown>);
-    const meta =
-      obj.metadata && typeof obj.metadata === "object"
-        ? (obj.metadata as Record<string, unknown>)
-        : null;
-    if (meta) {
-      delete meta.uid;
-      delete meta.resourceVersion;
-      delete meta.managedFields;
-      delete meta.creationTimestamp;
-    }
-    delete obj.status;
-    return jsYaml.dump(obj, { lineWidth: -1, sortKeys: true });
-  } catch {
-    return yaml;
-  }
-}
-
-function deepClone<T>(value: T): T {
-  if (Array.isArray(value)) {
-    return value.map((item) => deepClone(item)) as T;
-  }
-  if (value && typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = deepClone(v);
-    }
-    return out as T;
-  }
-  return value;
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-function tokenizeForInlineDiff(text: string): string[] {
-  return text.match(/(\s+|[^\s]+)/g) ?? [];
-}
-
-function buildTokenOps(left: string, right: string): TokenOp[] {
-  const a = tokenizeForInlineDiff(left);
-  const b = tokenizeForInlineDiff(right);
-  const dp: number[][] = Array.from({ length: a.length + 1 }, () => Array(b.length + 1).fill(0));
-  for (let i = a.length - 1; i >= 0; i--) {
-    for (let j = b.length - 1; j >= 0; j--) {
-      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-    }
-  }
-
-  const ops: TokenOp[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < a.length && j < b.length) {
-    if (a[i] === b[j]) {
-      ops.push({ op: "=", text: a[i] });
-      i++;
-      j++;
-      continue;
-    }
-    if (dp[i + 1][j] >= dp[i][j + 1]) {
-      ops.push({ op: "-", text: a[i] });
-      i++;
-    } else {
-      ops.push({ op: "+", text: b[j] });
-      j++;
-    }
-  }
-  while (i < a.length) ops.push({ op: "-", text: a[i++] });
-  while (j < b.length) ops.push({ op: "+", text: b[j++] });
-  return ops;
-}
-
-function renderInlineDiff(left: string, right: string, side: "left" | "right"): string {
-  const ops = buildTokenOps(left, right);
-  const parts: string[] = [];
-  for (const op of ops) {
-    const text = escapeHtml(op.text);
-    if (op.op === "=") {
-      parts.push(text);
-      continue;
-    }
-    if (side === "left" && op.op === "-") {
-      parts.push(`<span class="inline-removed">${text}</span>`);
-      continue;
-    }
-    if (side === "right" && op.op === "+") {
-      parts.push(`<span class="inline-added">${text}</span>`);
-      continue;
-    }
-  }
-  return parts.join("");
-}
-
-function formatCodeCell(row: DiffRow, side: "left" | "right"): string {
-  const raw = side === "left" ? row.leftText : row.rightText;
-  if (!raw) return "";
-  if (row.type !== "modified") return escapeHtml(raw);
-  return renderInlineDiff(row.leftText, row.rightText, side);
 }
 
 function onRestoreHistory(yaml: string) {
@@ -1623,7 +976,7 @@ async function onCopyComponentToEnv() {
     );
     opMessage.value = `组件已复制到 ${target.display_name}：新增 ${result.copied}，更新 ${result.updated}，跳过 ${result.skipped}`;
   } catch (e) {
-    opError.value = e instanceof Error ? e.message : String(e);
+    opError.value = extractErrorMessage(e);
   } finally {
     copyLoading.value = false;
     copyDialogVisible.value = false;
@@ -1639,7 +992,7 @@ function onCreatePackage() {
     opError.value = null;
     opMessage.value = `已创建应用包：${pkg.name}`;
   } catch (e) {
-    opError.value = e instanceof Error ? e.message : String(e);
+    opError.value = extractErrorMessage(e);
   }
 }
 
@@ -1709,10 +1062,6 @@ function onSaveVersionTag(versionId: string) {
   opMessage.value = "版本 Tag 已更新。";
 }
 
-function formatDateTime(iso: string): string {
-  if (!iso) return "-";
-  return new Date(iso).toLocaleString();
-}
 
 function onCreatePackageVersion() {
   if (!selectedPackage.value || !selectedEnvId.value) return;
@@ -1729,7 +1078,7 @@ function onCreatePackageVersion() {
     opError.value = null;
     opMessage.value = `已生成版本 ${version.label}（${version.resources.length} 个资源）。`;
   } catch (e) {
-    opError.value = e instanceof Error ? e.message : String(e);
+    opError.value = extractErrorMessage(e);
   }
 }
 
@@ -1818,7 +1167,7 @@ async function onSyncPackageToEnv() {
     );
     opMessage.value = `已同步到 ${target.display_name}：新增 ${result.copied}，更新 ${result.updated}，跳过 ${result.skipped}`;
   } catch (e) {
-    opError.value = e instanceof Error ? e.message : String(e);
+    opError.value = extractErrorMessage(e);
   } finally {
     packageWorking.value = false;
   }
@@ -1855,7 +1204,7 @@ async function onApplyPackageToEnv() {
         if (mid) saveManifestYaml(mid, r.yaml, "apply");
         success += 1;
       } catch (e) {
-        errors.push(`${r.component}/${r.resource_kind}/${r.resource_name}: ${e instanceof Error ? e.message : String(e)}`);
+        errors.push(`${r.component}/${r.resource_kind}/${r.resource_name}: ${extractErrorMessage(e)}`);
       }
     }
     recordPackageDeployment(
@@ -1874,7 +1223,7 @@ async function onApplyPackageToEnv() {
       opMessage.value = `应用包 ${selectedPackage.value.name}@${version.label} 已发布到 ${target.display_name}。`;
     }
   } catch (e) {
-    opError.value = e instanceof Error ? e.message : String(e);
+    opError.value = extractErrorMessage(e);
   } finally {
     packageWorking.value = false;
   }
@@ -2017,7 +1366,7 @@ async function onConfirmPackageAction() {
               </button>
               <button
                 v-else-if="resourceGroupView === 'file'"
-                v-for="item in sourceFileItems.filter((entry) => entry.name.toLowerCase().includes(componentFilterKeyword.trim().toLowerCase()))"
+                v-for="item in filteredSourceFileItems"
                 :key="item.name"
                 type="button"
                 class="component-item"
@@ -2031,7 +1380,7 @@ async function onConfirmPackageAction() {
               </button>
               <button
                 v-else
-                v-for="item in batchItems.filter((entry) => entry.name.toLowerCase().includes(componentFilterKeyword.trim().toLowerCase()))"
+                v-for="item in filteredBatchItems"
                 :key="item.id"
                 type="button"
                 class="component-item"
@@ -2046,8 +1395,8 @@ async function onConfirmPackageAction() {
               <div
                 v-if="
                   (resourceGroupView === 'component' && !filteredComponentItems.length) ||
-                  (resourceGroupView === 'file' && !sourceFileItems.filter((entry) => entry.name.toLowerCase().includes(componentFilterKeyword.trim().toLowerCase())).length) ||
-                  (resourceGroupView === 'batch' && !batchItems.filter((entry) => entry.name.toLowerCase().includes(componentFilterKeyword.trim().toLowerCase())).length)
+                  (resourceGroupView === 'file' && !filteredSourceFileItems.length) ||
+                  (resourceGroupView === 'batch' && !filteredBatchItems.length)
                 "
                 class="empty"
               >

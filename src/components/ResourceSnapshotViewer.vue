@@ -3,6 +3,7 @@ import { computed } from "vue";
 import { CodeEditor } from "monaco-editor-vue3";
 import { useYamlMonacoTheme } from "../stores/yamlTheme";
 import type { ResourceSnapshotItem } from "../stores/resourceSnapshots";
+import { formatDateTime } from "../utils/dateFormat";
 
 const props = defineProps<{
   visible: boolean;
@@ -29,10 +30,7 @@ const title = computed(() => props.snapshot?.title || "资源快照");
 const summary = computed(() => props.snapshot?.summary || "");
 const yaml = computed(() => props.snapshot?.yaml || "");
 
-function formatDateTime(iso: string | undefined): string {
-  if (!iso) return "-";
-  return new Date(iso).toLocaleString();
-}
+
 </script>
 
 <template>

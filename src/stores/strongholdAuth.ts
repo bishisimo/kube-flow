@@ -1,5 +1,6 @@
 import { ref } from "vue";
 import { strongholdUnlock } from "../api/credential";
+import { extractErrorMessage } from "../utils/errorMessage";
 import { useStrongholdStatusStore } from "./strongholdStatus";
 
 export interface StrongholdUnlockRequest {
@@ -45,7 +46,7 @@ async function confirm(password: string) {
     loading.value = false;
     onConfirmed?.();
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
+    error.value = extractErrorMessage(e);
     loading.value = false;
   }
 }

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, computed } from "vue";
 import PodLogPanel from "./PodLogPanel.vue";
+import { extractErrorMessage } from "../utils/errorMessage";
 import {
   kubeGetPodContainers,
   kubeListPodsForWorkload,
@@ -51,7 +52,7 @@ async function loadPods() {
     containers.value = [];
     selectedContainer.value = "";
   } catch (e) {
-    podsError.value = e instanceof Error ? e.message : String(e);
+    podsError.value = extractErrorMessage(e);
   } finally {
     podsLoading.value = false;
   }

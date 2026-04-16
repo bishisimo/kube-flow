@@ -3,6 +3,7 @@
  */
 import { ref, computed } from "vue";
 import type { HostShellBootstrap } from "../api/terminal";
+import { uid } from "../utils/uid";
 
 export interface ShellSession {
   id: string;
@@ -54,7 +55,7 @@ export function useShellStore() {
   );
 
   function addSession(session: Omit<ShellSession, "id" | "streamId" | "status">): string {
-    const id = `shell-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    const id = uid("shell");
     sessions.value.push({
       ...session,
       id,
