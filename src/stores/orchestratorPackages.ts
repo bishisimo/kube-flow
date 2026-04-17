@@ -23,6 +23,7 @@ export type {
   OrchestratorPackage,
   OrchestratorPackageVersion,
   OrchestratorPackageDeploymentRecord,
+  OrchestratorPackageResourceSnapshot,
 } from "./orchestratorTypes";
 
 // ── 导入 manifests 状态（只在此文件读写，不触发循环依赖） ──────────────────────

@@ -63,14 +63,9 @@ fn kind_to_target_id(kind: &str) -> &'static str {
     }
 }
 
-/// 从 workload spec 解析引用的 ConfigMap/Secret，返回 (kind, name, relation_type)
-fn refs_from_workload_spec(spec: &serde_json::Value) -> Vec<(String, String, &'static str)> {
+/// 从 pod_spec 的 volumes 字段解析引用的 ConfigMap/Secret/PVC。
+fn refs_from_volumes(pod_spec: &serde_json::map::Map<String, serde_json::Value>) -> Vec<(String, String, &'static str)> {
     let mut refs = Vec::new();
-    let template = spec.get("template").and_then(|v| v.as_object());
-    let Some(template) = template else { return refs };
-    let pod_spec = template.get("spec").and_then(|v| v.as_object());
-    let Some(pod_spec) = pod_spec else { return refs };
-
     if let Some(vols) = pod_spec.get("volumes").and_then(|v| v.as_array()) {
         for v in vols {
             let obj = match v.as_object() {
@@ -94,6 +89,12 @@ fn refs_from_workload_spec(spec: &serde_json::Value) -> Vec<(String, String, &'s
             }
         }
     }
+    refs
+}
+
+/// 从 pod_spec 的 containers[].envFrom 字段解析引用的 ConfigMap/Secret。
+fn refs_from_env_from(pod_spec: &serde_json::map::Map<String, serde_json::Value>) -> Vec<(String, String, &'static str)> {
+    let mut refs = Vec::new();
     if let Some(containers) = pod_spec.get("containers").and_then(|v| v.as_array()) {
         for c in containers {
             let obj = match c.as_object() {
@@ -123,36 +124,27 @@ fn refs_from_workload_spec(spec: &serde_json::Value) -> Vec<(String, String, &'s
     refs
 }
 
+/// 从 workload spec 解析引用的 ConfigMap/Secret/PVC，返回 (kind, name, relation_type)
+fn refs_from_workload_spec(spec: &serde_json::Value) -> Vec<(String, String, &'static str)> {
+    let mut refs = Vec::new();
+    let template = spec.get("template").and_then(|v| v.as_object());
+    let Some(template) = template else { return refs };
+    let pod_spec = template.get("spec").and_then(|v| v.as_object());
+    let Some(pod_spec) = pod_spec else { return refs };
+    refs.extend(refs_from_volumes(pod_spec));
+    refs.extend(refs_from_env_from(pod_spec));
+    refs
+}
+
+/// 从 pod spec 解析引用的 ConfigMap/Secret/PVC，返回 (kind, name, relation_type)
 fn refs_from_pod_spec(spec: &serde_json::Value) -> Vec<(String, String, &'static str)> {
     let mut refs = Vec::new();
     let pod_spec = match spec.as_object() {
         Some(obj) => obj,
         None => return refs,
     };
-
-    if let Some(vols) = pod_spec.get("volumes").and_then(|v| v.as_array()) {
-        for v in vols {
-            let obj = match v.as_object() {
-                Some(o) => o,
-                None => continue,
-            };
-            if let Some(cm) = obj.get("configMap").and_then(|x| x.get("name")).and_then(|x| x.as_str()) {
-                if !cm.is_empty() {
-                    refs.push(("ConfigMap".to_string(), cm.to_string(), "volumes"));
-                }
-            }
-            if let Some(sec) = obj.get("secret").and_then(|x| x.get("secretName")).and_then(|x| x.as_str()) {
-                if !sec.is_empty() {
-                    refs.push(("Secret".to_string(), sec.to_string(), "volumes"));
-                }
-            }
-            if let Some(pvc) = obj.get("persistentVolumeClaim").and_then(|x| x.get("claimName")).and_then(|x| x.as_str()) {
-                if !pvc.is_empty() {
-                    refs.push(("PersistentVolumeClaim".to_string(), pvc.to_string(), "volumes"));
-                }
-            }
-        }
-    }
+    refs.extend(refs_from_volumes(pod_spec));
+    refs.extend(refs_from_env_from(pod_spec));
     refs
 }
 

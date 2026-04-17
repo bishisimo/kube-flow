@@ -349,14 +349,10 @@ async function applyEdit(yamlOverride?: string) {
   editError.value = null;
   editInfo.value = null;
   try {
-    const snapshotYaml =
-      activeTab.value === "editConfig"
-        ? (editConfigYaml.value || yaml).trim()
-        : yaml.trim();
     const autoSnapshotEnabled = await ensureAutoSnapshotSettingLoaded();
-    if (autoSnapshotEnabled && snapshotYaml && snapshotResourceRef.value) {
+    if (autoSnapshotEnabled && rawYaml.value && snapshotResourceRef.value) {
       createResourceSnapshot(snapshotResourceRef.value, {
-        yaml: snapshotYaml,
+        yaml: rawYaml.value,
         category: activeTab.value === "editConfig" ? "config" : "resource",
         source: "before-apply",
         title: activeTab.value === "editConfig" ? "应用前配置快照" : "应用前资源快照",

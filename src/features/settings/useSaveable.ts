@@ -1,5 +1,5 @@
 import { ref } from "vue";
-import { extractErrorMessage } from "../workbench/utils/extractErrorMessage";
+import { extractErrorMessage } from "../../utils/errorMessage";
 
 /**
  * 统一设置保存逻辑的 composable。

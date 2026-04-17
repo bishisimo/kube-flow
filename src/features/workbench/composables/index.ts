@@ -30,3 +30,4 @@ export {
   type DrillSource,
   type NavigateOptions,
 } from "./useWorkbenchNavigation";
+export { useWorkbenchDrillNavigation } from "./useWorkbenchDrillNavigation";

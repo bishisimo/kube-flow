@@ -40,38 +40,7 @@ pub enum TunnelError {
     AuthRequired(String),
 }
 
-/// SSH_ASKPASS 临时脚本守卫：构造时写盘，Drop 时自动删除。
-/// 仅 Unix 平台可用；脚本内容为向 stdout 输出密码，供 ssh 子进程调用。
-#[cfg(unix)]
-struct SshAskpassGuard {
-    path: std::path::PathBuf,
-}
-
-#[cfg(unix)]
-impl SshAskpassGuard {
-    fn new(password: &str) -> Result<Self, std::io::Error> {
-        use std::os::unix::fs::PermissionsExt;
-        let path = std::env::temp_dir()
-            .join(format!("kf-askpass-{}.sh", uuid::Uuid::new_v4()));
-        // 单引号转义：' → '\''
-        let escaped = password.replace('\'', "'\\''");
-        let content = format!("#!/bin/sh\nprintf '%s' '{}'\n", escaped);
-        std::fs::write(&path, &content)?;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
-        Ok(Self { path })
-    }
-
-    fn path_str(&self) -> &str {
-        self.path.to_str().unwrap_or("")
-    }
-}
-
-#[cfg(unix)]
-impl Drop for SshAskpassGuard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
+use crate::ssh_askpass::SshAskpassGuard;
 
 /// 去掉 SSH 输出开头的 shell 污染（如 bash locale 警告），保留从 apiVersion 行开始的 kubeconfig YAML。
 fn trim_kubeconfig_pollution(content: &str) -> &str {
@@ -937,7 +906,7 @@ impl SshTunnelRunner {
         progress_tx: Option<mpsc::Sender<ConnectionProgressPayload>>,
     ) -> Result<(u16, String), TunnelError> {
         {
-            let g = self.tunnels.lock().unwrap();
+            let g = self.tunnels.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(s) = g.get(&env_id) {
                 debug_log::log_tunnel(
                     Some(&env_id),
@@ -1001,19 +970,19 @@ impl SshTunnelRunner {
             virtual_kubeconfig_yaml: virtual_yaml.clone(),
         };
         {
-            let mut g = self.tunnels.lock().unwrap();
+            let mut g = self.tunnels.lock().unwrap_or_else(|p| p.into_inner());
             g.insert(env_id, state);
         }
         Ok((local_port, virtual_yaml))
     }
 
     pub fn get_local_port(&self, env_id: &str) -> Option<u16> {
-        let g = self.tunnels.lock().unwrap();
+        let g = self.tunnels.lock().unwrap_or_else(|p| p.into_inner());
         g.get(env_id).map(|s| s.local_port)
     }
 
     pub fn close_tunnel(&self, env_id: &str) {
-        let mut g = self.tunnels.lock().unwrap();
+        let mut g = self.tunnels.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(s) = g.remove(env_id) {
             s.shutdown.store(true, Ordering::SeqCst);
             let _ = s._handle.join();
@@ -1023,7 +992,7 @@ impl SshTunnelRunner {
     /// 关闭所有隧道并 kill 对应 SSH 子进程；应用退出前调用，避免孤儿进程。
     pub fn close_all_tunnels(&self) {
         let to_close: Vec<_> = {
-            let mut g = self.tunnels.lock().unwrap();
+            let mut g = self.tunnels.lock().unwrap_or_else(|p| p.into_inner());
             g.drain().collect()
         };
         for (_, s) in to_close {

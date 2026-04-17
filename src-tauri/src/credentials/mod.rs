@@ -13,3 +13,8 @@ pub mod types;
 pub use manager::{new_from_settings, CredentialManager};
 pub use stronghold::StrongholdStatus;
 pub use types::{AuthMethod, CredentialInfo, CredentialKey, CredentialStoreKind};
+
+#[inline]
+pub(crate) fn err_str<E: std::fmt::Display>(e: E) -> String {
+    e.to_string()
+}

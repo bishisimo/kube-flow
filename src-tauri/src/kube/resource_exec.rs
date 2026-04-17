@@ -1,15 +1,15 @@
 //! Pod Exec：在 Pod 容器内执行交互式 shell，支持 TTY、stdin/stdout、resize。
 //! 通过 Tauri 事件推送 stdout，通过 invoke 接收 stdin 与 resize。
 
+use std::sync::Arc;
 use futures::SinkExt;
 use kube::api::{Api, AttachParams};
 use kube::Client;
 use k8s_openapi::api::core::v1::Pod;
-use std::collections::HashMap;
-use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
+use crate::kube::session_store::{SessionHandle, SessionStore};
 
 const POD_EXEC_CHUNK_EVENT: &str = "pod-exec-chunk";
 const POD_EXEC_END_EVENT: &str = "pod-exec-end";
@@ -21,58 +21,14 @@ pub struct PodExecSession {
     pub abort_handle: tokio::task::AbortHandle,
 }
 
+impl SessionHandle for PodExecSession {
+    fn abort_handle(&self) -> &tokio::task::AbortHandle { &self.abort_handle }
+    fn stdin_tx(&self) -> &mpsc::Sender<Vec<u8>> { &self.stdin_tx }
+    fn resize_tx(&self) -> Option<&mpsc::Sender<(u16, u16)>> { self.resize_tx.as_ref() }
+}
+
 /// 按 stream_id 存储活跃的 Pod exec 会话。
-pub struct PodExecStore {
-    sessions: Arc<RwLock<HashMap<String, PodExecSession>>>,
-}
-
-impl PodExecStore {
-    pub fn new() -> Self {
-        Self {
-            sessions: Arc::new(RwLock::new(HashMap::new())),
-        }
-    }
-
-    pub async fn insert(&self, stream_id: String, session: PodExecSession) {
-        let mut guard = self.sessions.write().await;
-        if let Some(old) = guard.insert(stream_id, session) {
-            old.abort_handle.abort();
-        }
-    }
-
-    pub async fn remove(&self, stream_id: &str) -> Option<PodExecSession> {
-        let mut guard = self.sessions.write().await;
-        guard.remove(stream_id)
-    }
-
-    pub async fn send_stdin(&self, stream_id: &str, data: Vec<u8>) -> Result<(), String> {
-        let guard = self.sessions.read().await;
-        let session = guard.get(stream_id).ok_or_else(|| "session not found".to_string())?;
-        session.stdin_tx.send(data).await.map_err(|e| e.to_string())
-    }
-
-    pub async fn send_resize(&self, stream_id: &str, cols: u16, rows: u16) -> Result<(), String> {
-        let guard = self.sessions.read().await;
-        let session = guard.get(stream_id).ok_or_else(|| "session not found".to_string())?;
-        if let Some(ref tx) = session.resize_tx {
-            tx.send((cols, rows)).await.map_err(|e| e.to_string())
-        } else {
-            Err("session has no tty".to_string())
-        }
-    }
-
-    pub async fn stop(&self, stream_id: &str) {
-        if let Some(session) = self.remove(stream_id).await {
-            session.abort_handle.abort();
-        }
-    }
-}
-
-impl Default for PodExecStore {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub type PodExecStore = SessionStore<PodExecSession>;
 
 /// 启动 Pod exec 交互式 shell，通过 Tauri 事件推送 stdout。
 /// 命令：优先 bash，fallback 到 sh。

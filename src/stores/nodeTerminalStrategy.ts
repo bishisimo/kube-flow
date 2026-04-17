@@ -1,5 +1,6 @@
 import { ref } from "vue";
 import type { HostShellBootstrap, NodeTerminalStep, NodeTerminalStepType, PodDebugTarget } from "../api/terminal";
+export type { NodeTerminalStepType } from "../api/terminal";
 import { uid } from "../utils/uid";
 import { createStorage } from "../utils/storage";
 

@@ -15,6 +15,7 @@ pub mod resource_topology;
 pub mod resources;
 mod tunnel;
 mod resource_dynamic;
+pub mod session_store;
 
 pub use client::KubeClientStore;
 pub use resource_alias_cache::{

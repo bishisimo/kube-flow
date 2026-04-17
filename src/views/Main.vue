@@ -2,7 +2,6 @@
 import { ref, computed, onMounted, onUnmounted, watch, nextTick, type Ref } from "vue";
 
 defineOptions({ name: "Main" });
-import * as jsYaml from "js-yaml";
 import { extractErrorMessage } from "../utils/errorMessage";
 import { createStorage } from "../utils/storage";
 import { useEnvStore } from "../stores/env";
@@ -17,10 +16,8 @@ import {
   WORKBENCH_ACTION_MENU_OFFSET,
   WORKBENCH_ACTION_MENU_VIEWPORT_GAP,
   WORKBENCH_ENV_BAR_COLLAPSED_KEY,
-  WORKBENCH_IMAGE_PATCH_KINDS,
   WORKBENCH_NODE_ALLOC_REFRESH_MS,
   WORKBENCH_NODE_TERMINAL_RESOURCE_KINDS,
-  WORKBENCH_POD_DEBUG_NAMESPACE_OPTIONS,
   WORKBENCH_SHELL_WORKLOAD_KINDS,
   buildApiKindToIdMap,
   buildValidResourceKindSet,
@@ -36,10 +33,14 @@ import {
   useWorkbenchWatch,
   useWorkbenchListUi,
   useWorkbenchNavigation,
+  useWorkbenchDrillNavigation,
 } from "../features/workbench";
 import ResourceDetailDrawer from "../components/ResourceDetailDrawer.vue";
 import ChangeImageModal from "../components/ChangeImageModal.vue";
 import DeleteConfirmModal from "../components/DeleteConfirmModal.vue";
+import WorkbenchActionMenu from "../components/workbench/WorkbenchActionMenu.vue";
+import SyncOrchestratorDialog from "../components/workbench/SyncOrchestratorDialog.vue";
+import PodDebugDialog from "../components/workbench/PodDebugDialog.vue";
 import {
   kubeDeleteDynamicResource,
   kubeDeleteResource,
@@ -70,7 +71,6 @@ import type { PodDebugNamespace } from "../api/terminal";
 import { defaultNamespace } from "../api/env";
 import {
   collectAssociatedRefsFromWorkloadYaml,
-  type SyncRelatedKind,
   type SyncRelatedRef,
 } from "../features/workbench/utils/parseWorkloadRefs";
 
@@ -417,7 +417,6 @@ function resetTransientWorkbenchState() {
   deleteConfirmError.value = null;
   syncOrchestratorDialogVisible.value = false;
   syncOrchestratorRelatedRefs.value = [];
-  syncOrchestratorSelectedRefKeys.value = [];
   syncOrchestratorRelatedError.value = null;
   selectedRowKeys.value = new Set();
   batchDeleteMode.value = false;
@@ -476,7 +475,7 @@ function onDocClick(e: MouseEvent) {
   const kindRoot = tb ? toolbarHTMLElement(tb, "kindDropdownRef") : null;
   if (nsDropdownOpen.value && nsRoot && !nsRoot.contains(target)) nsDropdownOpen.value = false;
   if (kindDropdownOpen.value && kindRoot && !kindRoot.contains(target)) kindDropdownOpen.value = false;
-  if (actionMenuVisible.value && !actionMenuRef.value?.contains(target)) closeActionMenu();
+  if (actionMenuVisible.value && actionMenuComponentRef.value?.menuEl && !actionMenuComponentRef.value.menuEl.contains(target)) closeActionMenu();
 }
 
 const filteredNamespaceOptions = computed(() => {
@@ -606,18 +605,11 @@ const podDebugModalVisible = ref(false);
 const podDebugLoading = ref(false);
 const podDebugError = ref("");
 const podDebugContainerOptions = ref<string[]>([]);
-const podDebugSelectedContainer = ref("");
-const podDebugNamespaces = ref<PodDebugNamespace[]>(["net"]);
-const podDebugProcessMode = ref<"main" | "pid">("main");
-const podDebugPidInput = ref("");
 const syncOrchestratorDialogVisible = ref(false);
-const syncOrchestratorMode = ref<"existing" | "new">("existing");
-const syncOrchestratorExistingComponent = ref("");
-const syncOrchestratorNewComponent = ref("");
 const syncOrchestratorRelatedRefs = ref<SyncRelatedRef[]>([]);
-const syncOrchestratorSelectedRefKeys = ref<string[]>([]);
 const syncOrchestratorLoadingRelated = ref(false);
 const syncOrchestratorRelatedError = ref<string | null>(null);
+const syncOrchestratorInitialResourceName = ref("");
 
 const orchestratorComponentsForCurrentEnv = computed(() => {
   const envId = currentId.value;
@@ -628,11 +620,6 @@ const orchestratorComponentsForCurrentEnv = computed(() => {
   }
   return Array.from(names).sort((a, b) => a.localeCompare(b));
 });
-const syncSelectedRelatedCount = computed(() => syncOrchestratorSelectedRefKeys.value.length);
-const syncRelatedTotalCount = computed(() => syncOrchestratorRelatedRefs.value.length);
-const syncAllRelatedSelected = computed(
-  () => syncOrchestratorRelatedRefs.value.length > 0 && syncOrchestratorSelectedRefKeys.value.length === syncOrchestratorRelatedRefs.value.length
-);
 const deleteConfirmResources = ref<SelectedResourceRef[]>([]);
 const deleteConfirmDeleting = ref(false);
 const deleteConfirmError = ref<string | null>(null);
@@ -656,10 +643,25 @@ const { navigateTo } = useWorkbenchNavigation({
   loadList,
 });
 
+const {
+  isCellDrillable,
+  onRoleRefClick,
+  getSubjectsList,
+  getSubjectLabelForTable,
+  onSubjectClickForTable,
+  onPvcCellClick,
+  onReplicasClick,
+} = useWorkbenchDrillNavigation({
+  navigateTo,
+  selectedKind,
+  selectedNamespace,
+  resourceKinds: RESOURCE_KINDS,
+});
+
 /** 操作菜单：点击行时显示，区分资源管理与资源钻取 */
 const actionMenuVisible = ref(false);
 const actionMenuPosition = ref({ x: 0, y: 0 });
-const actionMenuRef = ref<HTMLElement | null>(null);
+const actionMenuComponentRef = ref<{ menuEl: HTMLElement | null } | null>(null);
 const deleteActionArmed = ref(false);
 
 function selectResourceFromRow(row: Record<string, unknown>): SelectedResourceRef | null {
@@ -747,8 +749,8 @@ function closeActionMenu() {
 }
 
 function adjustActionMenuPosition() {
-  if (!actionMenuVisible.value || !actionMenuRef.value) return;
-  const rect = actionMenuRef.value.getBoundingClientRect();
+  if (!actionMenuVisible.value || !actionMenuComponentRef.value?.menuEl) return;
+  const rect = actionMenuComponentRef.value.menuEl.getBoundingClientRect();
   const maxX = Math.max(
     WORKBENCH_ACTION_MENU_VIEWPORT_GAP,
     window.innerWidth - rect.width - WORKBENCH_ACTION_MENU_VIEWPORT_GAP
@@ -896,14 +898,9 @@ async function openPodDebugModal() {
   podDebugLoading.value = true;
   podDebugError.value = "";
   podDebugContainerOptions.value = [];
-  podDebugSelectedContainer.value = "";
-  podDebugNamespaces.value = ["net"];
-  podDebugProcessMode.value = "main";
-  podDebugPidInput.value = "";
   try {
     const containers = await kubeGetPodContainers(envId, resource.namespace ?? "default", resource.name);
     podDebugContainerOptions.value = containers;
-    podDebugSelectedContainer.value = containers[0] ?? "";
     if (!containers.length) {
       podDebugError.value = "当前 Pod 没有可用容器。";
     }
@@ -923,53 +920,24 @@ function closePodDebugModal() {
   podDebugLoading.value = false;
   podDebugError.value = "";
   podDebugContainerOptions.value = [];
-  podDebugSelectedContainer.value = "";
-  podDebugNamespaces.value = ["net"];
-  podDebugProcessMode.value = "main";
-  podDebugPidInput.value = "";
 }
 
-function togglePodDebugNamespace(value: PodDebugNamespace) {
-  const next = new Set(podDebugNamespaces.value);
-  if (next.has(value)) {
-    if (next.size === 1) return;
-    next.delete(value);
-  } else {
-    next.add(value);
-  }
-  podDebugNamespaces.value = WORKBENCH_POD_DEBUG_NAMESPACE_OPTIONS
-    .map((item) => item.value)
-    .filter((item) => next.has(item));
-}
-
-function confirmOpenPodDebug() {
+function onPodDebugConfirm(
+  container: string,
+  _processMode: "main" | "pid",
+  pid: number | null,
+  namespaces: PodDebugNamespace[],
+) {
   const resource = selectedResource.value;
   const env = currentEnv.value;
   const envId = currentId.value;
-  if (
-    !resource ||
-    resource.kind !== "Pod" ||
-    !env ||
-    !envId ||
-    !resource.nodeName?.trim() ||
-    !podDebugSelectedContainer.value
-  ) {
-    return;
-  }
-  const pid =
-    podDebugProcessMode.value === "pid"
-      ? Number.parseInt(podDebugPidInput.value.trim(), 10)
-      : null;
-  if (podDebugProcessMode.value === "pid" && (!Number.isInteger(pid) || (pid ?? 0) <= 0)) {
-    podDebugError.value = "请输入有效的 PID。";
-    return;
-  }
+  if (!resource || resource.kind !== "Pod" || !env || !envId || !resource.nodeName?.trim()) return;
   const strategy = getNodeTerminalStrategy(envId);
   const target = buildNodeTerminalLaunch(strategy, resource.nodeName.trim(), {
     namespace: resource.namespace ?? "default",
     podName: resource.name,
-    container: podDebugSelectedContainer.value,
-    namespaces: podDebugNamespaces.value,
+    container,
+    namespaces,
     pid,
   });
   if (!target) return;
@@ -977,7 +945,7 @@ function confirmOpenPodDebug() {
     kind: "host",
     envId,
     envName: env.display_name,
-    hostLabel: `${env.display_name} / ${resource.name} / ${podDebugSelectedContainer.value}`,
+    hostLabel: `${env.display_name} / ${resource.name} / ${container}`,
     nodeTerminalLaunch: target,
   };
   requestSwitchToShell();
@@ -1031,28 +999,18 @@ function handleDeleteAction() {
   openDeleteConfirm();
 }
 
-function relatedRefKey(ref: SyncRelatedRef): string {
-  return `${ref.kind}|${ref.namespace ?? ""}|${ref.name}`;
-}
-
-function toggleAllSyncRelatedRefs(checked: boolean) {
-  if (!checked) {
-    syncOrchestratorSelectedRefKeys.value = [];
-    return;
-  }
-  syncOrchestratorSelectedRefKeys.value = syncOrchestratorRelatedRefs.value.map((r) => relatedRefKey(r));
+function relatedRefKey(r: SyncRelatedRef): string {
+  return `${r.kind}|${r.namespace ?? ""}|${r.name}`;
 }
 
 async function loadSyncRelatedRefs(envId: string, resource: { kind: string; name: string; namespace: string | null }) {
   syncOrchestratorLoadingRelated.value = true;
   syncOrchestratorRelatedError.value = null;
   syncOrchestratorRelatedRefs.value = [];
-  syncOrchestratorSelectedRefKeys.value = [];
   try {
     const yaml = await kubeGetResource(envId, resource.kind, resource.name, resource.namespace);
     const refs = await collectAssociatedRefsFromWorkloadYaml(envId, yaml, resource.namespace ?? "default");
     syncOrchestratorRelatedRefs.value = refs;
-    syncOrchestratorSelectedRefKeys.value = refs.map((r) => relatedRefKey(r));
   } catch (e) {
     syncOrchestratorRelatedError.value = `关联资源解析失败：${extractErrorMessage(e)}`;
   } finally {
@@ -1064,10 +1022,7 @@ async function openSyncToOrchestratorDialog() {
   const envId = currentId.value;
   const r = selectedResource.value;
   if (!envId || !r) return;
-  const components = orchestratorComponentsForCurrentEnv.value;
-  syncOrchestratorMode.value = "new";
-  syncOrchestratorExistingComponent.value = components[0] ?? "";
-  syncOrchestratorNewComponent.value = r.name;
+  syncOrchestratorInitialResourceName.value = r.name;
   syncOrchestratorDialogVisible.value = true;
   closeActionMenu();
   await loadSyncRelatedRefs(envId, r);
@@ -1078,31 +1033,22 @@ function closeSyncToOrchestratorDialog() {
   syncOrchestratorLoadingRelated.value = false;
   syncOrchestratorRelatedError.value = null;
   syncOrchestratorRelatedRefs.value = [];
-  syncOrchestratorSelectedRefKeys.value = [];
 }
 
-function resolveSyncTargetComponent(): string {
-  if (syncOrchestratorMode.value === "existing") {
-    const name = syncOrchestratorExistingComponent.value.trim();
-    if (!name) throw new Error("请选择已有应用组件。");
-    return name;
-  }
-  const next = syncOrchestratorNewComponent.value.trim();
-  if (!next) throw new Error("请输入新应用组件名称。");
-  return next;
-}
-
-async function syncToOrchestrator() {
+async function onSyncDialogConfirm(mode: "existing" | "new", componentName: string, selectedRefKeys: string[]) {
   const envId = currentId.value;
   const envName = currentEnv.value?.display_name;
   const r = selectedResource.value;
   if (!envId || !envName || !r) return;
+  if (!componentName) {
+    listError.value = mode === "existing" ? "请选择已有应用组件。" : "请输入新应用组件名称。";
+    return;
+  }
   try {
     const yaml = await kubeGetResource(envId, r.kind, r.name, r.namespace);
-    const componentName = resolveSyncTargetComponent();
     const primaryManifest = upsertFromWorkbenchSync(envId, envName, r, yaml, componentName);
-    const selectedKeys = new Set(syncOrchestratorSelectedRefKeys.value);
-    const relatedRefs = syncOrchestratorRelatedRefs.value.filter((ref) => selectedKeys.has(relatedRefKey(ref)));
+    const selectedKeySet = new Set(selectedRefKeys);
+    const relatedRefs = syncOrchestratorRelatedRefs.value.filter((ref) => selectedKeySet.has(relatedRefKey(ref)));
     if (relatedRefs.length > 0) {
       const failed: string[] = [];
       for (const ref of relatedRefs) {
@@ -1229,109 +1175,6 @@ function onTopologyNavigate(payload: {
 }
 
 
-/** 判断单元格是否可点击钻取 */
-function isCellDrillable(colKey: string, row: Record<string, unknown>): boolean {
-  if (colKey === "replicas" && row.labelSelector) return true;
-  if (colKey === "roleRef" && row.roleRefName && row.roleRef !== "-") return true;
-  if (colKey === "subjects" && Array.isArray(row.subjectsList) && (row.subjectsList as unknown[]).length > 0) return true;
-  if (selectedKind.value === "persistentvolumeclaims") {
-    if (colKey === "volume") {
-      const v = row.volume;
-      return typeof v === "string" && v !== "" && v !== "-";
-    }
-    if (colKey === "storageClass") {
-      const s = row.storageClass;
-      return typeof s === "string" && s !== "" && s !== "-";
-    }
-  }
-  return false;
-}
-
-/** RoleBinding/ClusterRoleBinding roleRef 点击：跳转 Role 或 ClusterRole */
-function onRoleRefClick(row: Record<string, unknown>) {
-  const kind = row.roleRefKind as string;
-  const name = row.roleRefName as string;
-  if (!kind || !name) return;
-  const isRole = kind === "Role";
-  navigateTo({
-    kind: isRole ? "roles" : "clusterroles",
-    namespace: isRole ? ((row.ns as string) ?? selectedNamespace.value) : null,
-    nameFilter: name,
-    drillFrom: {
-      kind: isRole ? "RoleBinding" : "ClusterRoleBinding",
-      name: String(row.name),
-      namespace: (row.ns as string) ?? null,
-    },
-  });
-}
-
-function getSubjectsList(row: Record<string, unknown>): { kind: string; name: string; namespace?: string | null }[] {
-  const list = row.subjectsList;
-  return Array.isArray(list) ? (list as { kind: string; name: string; namespace?: string | null }[]) : [];
-}
-
-function getSubjectLabel(s: { kind: string; name: string; namespace?: string | null }, row: Record<string, unknown>): string {
-  const ns = s.namespace ?? (row.ns as string) ?? "default";
-  return `${ns}/${s.name}`;
-}
-
-/** RoleBinding/ClusterRoleBinding subject(SA) 点击：跳转 ServiceAccount */
-function onSubjectClick(row: Record<string, unknown>, subject: { kind: string; name: string; namespace?: string | null }) {
-  if (subject.kind !== "ServiceAccount") return;
-  const sourceKind = selectedKind.value === "clusterrolebindings" ? "ClusterRoleBinding" : "RoleBinding";
-  navigateTo({
-    kind: "serviceaccounts",
-    namespace: subject.namespace ?? (row.ns as string) ?? selectedNamespace.value,
-    nameFilter: subject.name,
-    drillFrom: { kind: sourceKind, name: String(row.name), namespace: (row.ns as string) ?? null },
-  });
-}
-
-function getSubjectLabelForTable(s: unknown, row: Record<string, unknown>): string {
-  return getSubjectLabel(s as { kind: string; name: string; namespace?: string | null }, row);
-}
-
-function onSubjectClickForTable(row: Record<string, unknown>, s: unknown) {
-  onSubjectClick(row, s as { kind: string; name: string; namespace?: string | null });
-}
-
-/** PVC 单元格点击：volume 跳转 PV，storageClass 跳转 StorageClass */
-function onPvcCellClick(row: Record<string, unknown>, colKey: string) {
-  if (colKey === "volume") {
-    const name = row.volume as string;
-    if (!name || name === "-") return;
-    navigateTo({
-      kind: "persistentvolumes",
-      namespace: null,
-      nameFilter: name,
-      drillFrom: { kind: "PersistentVolumeClaim", name: String(row.name), namespace: (row.ns as string) ?? null },
-    });
-  } else if (colKey === "storageClass") {
-    const name = row.storageClass as string;
-    if (!name || name === "-") return;
-    navigateTo({
-      kind: "storageclasses",
-      namespace: null,
-      nameFilter: name,
-      drillFrom: { kind: "PersistentVolumeClaim", name: String(row.name), namespace: (row.ns as string) ?? null },
-    });
-  }
-}
-
-/** 副本数点击：跳转到 Pods 并筛选该 workload 管理的 Pod */
-function onReplicasClick(row: Record<string, unknown>) {
-  const ls = row.labelSelector as string | null | undefined;
-  if (!ls || !row.name) return;
-  const kindLabel = RESOURCE_KINDS.find((k) => k.id === selectedKind.value)?.label ?? "";
-  if (!kindLabel) return;
-  navigateTo({
-    kind: "pods",
-    namespace: (row.ns as string) ?? selectedNamespace.value,
-    labelSelector: ls,
-    nameFilter: "",
-    drillFrom: { kind: kindLabel, name: String(row.name), namespace: (row.ns as string) ?? null },
-  });
-}
 
 /** Namespace 列表行点击：快速切换到该命名空间并切到 Pods 视图（双击保留） */
 function onNamespaceRowClick(name: string) {
@@ -1689,306 +1532,49 @@ const {
     </div>
 
     <!-- 资源操作菜单：资源管理 vs 资源钻取 -->
-    <Teleport to="body">
-      <div
-        v-if="actionMenuVisible"
-        class="action-menu-backdrop"
-        @click="closeActionMenu"
-      >
-        <div
-          ref="actionMenuRef"
-          class="action-menu-overlay"
-          :style="{ left: actionMenuPosition.x + 'px', top: actionMenuPosition.y + 'px' }"
-          role="menu"
-          @click.stop
-        >
-          <div class="action-menu-section">
-            <div class="action-menu-section-title">查看与导航</div>
-            <button type="button" class="action-menu-item" @click="openResourceDetail">
-              <span class="action-menu-icon" aria-hidden="true">📄</span>
-              <span class="action-menu-text">
-                <span class="action-menu-main">查看详情</span>
-                <span class="action-menu-sub">打开 YAML、Describe 与编辑面板</span>
-              </span>
-            </button>
-            <button type="button" class="action-menu-item" @click="openTopology">
-              <span class="action-menu-icon" aria-hidden="true">🧭</span>
-              <span class="action-menu-text">
-                <span class="action-menu-main">关联资源</span>
-                <span class="action-menu-sub">查看上下游资源拓扑并快速跳转</span>
-              </span>
-            </button>
-            <button
-              v-if="selectedResource && ['Pod', 'Deployment', 'StatefulSet', 'DaemonSet'].includes(selectedResource.kind)"
-              type="button"
-              class="action-menu-item"
-              @click="openPodLogs"
-            >
-              <span class="action-menu-icon" aria-hidden="true">📜</span>
-              <span class="action-menu-text">
-                <span class="action-menu-main">打开日志中心</span>
-                <span class="action-menu-sub">集中查看 Pod 或工作负载日志</span>
-              </span>
-            </button>
-            <button
-              v-if="selectedResource && WORKBENCH_SHELL_WORKLOAD_KINDS.has(selectedResource.kind)"
-              type="button"
-              class="action-menu-item"
-              @click="openPodShell"
-            >
-              <span class="action-menu-icon" aria-hidden="true">⌨</span>
-              <span class="action-menu-text">
-                <span class="action-menu-main">打开 Shell</span>
-                <span class="action-menu-sub">进入容器执行命令与排障</span>
-              </span>
-            </button>
-            <button
-              v-if="selectedResource && WORKBENCH_NODE_TERMINAL_RESOURCE_KINDS.has(selectedResource.kind)"
-              type="button"
-              class="action-menu-item"
-              :class="{ 'action-menu-item-disabled': !canOpenNodeTerminal }"
-              :disabled="!canOpenNodeTerminal"
-              :title="nodeTerminalDisabledReason || nodeTerminalMenuLabel"
-              @click="openNodeTerminalFromMenu"
-            >
-              <span class="action-menu-icon" aria-hidden="true">🖥</span>
-              <span class="action-menu-text">
-                <span class="action-menu-main">{{ nodeTerminalMenuLabel }}</span>
-                <span class="action-menu-sub">通过环境入口快速切换到目标节点主机</span>
-              </span>
-            </button>
-            <button
-              v-if="selectedResource?.kind === 'Pod'"
-              type="button"
-              class="action-menu-item"
-              :class="{ 'action-menu-item-disabled': !canOpenPodDebug }"
-              :disabled="!canOpenPodDebug"
-              :title="podDebugDisabledReason || '进入容器调试环境'"
-              @click="openPodDebugModal"
-            >
-              <span class="action-menu-icon" aria-hidden="true">🧪</span>
-              <span class="action-menu-text">
-                <span class="action-menu-main">进入容器调试环境</span>
-                <span class="action-menu-sub">通过 nsenter 进入目标容器的网络或完整隔离空间</span>
-              </span>
-            </button>
-          </div>
-          <div class="action-menu-section">
-            <div class="action-menu-section-title">编辑与变更</div>
-            <button
-              v-if="selectedResource && (selectedResource.kind === 'ConfigMap' || selectedResource.kind === 'Secret')"
-              type="button"
-              class="action-menu-item"
-              @click="openEditConfig"
-            >
-              <span class="action-menu-icon" aria-hidden="true">⚙</span>
-              <span class="action-menu-text">
-                <span class="action-menu-main">修改配置</span>
-                <span class="action-menu-sub">编辑 ConfigMap / Secret 内容</span>
-              </span>
-            </button>
-            <button
-              v-if="selectedResource && WORKBENCH_IMAGE_PATCH_KINDS.has(selectedResource.kind)"
-              type="button"
-              class="action-menu-item"
-              @click="openChangeImageModal"
-            >
-              <span class="action-menu-icon" aria-hidden="true">🧩</span>
-              <span class="action-menu-text">
-                <span class="action-menu-main">修改镜像</span>
-                <span class="action-menu-sub">更新工作负载容器镜像版本</span>
-              </span>
-            </button>
-            <button type="button" class="action-menu-item" @click="openSyncToOrchestratorDialog">
-              <span class="action-menu-icon" aria-hidden="true">🧱</span>
-              <span class="action-menu-text">
-                <span class="action-menu-main">编排中心</span>
-                <span class="action-menu-sub">同步到编排中心并统一维护 YAML</span>
-              </span>
-            </button>
-          </div>
-          <div class="action-menu-section action-menu-section-danger">
-            <div class="action-menu-section-title">危险操作</div>
-            <button
-              type="button"
-              class="action-menu-item action-menu-item-danger"
-              :class="{ 'action-menu-item-danger-armed': deleteActionArmed }"
-              @click="handleDeleteAction"
-            >
-              <span class="action-menu-icon" aria-hidden="true">🗑</span>
-              <span class="action-menu-text">
-                <span class="action-menu-main">
-                  {{ deleteActionArmed ? "再次点击确认删除" : "删除" }}
-                </span>
-                <span class="action-menu-sub">
-                  {{
-                    deleteActionArmed
-                      ? "将打开删除确认弹窗，避免误操作"
-                      : "高风险操作，资源删除后通常不可恢复"
-                  }}
-                </span>
-              </span>
-            </button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
+    <WorkbenchActionMenu
+      ref="actionMenuComponentRef"
+      :visible="actionMenuVisible"
+      :position="actionMenuPosition"
+      :selected-resource="selectedResource"
+      :can-open-node-terminal="canOpenNodeTerminal"
+      :can-open-pod-debug="canOpenPodDebug"
+      :node-terminal-menu-label="nodeTerminalMenuLabel"
+      :node-terminal-disabled-reason="nodeTerminalDisabledReason"
+      :pod-debug-disabled-reason="podDebugDisabledReason"
+      :delete-action-armed="deleteActionArmed"
+      @close="closeActionMenu"
+      @open-detail="openResourceDetail"
+      @open-topology="openTopology"
+      @open-pod-logs="openPodLogs"
+      @open-pod-shell="openPodShell"
+      @open-node-terminal="openNodeTerminalFromMenu"
+      @open-pod-debug="openPodDebugModal"
+      @open-edit-config="openEditConfig"
+      @open-change-image="openChangeImageModal"
+      @open-sync-orchestrator="openSyncToOrchestratorDialog"
+      @handle-delete="handleDeleteAction"
+    />
 
-    <Teleport to="body">
-        <div v-if="syncOrchestratorDialogVisible" class="error-modal-overlay" @click.self="closeSyncToOrchestratorDialog">
-        <div class="sync-orchestrator-modal" role="dialog" aria-label="同步到编排中心">
-          <h3 class="sync-orchestrator-title">同步到编排中心</h3>
-          <p class="sync-orchestrator-desc">
-            选择将当前资源同步到哪个应用组件，可用于继续维护已有组件或新建组件。
-          </p>
-          <div class="sync-orchestrator-mode-row">
-            <label class="sync-radio">
-              <input v-model="syncOrchestratorMode" type="radio" value="new" />
-              新增应用组件
-            </label>
-            <label class="sync-radio">
-              <input v-model="syncOrchestratorMode" type="radio" value="existing" :disabled="orchestratorComponentsForCurrentEnv.length === 0" />
-              加入已有应用组件
-            </label>
-          </div>
-          <label v-if="syncOrchestratorMode === 'existing'" class="sync-field">
-            <span>已有组件</span>
-            <select v-model="syncOrchestratorExistingComponent" class="filter-input" :disabled="orchestratorComponentsForCurrentEnv.length === 0">
-              <option value="" disabled>选择组件</option>
-              <option v-for="name in orchestratorComponentsForCurrentEnv" :key="name" :value="name">
-                {{ name }}
-              </option>
-            </select>
-          </label>
-          <label v-else class="sync-field">
-            <span>新组件名称</span>
-            <input v-model="syncOrchestratorNewComponent" type="text" class="filter-input" placeholder="输入应用组件名称" />
-          </label>
-          <div class="sync-related-panel">
-            <div class="sync-related-head">
-              <span>关联资源</span>
-              <small v-if="syncRelatedTotalCount > 0">已选 {{ syncSelectedRelatedCount }} / {{ syncRelatedTotalCount }}</small>
-            </div>
-            <div v-if="syncOrchestratorLoadingRelated" class="sync-related-empty">正在解析关联资源…</div>
-            <div v-else-if="syncOrchestratorRelatedError" class="sync-related-error">{{ syncOrchestratorRelatedError }}</div>
-            <template v-else>
-              <label v-if="syncRelatedTotalCount > 0" class="sync-select-all">
-                <input
-                  type="checkbox"
-                  :checked="syncAllRelatedSelected"
-                  @change="toggleAllSyncRelatedRefs(($event.target as HTMLInputElement).checked)"
-                />
-                全选关联资源
-              </label>
-              <div v-if="syncRelatedTotalCount > 0" class="sync-related-list">
-                <label v-for="ref in syncOrchestratorRelatedRefs" :key="relatedRefKey(ref)" class="sync-related-item">
-                  <input v-model="syncOrchestratorSelectedRefKeys" type="checkbox" :value="relatedRefKey(ref)" />
-                  <span>{{ ref.kind }}/{{ ref.name }}</span>
-                  <small>{{ ref.namespace || "default" }}</small>
-                </label>
-              </div>
-              <div v-else class="sync-related-empty">当前资源未检测到可关联同步的 ConfigMap/Secret/Service。</div>
-            </template>
-          </div>
-          <div class="sync-orchestrator-actions">
-            <button type="button" class="btn-secondary-outline" @click="closeSyncToOrchestratorDialog">取消</button>
-            <button
-              type="button"
-              class="btn-primary"
-              :disabled="(syncOrchestratorMode === 'existing' && !syncOrchestratorExistingComponent) || syncOrchestratorLoadingRelated"
-              @click="syncToOrchestrator"
-            >
-              确认同步
-            </button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
+    <SyncOrchestratorDialog
+      :visible="syncOrchestratorDialogVisible"
+      :components="orchestratorComponentsForCurrentEnv"
+      :related-refs="syncOrchestratorRelatedRefs"
+      :loading-related="syncOrchestratorLoadingRelated"
+      :related-error="syncOrchestratorRelatedError"
+      :initial-resource-name="syncOrchestratorInitialResourceName"
+      @close="closeSyncToOrchestratorDialog"
+      @sync="onSyncDialogConfirm"
+    />
 
-    <Teleport to="body">
-      <div v-if="podDebugModalVisible" class="error-modal-overlay" @click.self="closePodDebugModal">
-        <div class="pod-debug-modal" role="dialog" aria-label="进入容器调试环境">
-          <h3 class="sync-orchestrator-title">进入容器调试环境</h3>
-          <p class="sync-orchestrator-desc">
-            先通过节点终端策略进入 Pod 所在主机，再按你勾选的 namespace 组合执行 `nsenter`。这样可以保留主机工具，同时进入目标容器的关键隔离空间。
-          </p>
-          <div class="pod-debug-grid">
-            <label class="sync-field">
-              <span>容器</span>
-              <select v-model="podDebugSelectedContainer" class="filter-input pod-debug-input" :disabled="podDebugLoading || !podDebugContainerOptions.length">
-                <option value="" disabled>选择容器</option>
-                <option v-for="name in podDebugContainerOptions" :key="name" :value="name">
-                  {{ name }}
-                </option>
-              </select>
-            </label>
-            <div class="sync-field">
-              <span>进程目标</span>
-              <div class="pod-debug-radio-row">
-                <label class="pod-debug-radio">
-                  <input v-model="podDebugProcessMode" type="radio" value="main" />
-                  <span>容器主进程</span>
-                </label>
-                <label class="pod-debug-radio">
-                  <input v-model="podDebugProcessMode" type="radio" value="pid" />
-                  <span>指定 PID</span>
-                </label>
-              </div>
-            </div>
-            <label v-if="podDebugProcessMode === 'pid'" class="sync-field">
-              <span>PID</span>
-              <input
-                v-model="podDebugPidInput"
-                type="text"
-                class="filter-input pod-debug-input"
-                inputmode="numeric"
-                placeholder="输入目标进程 PID"
-              />
-            </label>
-          </div>
-          <div class="pod-debug-section">
-            <div class="pod-debug-section-title">
-              <span>Namespace 组合</span>
-              <small>至少保留一个，推荐先勾选 `网络`</small>
-            </div>
-            <div class="pod-debug-option-grid">
-              <button
-                v-for="item in WORKBENCH_POD_DEBUG_NAMESPACE_OPTIONS"
-                :key="item.value"
-                type="button"
-                class="pod-debug-option"
-                :class="{ active: podDebugNamespaces.includes(item.value) }"
-                @click="togglePodDebugNamespace(item.value)"
-              >
-                <div class="pod-debug-option-head">
-                  <span class="pod-debug-option-title">
-                    {{ item.label }}
-                    <span v-if="item.recommended" class="pod-debug-badge">推荐</span>
-                  </span>
-                  <span class="pod-debug-option-check">{{ podDebugNamespaces.includes(item.value) ? "✓" : "" }}</span>
-                </div>
-                <div class="pod-debug-option-desc">{{ item.description }}</div>
-              </button>
-            </div>
-          </div>
-          <p class="pod-debug-summary">
-            当前组合：{{ podDebugNamespaces.join(" + ") }}，{{ podDebugProcessMode === "main" ? "默认进入容器主进程" : `按指定 PID ${podDebugPidInput || "..." } 进入` }}。
-          </p>
-          <p v-if="podDebugError" class="form-error">{{ podDebugError }}</p>
-          <div class="pod-debug-actions">
-            <button type="button" class="btn-secondary-outline pod-debug-cancel-btn" @click="closePodDebugModal">取消</button>
-            <button
-              type="button"
-              class="btn-primary pod-debug-primary-btn"
-              :disabled="podDebugLoading || !podDebugSelectedContainer || !!podDebugError || (podDebugProcessMode === 'pid' && !podDebugPidInput.trim())"
-              @click="confirmOpenPodDebug"
-            >
-              进入调试终端
-            </button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
+    <PodDebugDialog
+      :visible="podDebugModalVisible"
+      :loading="podDebugLoading"
+      :error="podDebugError"
+      :container-options="podDebugContainerOptions"
+      @close="closePodDebugModal"
+      @confirm="onPodDebugConfirm"
+    />
 
     <!-- 资源详情抽屉（YAML） -->
     <ResourceDetailDrawer
@@ -2020,514 +1606,5 @@ const {
   </div>
 </template>
 
-<style scoped>
-.main-layout {
-  display: flex;
-  flex-direction: row;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-}
-.content {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  overflow: hidden;
-}
-.action-menu-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 999;
-}
-.action-menu-overlay {
-  position: fixed;
-  z-index: 1000;
-  width: min(320px, calc(100vw - 20px));
-  max-width: calc(100vw - 20px);
-  max-height: calc(100vh - 20px);
-  padding: 0.5rem 0;
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.18);
-  overflow: auto;
-  overscroll-behavior: contain;
-}
-.action-menu-section {
-  padding: 0 0.25rem;
-}
-.action-menu-section:not(:last-child) {
-  margin-bottom: 0.35rem;
-  padding-bottom: 0.35rem;
-  border-bottom: 1px solid #f1f5f9;
-}
-.action-menu-section-title {
-  padding: 0.25rem 0.5rem;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: #94a3b8;
-}
-.action-menu-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.5rem;
-  width: 100%;
-  padding: 0.45rem 0.75rem;
-  border: none;
-  background: none;
-  font-size: 0.8125rem;
-  text-align: left;
-  color: #334155;
-  cursor: pointer;
-  border-radius: 4px;
-}
-.action-menu-icon {
-  width: 1rem;
-  text-align: center;
-  opacity: 0.9;
-  margin-top: 0.1rem;
-}
-.action-menu-text {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-.action-menu-main {
-  color: inherit;
-  line-height: 1.2;
-}
-.action-menu-sub {
-  margin-top: 0.12rem;
-  font-size: 0.72rem;
-  line-height: 1.25;
-  color: #94a3b8;
-  word-break: break-word;
-}
-.action-menu-item:hover .action-menu-sub {
-  color: #64748b;
-}
-.action-menu-item:hover {
-  background: #f1f5f9;
-  color: #2563eb;
-}
-.action-menu-item-disabled {
-  cursor: not-allowed;
-  opacity: 0.72;
-}
-.action-menu-item-disabled:hover {
-  background: none;
-  color: #334155;
-}
-.action-menu-item-disabled:hover .action-menu-sub {
-  color: #94a3b8;
-}
-.action-menu-section-danger {
-  border-left: 2px solid #fecaca;
-  margin-left: 0.25rem;
-  padding-left: 0.25rem;
-}
-.action-menu-item-danger:hover {
-  background: #fef2f2;
-  color: #dc2626;
-}
-.action-menu-item-danger:hover .action-menu-sub {
-  color: #b91c1c;
-}
-.action-menu-item-danger-armed {
-  background: #fee2e2;
-  color: #b91c1c;
-  box-shadow: inset 2px 0 0 #dc2626;
-}
-.action-menu-item-danger-armed .action-menu-sub {
-  color: #b91c1c;
-}
-.action-menu-loading {
-  padding: 0.4rem 0.75rem;
-  font-size: 0.8125rem;
-  color: #94a3b8;
-}
-@media (max-width: 640px) {
-  .action-menu-overlay {
-    width: min(300px, calc(100vw - 16px));
-    max-width: calc(100vw - 16px);
-    max-height: calc(100vh - 16px);
-    padding: 0.35rem 0;
-    border-radius: 10px;
-  }
-  .action-menu-section {
-    padding: 0 0.18rem;
-  }
-  .action-menu-item {
-    gap: 0.42rem;
-    padding: 0.42rem 0.62rem;
-  }
-  .action-menu-main {
-    font-size: 0.78rem;
-  }
-  .action-menu-sub {
-    font-size: 0.68rem;
-  }
-}
-/* 弹层内表单控件（Teleport 仍挂在本组件下，需保留样式） */
-.filter-input {
-  padding: 0.35rem 0.6rem;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  font-size: 0.8125rem;
-  min-width: 120px;
-  max-width: 160px;
-  box-sizing: border-box;
-}
-.filter-input:focus {
-  outline: none;
-  border-color: #2563eb;
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
-}
-.btn-secondary-outline {
-  padding: 0.35rem 0.75rem;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  background: #fff;
-  color: #475569;
-  font-size: 0.8125rem;
-  cursor: pointer;
-}
-.btn-secondary-outline:hover {
-  background: #f8fafc;
-}
-.btn-primary {
-  padding: 0.45rem 0.9rem;
-  border: none;
-  border-radius: 6px;
-  background: #2563eb;
-  color: #fff;
-  font-size: 0.8125rem;
-  font-weight: 600;
-  cursor: pointer;
-}
-.btn-primary:hover:not(:disabled) {
-  background: #1d4ed8;
-}
-.btn-primary:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-.form-error {
-  margin: 0.35rem 0 0;
-  font-size: 0.8rem;
-  color: #b91c1c;
-}
-.error-modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.4);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 9999;
-}
-.sync-orchestrator-modal {
-  width: min(92vw, 520px);
-  background: #fff;
-  border-radius: 12px;
-  border: 1px solid #cbd5e1;
-  padding: 1rem;
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.15);
-}
-.sync-orchestrator-title {
-  margin: 0 0 0.35rem;
-  font-size: 1rem;
-  color: #1e293b;
-}
-.sync-orchestrator-desc {
-  margin: 0 0 0.75rem;
-  font-size: 0.82rem;
-  color: #64748b;
-}
-.sync-orchestrator-mode-row {
-  display: flex;
-  align-items: center;
-  gap: 0.8rem;
-  margin-bottom: 0.7rem;
-}
-.sync-radio {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  font-size: 0.82rem;
-  color: #334155;
-}
-.sync-field {
-  display: grid;
-  gap: 0.35rem;
-  margin-bottom: 0.85rem;
-  font-size: 0.8rem;
-  color: #334155;
-}
-.sync-related-panel {
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #f8fafc;
-  padding: 0.6rem;
-  margin-bottom: 0.85rem;
-}
-.sync-related-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 0.45rem;
-  font-size: 0.8rem;
-  color: #334155;
-}
-.sync-related-head small {
-  color: #64748b;
-}
-.sync-select-all {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  font-size: 0.76rem;
-  color: #334155;
-  margin-bottom: 0.45rem;
-}
-.sync-related-list {
-  display: grid;
-  gap: 0.3rem;
-  max-height: 180px;
-  overflow: auto;
-}
-.sync-related-item {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  background: #fff;
-  padding: 0.3rem 0.4rem;
-  font-size: 0.76rem;
-  color: #0f172a;
-}
-.sync-related-item small {
-  margin-left: auto;
-  color: #64748b;
-}
-.sync-related-empty {
-  font-size: 0.76rem;
-  color: #64748b;
-}
-.sync-related-error {
-  font-size: 0.76rem;
-  color: #b91c1c;
-  background: #fef2f2;
-  border: 1px solid #fecaca;
-  border-radius: 6px;
-  padding: 0.35rem 0.45rem;
-}
-.sync-orchestrator-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-}
-.pod-debug-modal {
-  width: min(92vw, 680px);
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-  border-radius: 18px;
-  border: 1px solid #dbe4ee;
-  padding: 1.1rem;
-  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.22);
-}
-.pod-debug-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.9rem 1rem;
-}
-.pod-debug-input {
-  min-width: 0;
-  max-width: none;
-  width: 100%;
-  box-sizing: border-box;
-}
-.pod-debug-radio-row {
-  display: flex;
-  gap: 0.7rem;
-  flex-wrap: wrap;
-}
-.pod-debug-radio {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-  padding: 0.55rem 0.7rem;
-  border: 1px solid #dbe4ee;
-  border-radius: 12px;
-  background: #fff;
-  font-size: 0.82rem;
-  color: #334155;
-}
-.pod-debug-section {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  padding: 0.9rem;
-  border: 1px solid #e2e8f0;
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.92);
-  margin-bottom: 0.85rem;
-}
-.pod-debug-section-title {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.75rem;
-}
-.pod-debug-section-title span {
-  font-size: 0.92rem;
-  font-weight: 700;
-  color: #0f172a;
-}
-.pod-debug-section-title small {
-  color: #64748b;
-  font-size: 0.76rem;
-}
-.pod-debug-option-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.75rem;
-}
-.pod-debug-option {
-  text-align: left;
-  border: 1px solid #dbe4ee;
-  border-radius: 14px;
-  background: #fff;
-  padding: 0.85rem 0.9rem;
-  cursor: pointer;
-  transition: border-color 120ms ease, box-shadow 120ms ease;
-}
-.pod-debug-option:hover {
-  border-color: #93c5fd;
-  box-shadow: 0 10px 22px rgba(59, 130, 246, 0.08);
-}
-.pod-debug-option.active {
-  border-color: #2563eb;
-  background: #eff6ff;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
-}
-.pod-debug-option-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-}
-.pod-debug-option-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  font-weight: 700;
-  color: #0f172a;
-}
-.pod-debug-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.08rem 0.38rem;
-  border-radius: 999px;
-  background: #dcfce7;
-  color: #166534;
-  font-size: 0.68rem;
-  font-weight: 700;
-}
-.pod-debug-option-check {
-  width: 1.1rem;
-  text-align: center;
-  font-weight: 800;
-  color: #2563eb;
-}
-.pod-debug-option-desc {
-  margin-top: 0.45rem;
-  font-size: 0.78rem;
-  line-height: 1.45;
-  color: #64748b;
-}
-.pod-debug-summary {
-  margin: -0.15rem 0 0.6rem;
-  font-size: 0.8rem;
-  color: #475569;
-}
-.pod-debug-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 0.75rem;
-  margin-top: 0.9rem;
-}
-.pod-debug-cancel-btn {
-  padding: 0.6rem 0.95rem;
-  border-radius: 12px;
-}
-.pod-debug-primary-btn {
-  min-width: 12.5rem;
-  min-height: 3rem;
-  padding: 0.8rem 1.4rem;
-  border: none;
-  border-radius: 14px;
-  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
-  color: #fff;
-  font-size: 0.92rem;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-  box-shadow: 0 14px 28px rgba(37, 99, 235, 0.22);
-}
-.pod-debug-primary-btn:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: 0 16px 30px rgba(37, 99, 235, 0.26);
-}
-.pod-debug-primary-btn:disabled {
-  background: linear-gradient(135deg, #93c5fd 0%, #60a5fa 100%);
-  color: rgba(255, 255, 255, 0.96);
-  box-shadow: none;
-  opacity: 0.72;
-}
-@media (max-width: 640px) {
-  .pod-debug-grid,
-  .pod-debug-option-grid {
-    grid-template-columns: 1fr;
-  }
-  .pod-debug-actions {
-    flex-direction: column-reverse;
-    align-items: stretch;
-  }
-  .pod-debug-cancel-btn,
-  .pod-debug-primary-btn {
-    width: 100%;
-  }
-}
-.empty-state {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
-  color: #64748b;
-  font-size: 0.875rem;
-  background: #f8fafc;
-}
-.empty-state p {
-  margin: 0;
-}
-.empty-emoji {
-  font-size: 1.5rem;
-  line-height: 1;
-}
-.empty-title {
-  margin: 0;
-  font-size: 0.95rem;
-  color: #334155;
-  font-weight: 600;
-}
-.empty-desc {
-  font-size: 0.8125rem;
-  color: #94a3b8;
-}
-</style>
+
+<style src="./main-view.css" scoped></style>

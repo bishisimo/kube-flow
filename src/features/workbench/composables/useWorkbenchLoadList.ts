@@ -12,7 +12,7 @@ import {
 import { isConnectionError } from "../../../stores/connection";
 import { getWorkbenchResourceDescriptor } from "../resourceDescriptors";
 import { WORKBENCH_ALL_NAMESPACES_SENTINEL } from "../constants";
-import { extractErrorMessage } from "../utils/extractErrorMessage";
+import { extractErrorMessage } from "../../../utils/errorMessage";
 import { handleAuthRetry, type StrongholdAuthLike, type SshAuthLike } from "../utils/handleAuthRetry";
 
 export type UseWorkbenchLoadListOptions = {
@@ -105,7 +105,7 @@ export function useWorkbenchLoadList(options: UseWorkbenchLoadListOptions) {
         options.envSwitching.value = false;
         options.listLoading.value = false;
         options.setConnected(id);
-      } catch (e: unknown) {
+      } catch (e) {
         if (options.isStaleView(id, sessionId, requestId)) return;
         const msg = extractErrorMessage(e);
         const authHandled = await handleAuthRetry({
@@ -164,7 +164,7 @@ export function useWorkbenchLoadList(options: UseWorkbenchLoadListOptions) {
       options.cacheCurrentView(id, options.selectedKind.value, targetNamespace, labelSel, items);
       if (options.isStaleView(id, sessionId, requestId)) return;
       options.setConnected(id);
-    } catch (e: unknown) {
+    } catch (e) {
       if (options.isStaleView(id, sessionId, requestId)) return;
       const msg = extractErrorMessage(e);
       const authHandled = await handleAuthRetry({

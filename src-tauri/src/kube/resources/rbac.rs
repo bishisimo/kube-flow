@@ -4,7 +4,7 @@ use super::{
     build_list_params, format_creation_time, list_simple_cluster, list_simple_namespaced,
     ResourceError, SimpleClusterItem, SimpleNamespacedItem,
 };
-use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding, Role, RoleBinding};
+use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding, Role, RoleBinding, Subject};
 use kube::api::Api;
 use kube::Client;
 use serde::Serialize;
@@ -89,6 +89,30 @@ pub struct ClusterRoleBindingItem {
     pub creation_time: Option<String>,
 }
 
+// ── 共用提取函数 ────────────────────────────────────────────────────────────
+
+fn extract_role_ref_and_subjects(
+    role_ref: &k8s_openapi::api::rbac::v1::RoleRef,
+    subjects: &Option<Vec<Subject>>,
+) -> (Option<String>, Option<String>, Option<String>, Option<u32>, Option<Vec<SubjectRef>>) {
+    let role_ref_str = Some(format!("{}/{}", role_ref.kind, role_ref.name));
+    let role_ref_kind = Some(role_ref.kind.clone());
+    let role_ref_name = Some(role_ref.name.clone());
+    let subject_count = subjects.as_ref().map(|s| s.len() as u32);
+    let subjects_list: Option<Vec<SubjectRef>> = subjects.as_ref().map(|subs| {
+        subs.iter()
+            .filter(|s| s.kind == "ServiceAccount")
+            .map(|s| SubjectRef {
+                kind: s.kind.clone(),
+                name: s.name.clone(),
+                namespace: s.namespace.clone(),
+            })
+            .collect()
+    });
+    let subjects_list = subjects_list.filter(|v| !v.is_empty());
+    (role_ref_str, role_ref_kind, role_ref_name, subject_count, subjects_list)
+}
+
 // ── list 函数 ──────────────────────────────────────────────────────────────
 
 list_simple_namespaced!(list_roles, Role, RoleItem);
@@ -107,22 +131,8 @@ pub async fn list_role_bindings(
         .items
         .into_iter()
         .map(|r| {
-            let rr = &r.role_ref;
-            let role_ref = Some(format!("{}/{}", rr.kind, rr.name));
-            let role_ref_kind = Some(rr.kind.clone());
-            let role_ref_name = Some(rr.name.clone());
-            let subjects = r.subjects.as_ref().map(|s| s.len() as u32);
-            let subjects_list: Option<Vec<SubjectRef>> = r.subjects.as_ref().map(|subs| {
-                subs.iter()
-                    .filter(|s| s.kind == "ServiceAccount")
-                    .map(|s| SubjectRef {
-                        kind: s.kind.clone(),
-                        name: s.name.clone(),
-                        namespace: s.namespace.clone(),
-                    })
-                    .collect()
-            });
-            let subjects_list = subjects_list.filter(|v| !v.is_empty());
+            let (role_ref, role_ref_kind, role_ref_name, subjects, subjects_list) =
+                extract_role_ref_and_subjects(&r.role_ref, &r.subjects);
             RoleBindingItem {
                 name: r.metadata.name.unwrap_or_default(),
                 namespace: r.metadata.namespace.unwrap_or_else(|| ns.to_string()),
@@ -149,22 +159,8 @@ pub async fn list_cluster_role_bindings(
         .items
         .into_iter()
         .map(|r| {
-            let rr = &r.role_ref;
-            let role_ref = Some(format!("{}/{}", rr.kind, rr.name));
-            let role_ref_kind = Some(rr.kind.clone());
-            let role_ref_name = Some(rr.name.clone());
-            let subjects = r.subjects.as_ref().map(|s| s.len() as u32);
-            let subjects_list: Option<Vec<SubjectRef>> = r.subjects.as_ref().map(|subs| {
-                subs.iter()
-                    .filter(|s| s.kind == "ServiceAccount")
-                    .map(|s| SubjectRef {
-                        kind: s.kind.clone(),
-                        name: s.name.clone(),
-                        namespace: s.namespace.clone(),
-                    })
-                    .collect()
-            });
-            let subjects_list = subjects_list.filter(|v| !v.is_empty());
+            let (role_ref, role_ref_kind, role_ref_name, subjects, subjects_list) =
+                extract_role_ref_and_subjects(&r.role_ref, &r.subjects);
             ClusterRoleBindingItem {
                 name: r.metadata.name.unwrap_or_default(),
                 role_ref,

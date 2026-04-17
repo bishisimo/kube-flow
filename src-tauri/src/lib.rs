@@ -6,6 +6,7 @@ mod debug_log;
 mod env;
 mod kube;
 mod commands;
+mod ssh_askpass;
 
 use tauri::Manager;
 

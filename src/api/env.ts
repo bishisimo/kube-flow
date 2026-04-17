@@ -58,14 +58,6 @@ export function defaultNamespace(env: Environment): string | null {
   return ctx?.default_namespace ?? null;
 }
 
-export function appDataDir(): Promise<string | null> {
-  return invoke("app_data_dir");
-}
-
-export function ensureAppDataDir(): Promise<string | null> {
-  return invoke("ensure_app_data_dir");
-}
-
 export function envList(): Promise<Environment[]> {
   return invoke("env_list");
 }

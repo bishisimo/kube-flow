@@ -1,7 +1,7 @@
 import { computed, onUnmounted, ref, type Ref } from "vue";
 import { kubeRefreshResourceAliases, kubeResolveResourceAlias, type ResolvedAliasTarget } from "../../../api/kube";
 import type { EnvConnectionState } from "../../../stores/connection";
-import { extractErrorMessage } from "../utils/extractErrorMessage";
+import { extractErrorMessage } from "../../../utils/errorMessage";
 
 type UseWorkbenchCustomResourceOptions = {
   currentId: Ref<string | null>;

@@ -10,7 +10,7 @@ import { isConnectionError } from "../../../stores/connection";
 import type { ResourceKind } from "../../../constants/resourceKinds";
 import { getWorkbenchResourceDescriptor } from "../resourceDescriptors";
 import { WORKBENCH_ALL_NAMESPACES_SENTINEL } from "../constants";
-import { extractErrorMessage } from "../utils/extractErrorMessage";
+import { extractErrorMessage } from "../../../utils/errorMessage";
 import { handleAuthRetry, type StrongholdAuthLike, type SshAuthLike } from "../utils/handleAuthRetry";
 import type { WorkbenchWatchView } from "./useWorkbenchWatch";
 
@@ -73,7 +73,7 @@ export function useWorkbenchResourceWatch(o: UseWorkbenchResourceWatchOptions) {
     const id = o.currentId.value;
     if (!id) return;
     if (o.selectedCustomTarget.value) {
-      kubeStopWatch(id).catch(() => {});
+      kubeStopWatch(id).catch((e) => console.warn("[watch] stop failed:", e));
       void o.loadList();
       return;
     }
@@ -93,7 +93,7 @@ export function useWorkbenchResourceWatch(o: UseWorkbenchResourceWatchOptions) {
     o.listError.value = null;
     o.envSwitching.value = false;
     if (!o.namespaceCache.has(id)) void o.refreshNamespaceOptions();
-    kubeStopWatch(id).catch(() => {});
+    kubeStopWatch(id).catch((e) => console.warn("[watch] stop failed:", e));
     if (o.watchEnabled.value && descriptor.capabilities.supportsWatch) {
       kubeStartWatch(id, o.selectedKind.value, ns, labelSel, watchToken).catch(async (e) => {
         if (o.isStaleView(id, sessionId)) return;
@@ -178,7 +178,7 @@ export function useWorkbenchResourceWatch(o: UseWorkbenchResourceWatchOptions) {
     unlistenWatch?.();
     unlistenWatch = null;
     for (const env of o.openedEnvs.value) {
-      kubeStopWatch(env.id).catch(() => {});
+      kubeStopWatch(env.id).catch((e) => console.warn("[watch] stop failed:", e));
       o.clearWatchToken(env.id);
     }
   });
@@ -188,14 +188,14 @@ export function useWorkbenchResourceWatch(o: UseWorkbenchResourceWatchOptions) {
     () => {
       const id = o.currentId.value;
       if (o.selectedCustomTarget.value) {
-        if (id) kubeStopWatch(id).catch(() => {});
+        if (id) kubeStopWatch(id).catch((e) => console.warn("[watch] stop failed:", e));
         void o.loadList();
         return;
       }
       if (o.watchEnabled.value && getWorkbenchResourceDescriptor(o.selectedKind.value).capabilities.supportsWatch) {
         applyWatch();
       } else {
-        if (id) kubeStopWatch(id).catch(() => {});
+        if (id) kubeStopWatch(id).catch((e) => console.warn("[watch] stop failed:", e));
         void o.loadList();
       }
     },
@@ -206,7 +206,7 @@ export function useWorkbenchResourceWatch(o: UseWorkbenchResourceWatchOptions) {
     const id = o.currentId.value;
     if (!id) return;
     if (o.selectedCustomTarget.value) {
-      kubeStopWatch(id).catch(() => {});
+      kubeStopWatch(id).catch((e) => console.warn("[watch] stop failed:", e));
       void o.loadList();
       return;
     }
@@ -218,7 +218,7 @@ export function useWorkbenchResourceWatch(o: UseWorkbenchResourceWatchOptions) {
       }
     } else {
       for (const env of o.openedEnvs.value) {
-        kubeStopWatch(env.id).catch(() => {});
+        kubeStopWatch(env.id).catch((e) => console.warn("[watch] stop failed:", e));
         o.clearWatchToken(env.id);
       }
       void o.loadList();

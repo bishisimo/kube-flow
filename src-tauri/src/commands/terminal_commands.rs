@@ -1,10 +1,10 @@
 use crate::commands::kube_command_context::{err_str, load_app_settings, CommandResult};
+use crate::kube::session_store::{SessionHandle, SessionStore};
 use crate::config::ssh_config_get_host_config;
 use crate::credentials::{AuthMethod, CredentialKey, CredentialManager};
 use crate::env::{EnvService, EnvironmentSource};
 use crate::kube::{resource_get, KubeClientStore};
 use serde::Deserialize;
-use std::collections::HashMap;
 #[cfg(unix)]
 use std::ffi::CString;
 #[cfg(unix)]
@@ -14,7 +14,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 const HOST_SHELL_CHUNK_EVENT: &str = "host-shell-chunk";
@@ -30,37 +30,7 @@ fn apply_no_window(cmd: &mut Command) {
 #[cfg(not(windows))]
 fn apply_no_window(_: &mut Command) {}
 
-#[cfg(unix)]
-struct SshAskpassGuard {
-    path: std::path::PathBuf,
-}
-
-#[cfg(not(unix))]
-struct SshAskpassGuard;
-
-#[cfg(unix)]
-impl SshAskpassGuard {
-    fn new(password: &str) -> Result<Self, std::io::Error> {
-        use std::os::unix::fs::PermissionsExt;
-        let path = std::env::temp_dir().join(format!("kf-host-askpass-{}.sh", Uuid::new_v4()));
-        let escaped = password.replace('\'', "'\\''");
-        let content = format!("#!/bin/sh\nprintf '%s' '{}'\n", escaped);
-        std::fs::write(&path, &content)?;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
-        Ok(Self { path })
-    }
-
-    fn path_str(&self) -> &str {
-        self.path.to_str().unwrap_or("")
-    }
-}
-
-#[cfg(unix)]
-impl Drop for SshAskpassGuard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
+use crate::ssh_askpass::SshAskpassGuard;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -333,57 +303,13 @@ pub struct HostShellSession {
     pub abort_handle: tokio::task::AbortHandle,
 }
 
-pub struct HostShellStore {
-    sessions: Arc<RwLock<HashMap<String, HostShellSession>>>,
+impl SessionHandle for HostShellSession {
+    fn abort_handle(&self) -> &tokio::task::AbortHandle { &self.abort_handle }
+    fn stdin_tx(&self) -> &mpsc::Sender<Vec<u8>> { &self.stdin_tx }
+    fn resize_tx(&self) -> Option<&mpsc::Sender<(u16, u16)>> { self.resize_tx.as_ref() }
 }
 
-impl HostShellStore {
-    pub fn new() -> Self {
-        Self {
-            sessions: Arc::new(RwLock::new(HashMap::new())),
-        }
-    }
-
-    pub async fn insert(&self, stream_id: String, session: HostShellSession) {
-        let mut guard = self.sessions.write().await;
-        if let Some(old) = guard.insert(stream_id, session) {
-            old.abort_handle.abort();
-        }
-    }
-
-    pub async fn remove(&self, stream_id: &str) -> Option<HostShellSession> {
-        let mut guard = self.sessions.write().await;
-        guard.remove(stream_id)
-    }
-
-    pub async fn send_stdin(&self, stream_id: &str, data: Vec<u8>) -> Result<(), String> {
-        let guard = self.sessions.read().await;
-        let session = guard.get(stream_id).ok_or_else(|| "session not found".to_string())?;
-        session.stdin_tx.send(data).await.map_err(err_str)
-    }
-
-    pub async fn stop(&self, stream_id: &str) {
-        if let Some(session) = self.remove(stream_id).await {
-            session.abort_handle.abort();
-        }
-    }
-
-    pub async fn send_resize(&self, stream_id: &str, cols: u16, rows: u16) -> Result<(), String> {
-        let guard = self.sessions.read().await;
-        let session = guard.get(stream_id).ok_or_else(|| "session not found".to_string())?;
-        if let Some(ref tx) = session.resize_tx {
-            tx.send((cols, rows)).await.map_err(err_str)
-        } else {
-            Err("session has no tty".to_string())
-        }
-    }
-}
-
-impl Default for HostShellStore {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub type HostShellStore = SessionStore<HostShellSession>;
 
 fn build_local_shell_command() -> Command {
     #[cfg(windows)]

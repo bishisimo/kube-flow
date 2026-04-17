@@ -8,5 +8,5 @@ export * from "./resourceDescriptors";
 export * from "./apiKindMap";
 export * from "./podDebugNamespaces";
 export * from "./composables";
-export { extractErrorMessage } from "./utils/extractErrorMessage";
+export { extractErrorMessage } from "../../utils/errorMessage";
 export { handleAuthRetry } from "./utils/handleAuthRetry";

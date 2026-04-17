@@ -22,18 +22,49 @@ use crate::kube::{
 };
 use tauri::State;
 
-// ── 集群级（无 namespace）──────────────────────────────────────────────────
+// ── 宏定义 ─────────────────────────────────────────────────────────────────
 
-#[tauri::command]
-pub async fn kube_list_namespaces(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<NamespaceItem>> {
-    let (_env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    with_list_log("Namespace", &env_id, list_namespaces(&client, label_selector.as_deref())).await
+macro_rules! kube_list_cluster {
+    ($fn_name:ident, $item_ty:ty, $list_fn:ident, $kind_str:literal) => {
+        #[tauri::command]
+        pub async fn $fn_name(
+            store: State<'_, KubeClientStore>,
+            env_id: String,
+            label_selector: Option<String>,
+        ) -> CommandResult<Vec<$item_ty>> {
+            let (_env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
+            with_list_log($kind_str, &env_id, $list_fn(&client, label_selector.as_deref())).await
+        }
+    };
 }
 
+macro_rules! kube_list_namespaced {
+    ($fn_name:ident, $item_ty:ty, $list_fn:ident, $kind_str:literal) => {
+        #[tauri::command]
+        pub async fn $fn_name(
+            store: State<'_, KubeClientStore>,
+            env_id: String,
+            namespace: Option<String>,
+            label_selector: Option<String>,
+        ) -> CommandResult<Vec<$item_ty>> {
+            let (env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
+            let ns = namespace.as_deref().or_else(|| env.default_namespace());
+            with_list_log($kind_str, &env_id, $list_fn(&client, ns, label_selector.as_deref())).await
+        }
+    };
+}
+
+// ── 集群级（无 namespace）──────────────────────────────────────────────────
+
+kube_list_cluster!(kube_list_namespaces, NamespaceItem, list_namespaces, "Namespace");
+kube_list_cluster!(kube_list_cluster_roles, ClusterRoleItem, list_cluster_roles, "ClusterRole");
+kube_list_cluster!(kube_list_cluster_role_bindings, ClusterRoleBindingItem, list_cluster_role_bindings, "ClusterRoleBinding");
+kube_list_cluster!(kube_list_persistent_volumes, PersistentVolumeItem, list_persistent_volumes, "PersistentVolume");
+kube_list_cluster!(kube_list_storage_classes, StorageClassItem, list_storage_classes, "StorageClass");
+kube_list_cluster!(kube_list_ingress_classes, IngressClassItem, list_ingress_classes, "IngressClass");
+kube_list_cluster!(kube_list_priority_classes, PriorityClassItem, list_priority_classes, "PriorityClass");
+
+/// Node 列表：额外读取 GPU 资源名配置，不走通用宏。
 #[tauri::command]
 pub async fn kube_list_nodes(
     store: State<'_, KubeClientStore>,
@@ -50,80 +81,32 @@ pub async fn kube_list_nodes(
     .await
 }
 
-#[tauri::command]
-pub async fn kube_list_cluster_roles(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<ClusterRoleItem>> {
-    let (_env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    with_list_log("ClusterRole", &env_id, list_cluster_roles(&client, label_selector.as_deref())).await
-}
-
-#[tauri::command]
-pub async fn kube_list_cluster_role_bindings(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<ClusterRoleBindingItem>> {
-    let (_env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    with_list_log("ClusterRoleBinding", &env_id, list_cluster_role_bindings(&client, label_selector.as_deref())).await
-}
-
-#[tauri::command]
-pub async fn kube_list_persistent_volumes(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<PersistentVolumeItem>> {
-    let (_env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    with_list_log("PersistentVolume", &env_id, list_persistent_volumes(&client, label_selector.as_deref())).await
-}
-
-#[tauri::command]
-pub async fn kube_list_storage_classes(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<StorageClassItem>> {
-    let (_env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    with_list_log("StorageClass", &env_id, list_storage_classes(&client, label_selector.as_deref())).await
-}
-
-#[tauri::command]
-pub async fn kube_list_ingress_classes(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<IngressClassItem>> {
-    let (_env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    with_list_log("IngressClass", &env_id, list_ingress_classes(&client, label_selector.as_deref())).await
-}
-
-#[tauri::command]
-pub async fn kube_list_priority_classes(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<PriorityClassItem>> {
-    let (_env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    with_list_log("PriorityClass", &env_id, list_priority_classes(&client, label_selector.as_deref())).await
-}
-
 // ── 命名空间级 ─────────────────────────────────────────────────────────────
 
-#[tauri::command]
-pub async fn kube_list_pods(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    namespace: Option<String>,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<PodItem>> {
-    let (env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    let ns = namespace.as_deref().or_else(|| env.default_namespace());
-    with_list_log("Pod", &env_id, list_pods(&client, ns, label_selector.as_deref())).await
-}
+kube_list_namespaced!(kube_list_pods, PodItem, list_pods, "Pod");
+kube_list_namespaced!(kube_list_deployments, DeploymentItem, list_deployments, "Deployment");
+kube_list_namespaced!(kube_list_services, ServiceItem, list_services, "Service");
+kube_list_namespaced!(kube_list_stateful_sets, StatefulSetItem, list_stateful_sets, "StatefulSet");
+kube_list_namespaced!(kube_list_daemon_sets, DaemonSetItem, list_daemon_sets, "DaemonSet");
+kube_list_namespaced!(kube_list_replica_sets, ReplicaSetItem, list_replica_sets, "ReplicaSet");
+kube_list_namespaced!(kube_list_jobs, JobItem, list_jobs, "Job");
+kube_list_namespaced!(kube_list_cron_jobs, CronJobItem, list_cron_jobs, "CronJob");
+kube_list_namespaced!(kube_list_config_maps, ConfigMapItem, list_config_maps, "ConfigMap");
+kube_list_namespaced!(kube_list_secrets, SecretItem, list_secrets, "Secret");
+kube_list_namespaced!(kube_list_service_accounts, ServiceAccountItem, list_service_accounts, "ServiceAccount");
+kube_list_namespaced!(kube_list_roles, RoleItem, list_roles, "Role");
+kube_list_namespaced!(kube_list_role_bindings, RoleBindingItem, list_role_bindings, "RoleBinding");
+kube_list_namespaced!(kube_list_persistent_volume_claims, PersistentVolumeClaimItem, list_persistent_volume_claims, "PersistentVolumeClaim");
+kube_list_namespaced!(kube_list_endpoints, EndpointsItem, list_endpoints, "Endpoints");
+kube_list_namespaced!(kube_list_endpoint_slices, EndpointSliceItem, list_endpoint_slices, "EndpointSlice");
+kube_list_namespaced!(kube_list_ingresses, IngressItem, list_ingresses, "Ingress");
+kube_list_namespaced!(kube_list_network_policies, NetworkPolicyItem, list_network_policies, "NetworkPolicy");
+kube_list_namespaced!(kube_list_resource_quotas, ResourceQuotaItem, list_resource_quotas, "ResourceQuota");
+kube_list_namespaced!(kube_list_limit_ranges, LimitRangeItem, list_limit_ranges, "LimitRange");
+kube_list_namespaced!(kube_list_horizontal_pod_autoscalers, HorizontalPodAutoscalerItem, list_horizontal_pod_autoscalers, "HorizontalPodAutoscaler");
+kube_list_namespaced!(kube_list_pod_disruption_budgets, PodDisruptionBudgetItem, list_pod_disruption_budgets, "PodDisruptionBudget");
 
+/// Pod-for-workload 列表：接收 kind/name 而非 label_selector，不走通用宏。
 #[tauri::command]
 pub async fn kube_list_pods_for_workload(
     store: State<'_, KubeClientStore>,
@@ -138,260 +121,9 @@ pub async fn kube_list_pods_for_workload(
         .map_err(err_str)
 }
 
-#[tauri::command]
-pub async fn kube_list_deployments(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    namespace: Option<String>,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<DeploymentItem>> {
-    let (env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    let ns = namespace.as_deref().or_else(|| env.default_namespace());
-    with_list_log("Deployment", &env_id, list_deployments(&client, ns, label_selector.as_deref())).await
-}
-
-#[tauri::command]
-pub async fn kube_list_services(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    namespace: Option<String>,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<ServiceItem>> {
-    let (env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    let ns = namespace.as_deref().or_else(|| env.default_namespace());
-    with_list_log("Service", &env_id, list_services(&client, ns, label_selector.as_deref())).await
-}
-
-#[tauri::command]
-pub async fn kube_list_stateful_sets(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    namespace: Option<String>,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<StatefulSetItem>> {
-    let (env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    let ns = namespace.as_deref().or_else(|| env.default_namespace());
-    with_list_log("StatefulSet", &env_id, list_stateful_sets(&client, ns, label_selector.as_deref())).await
-}
-
-#[tauri::command]
-pub async fn kube_list_daemon_sets(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    namespace: Option<String>,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<DaemonSetItem>> {
-    let (env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    let ns = namespace.as_deref().or_else(|| env.default_namespace());
-    with_list_log("DaemonSet", &env_id, list_daemon_sets(&client, ns, label_selector.as_deref())).await
-}
-
-#[tauri::command]
-pub async fn kube_list_replica_sets(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    namespace: Option<String>,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<ReplicaSetItem>> {
-    let (env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    let ns = namespace.as_deref().or_else(|| env.default_namespace());
-    with_list_log("ReplicaSet", &env_id, list_replica_sets(&client, ns, label_selector.as_deref())).await
-}
-
-#[tauri::command]
-pub async fn kube_list_jobs(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    namespace: Option<String>,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<JobItem>> {
-    let (env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    let ns = namespace.as_deref().or_else(|| env.default_namespace());
-    with_list_log("Job", &env_id, list_jobs(&client, ns, label_selector.as_deref())).await
-}
-
-#[tauri::command]
-pub async fn kube_list_cron_jobs(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    namespace: Option<String>,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<CronJobItem>> {
-    let (env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    let ns = namespace.as_deref().or_else(|| env.default_namespace());
-    with_list_log("CronJob", &env_id, list_cron_jobs(&client, ns, label_selector.as_deref())).await
-}
-
-#[tauri::command]
-pub async fn kube_list_config_maps(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    namespace: Option<String>,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<ConfigMapItem>> {
-    let (env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    let ns = namespace.as_deref().or_else(|| env.default_namespace());
-    with_list_log("ConfigMap", &env_id, list_config_maps(&client, ns, label_selector.as_deref())).await
-}
-
-#[tauri::command]
-pub async fn kube_list_secrets(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    namespace: Option<String>,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<SecretItem>> {
-    let (env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    let ns = namespace.as_deref().or_else(|| env.default_namespace());
-    with_list_log("Secret", &env_id, list_secrets(&client, ns, label_selector.as_deref())).await
-}
-
-#[tauri::command]
-pub async fn kube_list_service_accounts(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    namespace: Option<String>,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<ServiceAccountItem>> {
-    let (env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    let ns = namespace.as_deref().or_else(|| env.default_namespace());
-    with_list_log("ServiceAccount", &env_id, list_service_accounts(&client, ns, label_selector.as_deref())).await
-}
-
-#[tauri::command]
-pub async fn kube_list_roles(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    namespace: Option<String>,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<RoleItem>> {
-    let (env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    let ns = namespace.as_deref().or_else(|| env.default_namespace());
-    with_list_log("Role", &env_id, list_roles(&client, ns, label_selector.as_deref())).await
-}
-
-#[tauri::command]
-pub async fn kube_list_role_bindings(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    namespace: Option<String>,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<RoleBindingItem>> {
-    let (env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    let ns = namespace.as_deref().or_else(|| env.default_namespace());
-    with_list_log("RoleBinding", &env_id, list_role_bindings(&client, ns, label_selector.as_deref())).await
-}
-
-#[tauri::command]
-pub async fn kube_list_persistent_volume_claims(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    namespace: Option<String>,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<PersistentVolumeClaimItem>> {
-    let (env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    let ns = namespace.as_deref().or_else(|| env.default_namespace());
-    with_list_log("PersistentVolumeClaim", &env_id, list_persistent_volume_claims(&client, ns, label_selector.as_deref())).await
-}
-
-#[tauri::command]
-pub async fn kube_list_endpoints(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    namespace: Option<String>,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<EndpointsItem>> {
-    let (env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    let ns = namespace.as_deref().or_else(|| env.default_namespace());
-    with_list_log("Endpoints", &env_id, list_endpoints(&client, ns, label_selector.as_deref())).await
-}
-
-#[tauri::command]
-pub async fn kube_list_endpoint_slices(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    namespace: Option<String>,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<EndpointSliceItem>> {
-    let (env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    let ns = namespace.as_deref().or_else(|| env.default_namespace());
-    with_list_log("EndpointSlice", &env_id, list_endpoint_slices(&client, ns, label_selector.as_deref())).await
-}
-
-#[tauri::command]
-pub async fn kube_list_ingresses(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    namespace: Option<String>,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<IngressItem>> {
-    let (env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    let ns = namespace.as_deref().or_else(|| env.default_namespace());
-    with_list_log("Ingress", &env_id, list_ingresses(&client, ns, label_selector.as_deref())).await
-}
-
-#[tauri::command]
-pub async fn kube_list_network_policies(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    namespace: Option<String>,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<NetworkPolicyItem>> {
-    let (env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    let ns = namespace.as_deref().or_else(|| env.default_namespace());
-    with_list_log("NetworkPolicy", &env_id, list_network_policies(&client, ns, label_selector.as_deref())).await
-}
-
-#[tauri::command]
-pub async fn kube_list_resource_quotas(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    namespace: Option<String>,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<ResourceQuotaItem>> {
-    let (env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    let ns = namespace.as_deref().or_else(|| env.default_namespace());
-    with_list_log("ResourceQuota", &env_id, list_resource_quotas(&client, ns, label_selector.as_deref())).await
-}
-
-#[tauri::command]
-pub async fn kube_list_limit_ranges(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    namespace: Option<String>,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<LimitRangeItem>> {
-    let (env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    let ns = namespace.as_deref().or_else(|| env.default_namespace());
-    with_list_log("LimitRange", &env_id, list_limit_ranges(&client, ns, label_selector.as_deref())).await
-}
-
-#[tauri::command]
-pub async fn kube_list_horizontal_pod_autoscalers(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    namespace: Option<String>,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<HorizontalPodAutoscalerItem>> {
-    let (env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    let ns = namespace.as_deref().or_else(|| env.default_namespace());
-    with_list_log("HorizontalPodAutoscaler", &env_id, list_horizontal_pod_autoscalers(&client, ns, label_selector.as_deref())).await
-}
-
-#[tauri::command]
-pub async fn kube_list_pod_disruption_budgets(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    namespace: Option<String>,
-    label_selector: Option<String>,
-) -> CommandResult<Vec<PodDisruptionBudgetItem>> {
-    let (env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    let ns = namespace.as_deref().or_else(|| env.default_namespace());
-    with_list_log("PodDisruptionBudget", &env_id, list_pod_disruption_budgets(&client, ns, label_selector.as_deref())).await
-}
-
 // ── CRD 动态资源 ───────────────────────────────────────────────────────────
 
+/// CRD 实例列表：额外接收 api_version/kind，不走通用宏。
 #[tauri::command]
 pub async fn kube_list_crd_instances(
     store: State<'_, KubeClientStore>,

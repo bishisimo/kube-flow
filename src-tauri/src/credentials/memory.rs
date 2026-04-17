@@ -15,18 +15,18 @@ impl MemoryCache {
     }
 
     pub fn get(&self, key: &CredentialKey) -> Option<String> {
-        self.store.lock().unwrap().get(key).cloned()
+        self.store.lock().unwrap_or_else(|p| p.into_inner()).get(key).cloned()
     }
 
     pub fn set(&self, key: CredentialKey, password: String) {
-        self.store.lock().unwrap().insert(key, password);
+        self.store.lock().unwrap_or_else(|p| p.into_inner()).insert(key, password);
     }
 
     pub fn remove(&self, key: &CredentialKey) {
-        self.store.lock().unwrap().remove(key);
+        self.store.lock().unwrap_or_else(|p| p.into_inner()).remove(key);
     }
 
     pub fn clear(&self) {
-        self.store.lock().unwrap().clear();
+        self.store.lock().unwrap_or_else(|p| p.into_inner()).clear();
     }
 }

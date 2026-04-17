@@ -45,7 +45,7 @@ pub struct NodeItem {
 
 // ── CPU/内存/GPU 解析工具 ──────────────────────────────────────────────────
 
-fn parse_cpu_millis(s: &str) -> i64 {
+pub(crate) fn parse_cpu_millis(s: &str) -> i64 {
     let s = s.trim();
     if s.is_empty() {
         return 0;
@@ -56,7 +56,7 @@ fn parse_cpu_millis(s: &str) -> i64 {
     s.parse::<f64>().map(|n| (n * 1000.0) as i64).unwrap_or(0)
 }
 
-fn parse_mem_bytes(s: &str) -> i64 {
+pub(crate) fn parse_mem_bytes(s: &str) -> i64 {
     let s = s.trim();
     if s.is_empty() {
         return 0;
