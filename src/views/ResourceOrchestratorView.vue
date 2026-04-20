@@ -6,6 +6,8 @@ import * as jsYaml from "js-yaml";
 import { CodeEditor } from "monaco-editor-vue3";
 import { kubeDeployResource } from "../api/kube";
 import { appSettingsGetResourceDeployStrategy } from "../api/config";
+import { createResourceSnapshot, summarizeResourceYaml, type ResourceSnapshotItem } from "../stores/resourceSnapshots";
+import { ensureAutoSnapshotSettingLoaded } from "../stores/appSettings";
 import { extractErrorMessage } from "../utils/errorMessage";
 import { parseKubeObject, type KubeObjectIdentity } from "../utils/yaml";
 import {
@@ -28,6 +30,8 @@ import {
 import OrchestratorPackageView from "../components/orchestrator/OrchestratorPackageView.vue";
 import OrchestratorCopyDialog from "../components/orchestrator/OrchestratorCopyDialog.vue";
 import OrchestratorDiffModal from "../components/orchestrator/OrchestratorDiffModal.vue";
+import ResourceSnapshotViewer from "../components/ResourceSnapshotViewer.vue";
+import type { ManifestHistoryItem } from "../stores/orchestrator";
 
 const APPLY_ORDER: Record<string, number> = {
   CustomResourceDefinition: 0,
@@ -90,9 +94,12 @@ const validationErrors = ref<string[]>([]);
 const validationWarnings = ref<string[]>([]);
 const opMessage = ref<string | null>(null);
 const opError = ref<string | null>(null);
+const viewingHistoryItem = ref<ManifestHistoryItem | null>(null);
 const createYamlActive = ref(false);
 const copyDialogVisible = ref(false);
+const diffVisible = ref(false);
 const diffLoading = ref(false);
+const diffNotFound = ref(false);
 const diffRows = ref<DiffRow[]>([]);
 const selectedManifestByComponent = ref<Record<string, string>>({});
 const componentAssignMode = ref<"existing" | "new">("existing");
@@ -207,6 +214,28 @@ const selectedManifest = computed<OrchestratorManifest | null>(
 );
 
 const selectedHistory = computed(() => selectedManifest.value?.history ?? []);
+
+const ACTION_LABELS: Record<string, string> = { sync: "同步", save: "保存", apply: "应用", restore: "恢复" };
+
+const viewingHistorySnapshot = computed<ResourceSnapshotItem | null>(() => {
+  const h = viewingHistoryItem.value;
+  const m = selectedManifest.value;
+  if (!h || !m) return null;
+  return {
+    id: h.id,
+    created_at: h.at,
+    env_id: m.env_id,
+    resource_kind: m.resource_kind,
+    resource_name: m.resource_name,
+    resource_namespace: m.resource_namespace ?? null,
+    category: "resource",
+    source: "manual",
+    pinned: false,
+    title: `历史快照 · ${ACTION_LABELS[h.action] ?? h.action}`,
+    summary: `${m.resource_kind}/${m.resource_name}`,
+    yaml: h.yaml,
+  };
+});
 const componentApplyPlan = computed(() => {
   const list = [...manifestsByComponent.value];
   const delayedWebhookKeys = buildDelayedWebhookKeys(list);
@@ -292,6 +321,27 @@ const {
   },
   setOpMessage: (message) => {
     opMessage.value = message;
+  },
+  fetchLiveYaml: async (envId, kind, name, namespace) => {
+    try {
+      return await kubeGetResource(envId, kind, name, namespace);
+    } catch {
+      return null;
+    }
+  },
+  createBeforeApplySnapshot: async (envId, kind, name, namespace, liveYaml) => {
+    const autoSnapshotEnabled = await ensureAutoSnapshotSettingLoaded();
+    if (!autoSnapshotEnabled) return;
+    createResourceSnapshot(
+      { env_id: envId, resource_kind: kind, resource_name: name, resource_namespace: namespace },
+      {
+        yaml: liveYaml,
+        category: "resource",
+        source: "before-apply",
+        title: "应用前资源快照",
+        summary: summarizeResourceYaml(liveYaml),
+      }
+    );
   },
 });
 
@@ -630,6 +680,7 @@ watch(
       selectedBatchId.value = batchItems.value[0].id;
     }
     diffRows.value = [];
+    diffVisible.value = false;
   },
   { immediate: true }
 );
@@ -676,6 +727,7 @@ watch(
       selectedManifestByComponent.value[selectedComponent.value] = selectedManifestId.value;
     }
     diffRows.value = [];
+    diffVisible.value = false;
   },
   { immediate: true }
 );
@@ -700,6 +752,7 @@ watch(
     validationErrors.value = [];
     validationWarnings.value = [];
     diffRows.value = [];
+    diffVisible.value = false;
     opError.value = null;
     opMessage.value = null;
     if (nextId) {
@@ -772,7 +825,9 @@ async function deployYamlToEnv(envId: string, yaml: string) {
 
 async function loadDiff() {
   if (!selectedManifest.value || !selectedEnvId.value) return;
+  diffVisible.value = true;
   diffLoading.value = true;
+  diffNotFound.value = false;
   diffRows.value = [];
   try {
     const m = selectedManifest.value;
@@ -782,16 +837,20 @@ async function loadDiff() {
       normalizeYamlForDiff(editYaml.value),
     );
   } catch (e) {
-    opError.value = extractErrorMessage(e);
+    const msg = extractErrorMessage(e);
+    if (/not found|404|NotFound/i.test(msg)) {
+      diffNotFound.value = true;
+    } else {
+      diffVisible.value = false;
+      opError.value = msg;
+    }
   } finally {
     diffLoading.value = false;
   }
 }
 
-function onRestoreHistory(yaml: string) {
-  if (!selectedManifest.value) return;
-  editYaml.value = yaml;
-  opMessage.value = "已恢复历史快照到编辑区，保存后生效。";
+function onViewHistory(item: ManifestHistoryItem) {
+  viewingHistoryItem.value = item;
 }
 
 </script>
@@ -1197,7 +1256,7 @@ function onRestoreHistory(yaml: string) {
             type="button"
             class="history-item"
             :class="`history-${h.action}`"
-            @click="onRestoreHistory(h.yaml)"
+            @click="onViewHistory(h)"
           >
             <span>{{ h.action }}</span>
             <span>{{ new Date(h.at).toLocaleString() }}</span>
@@ -1216,7 +1275,13 @@ function onRestoreHistory(yaml: string) {
       @op-error="opError = $event"
     />
 
-    <OrchestratorDiffModal :diff-rows="diffRows" @close="diffRows = []" />
+    <OrchestratorDiffModal
+      :visible="diffVisible"
+      :loading="diffLoading"
+      :not-found="diffNotFound"
+      :diff-rows="diffRows"
+      @close="diffVisible = false; diffRows = []; diffNotFound = false"
+    />
 
     <Teleport to="body">
       <div v-if="applyDialogVisible" class="apply-modal-overlay" @click.self="closeApplyDialog">
@@ -1392,6 +1457,12 @@ function onRestoreHistory(yaml: string) {
       </div>
     </Teleport>
   </div>
+  <ResourceSnapshotViewer
+    :visible="!!viewingHistoryItem"
+    :snapshot="viewingHistorySnapshot"
+    :env-id="selectedEnvId"
+    @close="viewingHistoryItem = null"
+  />
 </template>
 
 

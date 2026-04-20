@@ -24,7 +24,8 @@ const pendingDeleteId = ref<string | null>(null);
 
 function sourceLabel(source: ResourceSnapshotItem["source"]): string {
   if (source === "manual") return "手动";
-  if (source === "before-image-patch") return "镜像变更前";
+  if (source === "before-image-patch") return "镜像变更";
+  if (source === "after-image-patch") return "镜像变更后";
   return "应用前";
 }
 

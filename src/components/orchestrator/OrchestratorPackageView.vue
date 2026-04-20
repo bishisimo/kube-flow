@@ -3,8 +3,10 @@ import { computed, ref, watch } from "vue";
 import { formatDateTime } from "../../utils/dateFormat";
 import { extractErrorMessage } from "../../utils/errorMessage";
 import { appSettingsGetResourceDeployStrategy } from "../../api/config";
-import { kubeDeployResource } from "../../api/kube";
+import { kubeDeployResource, kubeGetResource } from "../../api/kube";
 import { parseKubeObject } from "../../utils/yaml";
+import { createResourceSnapshot, summarizeResourceYaml } from "../../stores/resourceSnapshots";
+import { ensureAutoSnapshotSettingLoaded } from "../../stores/appSettings";
 import {
   useOrchestratorPackagesStore,
   type OrchestratorPackage,
@@ -462,8 +464,22 @@ async function onApplyPackageToEnv() {
     const resources = sortPackageResources(version.resources);
     const errors: string[] = [];
     let success = 0;
+    const autoSnapshotEnabled = await ensureAutoSnapshotSettingLoaded();
     for (const r of resources) {
       try {
+        if (autoSnapshotEnabled) {
+          try {
+            const liveYaml = await kubeGetResource(target.id, r.resource_kind, r.resource_name, r.resource_namespace);
+            if (liveYaml) {
+              createResourceSnapshot(
+                { env_id: target.id, resource_kind: r.resource_kind, resource_name: r.resource_name, resource_namespace: r.resource_namespace },
+                { yaml: liveYaml, category: "resource", source: "before-apply", title: "应用前资源快照", summary: summarizeResourceYaml(liveYaml) }
+              );
+            }
+          } catch {
+            // 资源不存在或获取失败，无需快照
+          }
+        }
         await deployYamlToEnv(target.id, r.yaml);
         const mid = findManifestIdForPackageResource(target.id, r);
         if (mid) saveManifestYaml(mid, r.yaml, "apply");

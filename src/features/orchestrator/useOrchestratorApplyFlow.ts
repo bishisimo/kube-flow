@@ -41,6 +41,14 @@ export function useOrchestratorApplyFlow(params: {
   clearManifestDraft: (manifestId: string) => void;
   setOpError: (message: string | null) => void;
   setOpMessage: (message: string | null) => void;
+  /** 应用前尝试获取 k8s 中已有的资源 YAML，不存在时返回 null */
+  fetchLiveYaml?: (envId: string, kind: string, name: string, namespace: string | null) => Promise<string | null>;
+  /** 若 fetchLiveYaml 返回已有资源，则调用此函数创建应用前快照 */
+  createBeforeApplySnapshot?: (
+    envId: string,
+    kind: string, name: string, namespace: string | null,
+    liveYaml: string
+  ) => void;
 }) {
   const applying = ref(false);
   const applyDialogVisible = ref(false);
@@ -85,6 +93,18 @@ export function useOrchestratorApplyFlow(params: {
     }));
   }
 
+  async function snapshotBeforeApply(envId: string, kind: string, name: string, namespace: string | null) {
+    if (!params.fetchLiveYaml || !params.createBeforeApplySnapshot) return;
+    try {
+      const liveYaml = await params.fetchLiveYaml(envId, kind, name, namespace);
+      if (liveYaml) {
+        params.createBeforeApplySnapshot(envId, kind, name, namespace, liveYaml);
+      }
+    } catch {
+      // 忽略快照失败，不阻塞 apply
+    }
+  }
+
   async function onApplyCurrent() {
     if (!params.selectedManifest.value || !params.selectedEnvId.value) return;
     const ok = params.validateCurrent();
@@ -95,6 +115,7 @@ export function useOrchestratorApplyFlow(params: {
     try {
       const identity = params.parseIdentity(params.editYaml.value);
       if (!identity) throw new Error("无法解析资源身份信息。");
+      await snapshotBeforeApply(params.selectedEnvId.value, identity.kind, identity.name, identity.namespace);
       await params.deployYamlToEnv(params.selectedEnvId.value, params.editYaml.value);
       params.setManifestComponent(params.selectedManifest.value.id, params.selectedComponent.value);
       params.setManifestIdentity(params.selectedManifest.value.id, identity);
@@ -134,6 +155,7 @@ export function useOrchestratorApplyFlow(params: {
       item.status = "running";
       item.error = null;
       try {
+        await snapshotBeforeApply(params.selectedEnvId.value, item.kind, item.name, item.namespace);
         await params.deployYamlToEnv(params.selectedEnvId.value, item.yaml);
         params.saveManifestYaml(item.manifestId, item.yaml, "apply");
         params.clearManifestDraft(item.manifestId);

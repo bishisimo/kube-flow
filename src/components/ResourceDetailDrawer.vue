@@ -767,6 +767,7 @@ watch(
   <ResourceSnapshotViewer
     :visible="!!viewingSnapshot"
     :snapshot="viewingSnapshot"
+    :env-id="props.envId"
     @close="viewingSnapshot = null"
   />
 </template>

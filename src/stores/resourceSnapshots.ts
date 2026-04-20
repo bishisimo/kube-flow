@@ -16,11 +16,13 @@ export interface ResourceSnapshotItem extends ResourceSnapshotRef {
   id: string;
   created_at: string;
   category: "resource" | "config" | "image";
-  source: "manual" | "before-apply" | "before-image-patch";
+  source: "manual" | "before-apply" | "before-image-patch" | "after-image-patch";
   pinned: boolean;
   title: string;
   summary: string;
   yaml: string;
+  /** 镜像变更场景：变更后的镜像 YAML，与 yaml（变更前）配对展示 */
+  afterYaml?: string;
 }
 
 const snapshotStorage = createStorage<ResourceSnapshotItem[]>({
@@ -35,7 +37,7 @@ const snapshotStorage = createStorage<ResourceSnapshotItem[]>({
         const snapshot = item as Partial<ResourceSnapshotItem>;
         const category =
           snapshot.category ??
-          (snapshot.source === "before-image-patch" ? "image" : "resource");
+          (snapshot.source === "before-image-patch" || snapshot.source === "after-image-patch" ? "image" : "resource");
         return { ...snapshot, category, pinned: snapshot.pinned === true } as ResourceSnapshotItem;
       });
   },
@@ -172,6 +174,7 @@ export function createResourceSnapshot(
   resource: ResourceSnapshotRef,
   input: {
     yaml: string;
+    afterYaml?: string;
     category: ResourceSnapshotItem["category"];
     source: ResourceSnapshotItem["source"];
     title?: string;
@@ -180,6 +183,7 @@ export function createResourceSnapshot(
 ): ResourceSnapshotItem | null {
   const yaml = formatResourceSnapshotYaml(input.yaml.trim()).trim();
   if (!yaml) return null;
+  const afterYaml = input.afterYaml ? formatResourceSnapshotYaml(input.afterYaml.trim()).trim() || undefined : undefined;
   const next: ResourceSnapshotItem = {
     ...resource,
     id: uid("snapshot"),
@@ -190,6 +194,7 @@ export function createResourceSnapshot(
     title: input.title?.trim() || "资源快照",
     summary: input.summary?.trim() || summarizeResourceYaml(yaml),
     yaml,
+    ...(afterYaml ? { afterYaml } : {}),
   };
   const sameResource = listResourceSnapshots(resource);
   const isAutomatic = input.source !== "manual";
