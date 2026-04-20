@@ -3,12 +3,13 @@
 use super::super::kube_command_context::{self, err_str, CommandResult};
 use crate::config::ResourceDeployStrategy;
 use crate::kube::{
-    apply_resource_yaml, delete_dynamic_resource, delete_resource, deploy_resource_yaml,
+    apply_resource_yaml, build_graph, delete_dynamic_resource, delete_resource, deploy_resource_yaml,
     describe_dynamic_resource, describe_resource, get_dynamic_resource_yaml, get_pod_container_names,
-    get_related_targets, get_resource_topology, get_resource_yaml,
+    get_resource_yaml,
     patch_container_images, ContainerImagePatch, DescribeResult, KubeClientStore,
-    RelatedTarget, ResourceTopology,
+    ResourceGraph,
 };
+use crate::kube::resource_graph::registry::build_default_registry;
 use tauri::State;
 
 #[tauri::command]
@@ -26,29 +27,16 @@ pub async fn kube_describe_resource(
 }
 
 #[tauri::command]
-pub async fn kube_get_related_targets(
+pub async fn kube_get_resource_graph(
     store: State<'_, KubeClientStore>,
     env_id: String,
     kind: String,
     name: String,
     namespace: Option<String>,
-) -> CommandResult<Vec<RelatedTarget>> {
+) -> CommandResult<ResourceGraph> {
     let (_env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    get_related_targets(&client, &kind, &name, namespace.as_deref())
-        .await
-        .map_err(err_str)
-}
-
-#[tauri::command]
-pub async fn kube_get_resource_topology(
-    store: State<'_, KubeClientStore>,
-    env_id: String,
-    kind: String,
-    name: String,
-    namespace: Option<String>,
-) -> CommandResult<ResourceTopology> {
-    let (_env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-    get_resource_topology(&client, &kind, &name, namespace.as_deref())
+    let registry = build_default_registry();
+    build_graph(&client, &kind, &name, namespace.as_deref(), &registry, 3)
         .await
         .map_err(err_str)
 }

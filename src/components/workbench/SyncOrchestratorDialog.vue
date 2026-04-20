@@ -115,7 +115,7 @@ function onConfirm() {
                 <small>{{ r.namespace || "default" }}</small>
               </label>
             </div>
-            <div v-else class="sync-related-empty">当前资源未检测到可关联同步的 ConfigMap/Secret/Service。</div>
+            <div v-else class="sync-related-empty">当前资源未检测到可关联同步的配置与 RBAC 资源。</div>
           </template>
         </div>
         <div class="sync-orchestrator-actions">

@@ -85,9 +85,8 @@ export function useEnvStore() {
     }
   }
 
-  async function touchEnv(id: string) {
-    await envTouch(id);
-    await loadEnvironments();
+  function touchEnv(id: string): void {
+    void envTouch(id);
   }
 
   async function removeEnv(id: string) {

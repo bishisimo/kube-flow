@@ -31,7 +31,7 @@ pub use workloads::*;
 use chrono::{DateTime, Utc};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::api::ListParams;
-use crate::kube::related_targets::selector_to_string;
+use crate::kube::resource_graph::selector_to_string;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector;
 
 #[path = "../workload_pod_rollup.rs"]

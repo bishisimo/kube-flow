@@ -32,7 +32,7 @@ export type UseWorkbenchLoadListOptions = {
   setConnecting: (envId: string) => void;
   setConnected: (envId: string) => void;
   setDisconnected: (envId: string, msg: string) => void;
-  touchEnv: (id: string) => Promise<void>;
+  touchEnv: (id: string) => void;
   loadEnvironments: () => Promise<void>;
   namespaceCache: Map<string, NamespaceItem[]>;
   clearResourceCollections: () => void;
@@ -76,14 +76,10 @@ export function useWorkbenchLoadList(options: UseWorkbenchLoadListOptions) {
 
     if (crdTarget) {
       options.listLoading.value = options.dynamicCrdItems.value.length === 0;
+      options.touchEnv(id);
       try {
-        await options.touchEnv(id);
-        if (options.isStaleView(id, sessionId, requestId)) return;
         await options.loadEnvironments();
         if (options.isStaleView(id, sessionId, requestId)) return;
-        const nextNamespaces = await kubeListNamespaces(id, labelSel);
-        if (options.isStaleView(id, sessionId, requestId)) return;
-        options.namespaceCache.set(id, [...nextNamespaces]);
         const defaultNs = options.currentEnv.value
           ? defaultNamespace(options.currentEnv.value) ?? "default"
           : "default";
@@ -92,13 +88,17 @@ export function useWorkbenchLoadList(options: UseWorkbenchLoadListOptions) {
             ? "__all__"
             : (options.selectedNamespace.value ?? defaultNs)
           : null;
-        const items = await kubeListCrdInstances(id, {
-          apiVersion: crdTarget.api_version,
-          kind: crdTarget.kind,
-          namespace: nsForCrd,
-          labelSelector: labelSel,
-        });
+        const [nextNamespaces, items] = await Promise.all([
+          kubeListNamespaces(id, null),
+          kubeListCrdInstances(id, {
+            apiVersion: crdTarget.api_version,
+            kind: crdTarget.kind,
+            namespace: nsForCrd,
+            labelSelector: labelSel,
+          }),
+        ]);
         if (options.isStaleView(id, sessionId, requestId)) return;
+        options.namespaceCache.set(id, [...nextNamespaces]);
         options.clearResourceCollections();
         options.namespaceOptions.value = nextNamespaces;
         options.dynamicCrdItems.value = items;
@@ -139,29 +139,30 @@ export function useWorkbenchLoadList(options: UseWorkbenchLoadListOptions) {
       options.selectedKind.value === "namespaces" || descriptor.capabilities.clusterScoped ? null : ns;
     const hasCache = options.applyCachedView(id, options.selectedKind.value, namespaceKey, labelSel);
     options.listLoading.value = !hasCache;
+    options.touchEnv(id);
     try {
-      await options.touchEnv(id);
-      if (options.isStaleView(id, sessionId, requestId)) return;
       await options.loadEnvironments();
       if (options.isStaleView(id, sessionId, requestId)) return;
-      const nextNamespaces = await kubeListNamespaces(id, labelSel);
+      const targetNamespace = options.selectedKind.value === "namespaces" || descriptor.capabilities.clusterScoped ? null : ns;
+      const [nextNamespaces, items] = await Promise.all([
+        kubeListNamespaces(id, null),
+        options.selectedKind.value === "namespaces"
+          ? Promise.resolve([] as NamespaceItem[])
+          : descriptor.fetchList(id, targetNamespace, labelSel),
+      ]);
       if (options.isStaleView(id, sessionId, requestId)) return;
       options.namespaceCache.set(id, [...nextNamespaces]);
-      const applyResult = () => {
-        options.clearResourceCollections();
-        options.namespaceOptions.value = nextNamespaces;
-        options.envSwitching.value = false;
-        options.listLoading.value = false;
-      };
-      const targetNamespace = options.selectedKind.value === "namespaces" || descriptor.capabilities.clusterScoped ? null : ns;
-      const items =
-        options.selectedKind.value === "namespaces"
-          ? nextNamespaces
-          : await descriptor.fetchList(id, targetNamespace, labelSel);
-      if (options.isStaleView(id, sessionId, requestId)) return;
-      applyResult();
-      options.setResourceItems(options.selectedKind.value, items);
-      options.cacheCurrentView(id, options.selectedKind.value, targetNamespace, labelSel, items);
+      options.clearResourceCollections();
+      options.namespaceOptions.value = nextNamespaces;
+      options.envSwitching.value = false;
+      options.listLoading.value = false;
+      options.setResourceItems(
+        options.selectedKind.value,
+        options.selectedKind.value === "namespaces" ? nextNamespaces : items
+      );
+      options.cacheCurrentView(id, options.selectedKind.value, targetNamespace, labelSel,
+        options.selectedKind.value === "namespaces" ? nextNamespaces : items
+      );
       if (options.isStaleView(id, sessionId, requestId)) return;
       options.setConnected(id);
     } catch (e) {

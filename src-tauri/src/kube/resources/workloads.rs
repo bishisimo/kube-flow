@@ -4,7 +4,7 @@ use super::{
     build_list_params, compute_workload_pod_rollup, format_creation_time, label_selector_to_string,
     ResourceError, WorkloadPodRollup,
 };
-use crate::kube::related_targets::selector_to_string;
+use crate::kube::resource_graph::selector_to_string;
 use crate::kube::resource_get::get_resource_value;
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
 use k8s_openapi::api::core::v1::Pod;

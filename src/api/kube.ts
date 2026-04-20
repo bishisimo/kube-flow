@@ -36,9 +36,10 @@ export type {
   PriorityClassItem,
   HorizontalPodAutoscalerItem,
   PodDisruptionBudgetItem,
-  RelatedTarget,
-  TopologyItem,
-  ResourceTopology,
+  ResourceRef,
+  ResourceGraphNode,
+  ResourceGraphEdge,
+  ResourceGraph,
   DescribeResult,
   ContainerImagePatch,
   ResolvedAliasTarget,
@@ -77,8 +78,7 @@ import type {
   PriorityClassItem,
   HorizontalPodAutoscalerItem,
   PodDisruptionBudgetItem,
-  RelatedTarget,
-  ResourceTopology,
+  ResourceGraph,
   DescribeResult,
   ContainerImagePatch,
   ResolvedAliasTarget,
@@ -160,27 +160,13 @@ export function kubeListPodsForWorkload(
 
 // ─── Get / Describe / Topology ───────────────────────────────────────────────
 
-export function kubeGetRelatedTargets(
+export function kubeGetResourceGraph(
   envId: string,
   kind: string,
   name: string,
   namespace?: string | null
-): Promise<RelatedTarget[]> {
-  return invoke("kube_get_related_targets", {
-    envId,
-    kind,
-    name,
-    namespace: namespace ?? null,
-  });
-}
-
-export function kubeGetResourceTopology(
-  envId: string,
-  kind: string,
-  name: string,
-  namespace?: string | null
-): Promise<ResourceTopology> {
-  return invoke("kube_get_resource_topology", {
+): Promise<ResourceGraph> {
+  return invoke("kube_get_resource_graph", {
     envId,
     kind,
     name,

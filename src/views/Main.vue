@@ -70,7 +70,7 @@ import {
 import type { PodDebugNamespace } from "../api/terminal";
 import { defaultNamespace } from "../api/env";
 import {
-  collectAssociatedRefsFromWorkloadYaml,
+  collectAssociatedRefs,
   type SyncRelatedRef,
 } from "../features/workbench/utils/parseWorkloadRefs";
 
@@ -1008,8 +1008,7 @@ async function loadSyncRelatedRefs(envId: string, resource: { kind: string; name
   syncOrchestratorRelatedError.value = null;
   syncOrchestratorRelatedRefs.value = [];
   try {
-    const yaml = await kubeGetResource(envId, resource.kind, resource.name, resource.namespace);
-    const refs = await collectAssociatedRefsFromWorkloadYaml(envId, yaml, resource.namespace ?? "default");
+    const refs = await collectAssociatedRefs(envId, resource.kind, resource.name, resource.namespace);
     syncOrchestratorRelatedRefs.value = refs;
   } catch (e) {
     syncOrchestratorRelatedError.value = `关联资源解析失败：${extractErrorMessage(e)}`;
@@ -1607,4 +1606,5 @@ const {
 </template>
 
 
+<style src="./main-view-modals.css"></style>
 <style src="./main-view.css" scoped></style>

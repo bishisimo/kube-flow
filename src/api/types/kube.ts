@@ -260,30 +260,30 @@ export interface PodDisruptionBudgetItem {
   creation_time?: string | null;
 }
 
-export interface RelatedTarget {
-  target_kind: string;
-  label: string;
-  namespace?: string | null;
-  label_selector?: string | null;
-  resource_name?: string | null;
-}
-
-export interface TopologyItem {
+export interface ResourceRef {
   kind: string;
-  name: string;
   namespace?: string | null;
-  target_kind: string;
-  label: string;
-  label_selector?: string | null;
-  resource_name?: string | null;
-  is_concrete: boolean;
-  /** 关系类型：volumes、envFrom、selector、owner、runs-on、service-name、roleRef 等 */
-  relation_type?: string | null;
+  name: string;
 }
 
-export interface ResourceTopology {
-  upstream: TopologyItem[];
-  downstream: TopologyItem[];
+export interface ResourceGraphNode {
+  resource_ref: ResourceRef;
+  depth: number;
+  is_concrete: boolean;
+  label_selector?: string | null;
+}
+
+export interface ResourceGraphEdge {
+  from: ResourceRef;
+  to: ResourceRef;
+  relation_type: string;
+  label_selector?: string | null;
+}
+
+export interface ResourceGraph {
+  root: ResourceRef;
+  nodes: ResourceGraphNode[];
+  edges: ResourceGraphEdge[];
 }
 
 export interface DescribeResult {
