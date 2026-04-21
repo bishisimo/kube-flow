@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import type { ResourceSnapshotItem } from "../stores/resourceSnapshots";
+import { formatDateTime } from "../utils/dateFormat";
 
 defineProps<{
   title?: string;
@@ -21,14 +22,10 @@ const emit = defineEmits<{
 
 const pendingDeleteId = ref<string | null>(null);
 
-function formatDateTime(iso: string): string {
-  if (!iso) return "-";
-  return new Date(iso).toLocaleString();
-}
-
 function sourceLabel(source: ResourceSnapshotItem["source"]): string {
   if (source === "manual") return "手动";
-  if (source === "before-image-patch") return "镜像变更前";
+  if (source === "before-image-patch") return "镜像变更";
+  if (source === "after-image-patch") return "镜像变更后";
   return "应用前";
 }
 

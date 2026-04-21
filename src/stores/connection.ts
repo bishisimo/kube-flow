@@ -32,7 +32,7 @@ const envConnectionState = ref<Record<string, EnvConnectionState>>({});
 /** 按 envId 存储断开/错误时的错误信息 */
 const envConnectionError = ref<Record<string, string>>({});
 
-/** 判断是否为连接类错误（可重连） */
+/** 判断是否为连接类错误（可重连）。覆盖工作台连接错误和终端会话断连错误。 */
 export function isConnectionError(msg: string): boolean {
   const s = msg.toLowerCase();
   return (
@@ -47,7 +47,14 @@ export function isConnectionError(msg: string): boolean {
     s.includes("network") ||
     s.includes("client error") ||
     s.includes("serviceerror") ||
-    s.includes("failed to perform")
+    s.includes("failed to perform") ||
+    s.includes("broken pipe") ||
+    s.includes("eof") ||
+    s.includes("disconnected") ||
+    s.includes("unreachable") ||
+    s.includes("transport") ||
+    s.includes("tcp") ||
+    s.includes("session not found")
   );
 }
 

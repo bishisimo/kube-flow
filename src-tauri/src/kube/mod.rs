@@ -10,11 +10,11 @@ pub mod resource_get;
 pub mod resource_exec;
 pub mod resource_log;
 pub mod resource_patch;
-pub mod related_targets;
-pub mod resource_topology;
+pub mod resource_graph;
 pub mod resources;
 mod tunnel;
 mod resource_dynamic;
+pub mod session_store;
 
 pub use client::KubeClientStore;
 pub use resource_alias_cache::{
@@ -33,8 +33,7 @@ pub use resource_exec::{run_pod_exec, PodExecStore};
 pub use resource_log::{
     get_pod_container_names, get_pod_logs, run_pod_log_stream, PodLogStreamStore,
 };
-pub use related_targets::{get_related_targets, RelatedTarget};
-pub use resource_topology::{get_resource_topology, ResourceTopology};
+pub use resource_graph::{build_graph, ResourceGraph};
 pub use resources::{
     list_cluster_role_bindings, list_cluster_roles, list_config_maps, list_cron_jobs,
     list_daemon_sets, list_deployments, list_endpoint_slices, list_endpoints,

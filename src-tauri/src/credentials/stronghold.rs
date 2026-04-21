@@ -6,6 +6,7 @@
 //! 解密后内容：
 //!   { "ssh/tunnel-id": "password", ... }
 
+use super::err_str;
 use aes_gcm::{
     aead::{Aead, AeadCore, KeyInit},
     Aes256Gcm, Key, Nonce,
@@ -73,7 +74,7 @@ impl StrongholdBackend {
     pub fn status(&self) -> StrongholdStatus {
         // 每次 status() 前重新检查文件是否存在，防止外部删除后状态不同步。
         let exists = self.path.exists();
-        match &*self.state.lock().unwrap() {
+        match &*self.state.lock().unwrap_or_else(|p| p.into_inner()) {
             StrongholdState::Uninitialized if exists => StrongholdStatus::Locked,
             StrongholdState::Uninitialized => StrongholdStatus::Uninitialized,
             StrongholdState::Locked => StrongholdStatus::Locked,
@@ -90,7 +91,7 @@ impl StrongholdBackend {
         let empty_data: HashMap<String, String> = HashMap::new();
         self.write_file(&empty_data, &key, &salt)?;
 
-        *self.state.lock().unwrap() = StrongholdState::Unlocked {
+        *self.state.lock().map_err(|_| "internal lock error".to_string())? = StrongholdState::Unlocked {
             data: empty_data,
             key,
             salt: salt.to_vec(),
@@ -130,13 +131,13 @@ impl StrongholdBackend {
         let data: HashMap<String, String> = serde_json::from_slice(&plaintext)
             .map_err(|_| "凭证库内容异常，无法完成解锁".to_string())?;
 
-        *self.state.lock().unwrap() = StrongholdState::Unlocked { data, key, salt };
+        *self.state.lock().map_err(|_| "internal lock error".to_string())? = StrongholdState::Unlocked { data, key, salt };
         Ok(())
     }
 
     /// 锁定：清除内存中的解密数据与密钥。
     pub fn lock(&self) {
-        let mut guard = self.state.lock().unwrap();
+        let mut guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
         if matches!(&*guard, StrongholdState::Unlocked { .. }) {
             *guard = StrongholdState::Locked;
         }
@@ -144,7 +145,7 @@ impl StrongholdBackend {
 
     /// 读取凭证；Uninitialized 时返回 None，Locked 时返回 Err。
     pub fn get(&self, key: &CredentialKey) -> Result<Option<String>, String> {
-        match &*self.state.lock().unwrap() {
+        match &*self.state.lock().map_err(|_| "internal lock error".to_string())? {
             StrongholdState::Unlocked { data, .. } => {
                 Ok(data.get(&key.stronghold_key()).cloned())
             }
@@ -156,7 +157,7 @@ impl StrongholdBackend {
     /// 保存凭证并立即将变更写入磁盘。
     pub fn set(&self, key: &CredentialKey, password: &str) -> Result<(), String> {
         let (data_snapshot, key_bytes, salt) = {
-            let mut guard = self.state.lock().unwrap();
+            let mut guard = self.state.lock().map_err(|_| "internal lock error".to_string())?;
             match &mut *guard {
                 StrongholdState::Unlocked { data, key: k, salt: s } => {
                     data.insert(key.stronghold_key(), password.to_string());
@@ -176,7 +177,7 @@ impl StrongholdBackend {
     /// 删除凭证并写入磁盘；条目不存在时视为成功。
     pub fn delete(&self, key: &CredentialKey) -> Result<(), String> {
         let (data_snapshot, key_bytes, salt) = {
-            let mut guard = self.state.lock().unwrap();
+            let mut guard = self.state.lock().map_err(|_| "internal lock error".to_string())?;
             match &mut *guard {
                 StrongholdState::Unlocked { data, key: k, salt: s } => {
                     data.remove(&key.stronghold_key());
@@ -193,7 +194,7 @@ impl StrongholdBackend {
 
     /// 检查凭证是否存在（不获取内容）。
     pub fn exists(&self, key: &CredentialKey) -> bool {
-        match &*self.state.lock().unwrap() {
+        match &*self.state.lock().unwrap_or_else(|p| p.into_inner()) {
             StrongholdState::Unlocked { data, .. } => data.contains_key(&key.stronghold_key()),
             _ => false,
         }
@@ -201,7 +202,7 @@ impl StrongholdBackend {
 
     /// 列出所有已保存凭证的 tunnel_id。
     pub fn list_keys(&self) -> Vec<String> {
-        match &*self.state.lock().unwrap() {
+        match &*self.state.lock().unwrap_or_else(|p| p.into_inner()) {
             StrongholdState::Unlocked { data, .. } => data
                 .keys()
                 .filter_map(|k| k.strip_prefix("ssh/").map(|s| s.to_string()))
@@ -216,12 +217,12 @@ impl StrongholdBackend {
         key: &[u8; 32],
         salt: &[u8],
     ) -> Result<(), String> {
-        let plaintext = serde_json::to_string(data).map_err(|e| e.to_string())?;
+        let plaintext = serde_json::to_string(data).map_err(err_str)?;
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
         let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
         let ciphertext = cipher
             .encrypt(&nonce, plaintext.as_bytes())
-            .map_err(|e| e.to_string())?;
+            .map_err(err_str)?;
 
         let hold = HoldFile {
             version: 1,
@@ -229,12 +230,12 @@ impl StrongholdBackend {
             nonce: B64.encode(nonce.as_slice()),
             ciphertext: B64.encode(&ciphertext),
         };
-        let json = serde_json::to_string_pretty(&hold).map_err(|e| e.to_string())?;
+        let json = serde_json::to_string_pretty(&hold).map_err(err_str)?;
 
         if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(parent).map_err(err_str)?;
         }
-        std::fs::write(&self.path, json).map_err(|e| e.to_string())
+        std::fs::write(&self.path, json).map_err(err_str)
     }
 }
 
@@ -243,7 +244,7 @@ fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; 32], String> {
     let mut key = [0u8; 32];
     argon2::Argon2::default()
         .hash_password_into(password.as_bytes(), salt, &mut key)
-        .map_err(|e| e.to_string())?;
+        .map_err(err_str)?;
     Ok(key)
 }
 

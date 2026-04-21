@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from "vue";
 import * as jsYaml from "js-yaml";
+import { extractErrorMessage } from "../utils/errorMessage";
+import { stripManagedFields } from "../utils/yaml";
 import { marked } from "marked";
 import { CodeEditor } from "monaco-editor-vue3";
 import ConfigMapEditor from "./ConfigMapEditor.vue";
@@ -29,19 +31,15 @@ import {
 } from "../stores/resourceSnapshots";
 import { ensureAutoSnapshotSettingLoaded } from "../stores/appSettings";
 import { useStrongholdAuthStore } from "../stores/strongholdAuth";
+import type { SelectedResource } from "../features/workbench/contracts";
+import { createStorage } from "../utils/storage";
+
+export type { SelectedResource };
 
 const DRAWER_WIDTH_KEY = "kube-flow:drawer-width";
 const DRAWER_MIN = 360;
 const DRAWER_MAX = 1200;
 const DRAWER_DEFAULT = 560;
-
-export interface SelectedResource {
-  kind: string;
-  name: string;
-  namespace: string | null;
-  /** 动态 API 资源（如 CRD）：走专用 get/describe。 */
-  dynamic?: { api_version: string; namespaced: boolean };
-}
 
 interface NodeTaintDraft {
   key: string;
@@ -215,16 +213,15 @@ function taintEffectLabel(effect: string): string {
   }
 }
 
-function getInitialDrawerWidth(): number {
-  try {
-    const s = localStorage.getItem(DRAWER_WIDTH_KEY);
-    if (s) {
-      const n = parseInt(s, 10);
-      if (!isNaN(n) && n >= DRAWER_MIN && n <= DRAWER_MAX) return n;
-    }
-  } catch {}
-  return DRAWER_DEFAULT;
-}
+const drawerWidthStorage = createStorage<number>({
+  key: DRAWER_WIDTH_KEY,
+  version: 1,
+  fallback: DRAWER_DEFAULT,
+  migrate: (old) => {
+    const n = parseInt(String(old), 10);
+    return isNaN(n) ? DRAWER_DEFAULT : Math.min(DRAWER_MAX, Math.max(DRAWER_MIN, n));
+  },
+});
 
 async function handleStrongholdLocked(message: string, onConfirmed: () => void): Promise<boolean> {
   return strongholdAuth.checkAndHandle(message, onConfirmed, {
@@ -232,7 +229,7 @@ async function handleStrongholdLocked(message: string, onConfirmed: () => void):
     description: "当前资源操作需要访问已保存凭证，请先输入 Stronghold 主密码解锁。",
   });
 }
-const drawerWidth = ref(getInitialDrawerWidth());
+const drawerWidth = ref(Math.min(DRAWER_MAX, Math.max(DRAWER_MIN, drawerWidthStorage.read())));
 
 let resizeStartX = 0;
 let resizeStartW = 0;
@@ -250,9 +247,7 @@ function onResizeMove(e: MouseEvent) {
   const delta = resizeStartX - e.clientX;
   const w = Math.min(DRAWER_MAX, Math.max(DRAWER_MIN, resizeStartW + delta));
   drawerWidth.value = w;
-  try {
-    localStorage.setItem(DRAWER_WIDTH_KEY, String(w));
-  } catch {}
+  drawerWidthStorage.write(w);
 }
 
 function onResizeEnd() {
@@ -267,40 +262,10 @@ onUnmounted(() => {
   document.removeEventListener("mouseup", onResizeEnd);
 });
 
-function stripManagedFields(yamlStr: string): string {
-  if (!yamlStr) return "";
-  try {
-    const obj = jsYaml.load(yamlStr) as Record<string, unknown>;
-    if (!obj || typeof obj !== "object") return yamlStr;
-    if (obj.metadata && typeof obj.metadata === "object") {
-      const meta = obj.metadata as Record<string, unknown>;
-      if ("managedFields" in meta) {
-        const { managedFields: _, ...rest } = meta;
-        obj.metadata = rest;
-      }
-    }
-    return jsYaml.dump(obj, { lineWidth: -1 });
-  } catch {
-    return yamlStr;
-  }
-}
-
 const displayYaml = computed(() => {
   if (!rawYaml.value) return "";
-  try {
-    const obj = jsYaml.load(rawYaml.value) as Record<string, unknown>;
-    if (!obj || typeof obj !== "object") return rawYaml.value;
-    if (!showManagedFields.value && obj.metadata && typeof obj.metadata === "object") {
-      const meta = obj.metadata as Record<string, unknown>;
-      if ("managedFields" in meta) {
-        const { managedFields: _, ...rest } = meta;
-        obj.metadata = rest;
-      }
-    }
-    return jsYaml.dump(obj, { lineWidth: -1 });
-  } catch {
-    return rawYaml.value;
-  }
+  if (!showManagedFields.value) return stripManagedFields(rawYaml.value);
+  return rawYaml.value;
 });
 
 const yamlContent = ref("");
@@ -333,7 +298,7 @@ async function fetchYaml() {
           props.resource.namespace
         );
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    const msg = extractErrorMessage(e);
     const isStrongholdRequired = await handleStrongholdLocked(msg, () => {
       void fetchYaml();
     });
@@ -366,7 +331,7 @@ async function fetchDescribe() {
         );
     describeMarkdown.value = res.markdown;
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    const msg = extractErrorMessage(e);
     const isStrongholdRequired = await handleStrongholdLocked(msg, () => {
       void fetchDescribe();
     });
@@ -384,14 +349,10 @@ async function applyEdit(yamlOverride?: string) {
   editError.value = null;
   editInfo.value = null;
   try {
-    const snapshotYaml =
-      activeTab.value === "editConfig"
-        ? (editConfigYaml.value || yaml).trim()
-        : yaml.trim();
     const autoSnapshotEnabled = await ensureAutoSnapshotSettingLoaded();
-    if (autoSnapshotEnabled && snapshotYaml && snapshotResourceRef.value) {
+    if (autoSnapshotEnabled && rawYaml.value && snapshotResourceRef.value) {
       createResourceSnapshot(snapshotResourceRef.value, {
-        yaml: snapshotYaml,
+        yaml: rawYaml.value,
         category: activeTab.value === "editConfig" ? "config" : "resource",
         source: "before-apply",
         title: activeTab.value === "editConfig" ? "应用前配置快照" : "应用前资源快照",
@@ -402,7 +363,7 @@ async function applyEdit(yamlOverride?: string) {
     editInfo.value = "已自动保存当前编辑草稿快照，可在“快照”栏目统一查看。";
     activeTab.value = "yaml";
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    const msg = extractErrorMessage(e);
     const isStrongholdRequired = await handleStrongholdLocked(msg, () => {
       void applyEdit(yaml);
     });
@@ -806,6 +767,7 @@ watch(
   <ResourceSnapshotViewer
     :visible="!!viewingSnapshot"
     :snapshot="viewingSnapshot"
+    :env-id="props.envId"
     @close="viewingSnapshot = null"
   />
 </template>

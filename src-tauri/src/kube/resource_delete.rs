@@ -1,6 +1,7 @@
 //! 资源删除：按 kind/name/namespace 调用 K8s Delete API。
 
-use crate::kube::resources::ResourceError;
+use crate::kube::resource_dynamic::delete_resource_by_kind;
+use crate::kube::resources::{ns_or_default, ResourceError};
 use kube::api::{Api, DeleteParams};
 use kube::Client;
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
@@ -16,10 +17,6 @@ use k8s_openapi::api::policy::v1::PodDisruptionBudget;
 use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding, Role, RoleBinding};
 use k8s_openapi::api::scheduling::v1::PriorityClass;
 use k8s_openapi::api::storage::v1::StorageClass;
-
-fn ns_or_default(ns: Option<&str>) -> &str {
-    ns.unwrap_or("default")
-}
 
 /// 删除指定资源。集群级资源 namespace 为空。
 pub async fn delete_resource(
@@ -61,7 +58,7 @@ pub async fn delete_resource(
         "LimitRange" => Api::<LimitRange>::namespaced(client.clone(), ns_or_default(namespace)).delete(name, &dp).await.map(|_| ()),
         "HorizontalPodAutoscaler" => Api::<HorizontalPodAutoscaler>::namespaced(client.clone(), ns_or_default(namespace)).delete(name, &dp).await.map(|_| ()),
         "PodDisruptionBudget" => Api::<PodDisruptionBudget>::namespaced(client.clone(), ns_or_default(namespace)).delete(name, &dp).await.map(|_| ()),
-        _ => return Err(ResourceError::UnsupportedKind(kind.to_string())),
+        _ => return delete_resource_by_kind(client, kind, name, namespace).await,
     };
     result.map_err(ResourceError::Kube)
 }

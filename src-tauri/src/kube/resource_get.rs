@@ -1,6 +1,8 @@
 //! 资源详情获取：按 kind/name/namespace 拉取单个资源并序列化为 YAML。
 //! 与 resources 模块并列，职责分离：list 在 resources，get 在此。
 
+use crate::kube::resource_dynamic::get_resource_yaml_by_kind;
+use crate::kube::resources::{ns_or_default, ResourceError};
 use kube::api::Api;
 use kube::Client;
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
@@ -16,7 +18,6 @@ use k8s_openapi::api::policy::v1::PodDisruptionBudget;
 use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding, Role, RoleBinding};
 use k8s_openapi::api::scheduling::v1::PriorityClass;
 use k8s_openapi::api::storage::v1::StorageClass;
-use crate::kube::resources::ResourceError;
 
 /// 获取单个资源并返回 JSON 值，供关联跳转等逻辑解析。
 /// kind 为 K8s API Kind（如 Pod、Deployment）；集群级资源 namespace 可为空。
@@ -57,24 +58,26 @@ pub async fn get_resource_value(
         "PriorityClass" => get_and_serialize(Api::<PriorityClass>::all(client.clone()), name).await,
         "HorizontalPodAutoscaler" => get_ns(Api::<HorizontalPodAutoscaler>::namespaced(client.clone(), ns_or_default(namespace)), name).await,
         "PodDisruptionBudget" => get_ns(Api::<PodDisruptionBudget>::namespaced(client.clone(), ns_or_default(namespace)), name).await,
-        _ => Err(ResourceError::UnsupportedKind(kind.to_string())),
+        // 未知 kind：委托给 Discovery 动态路由
+        _ => return Err(ResourceError::UnsupportedKind(kind.to_string())),
     }
 }
 
 /// 获取单个资源并返回 YAML 字符串。
-/// kind 为 K8s API Kind（如 Pod、Deployment）；集群级资源 namespace 可为空。
+/// 已知 kind 走静态类型路由；未知 kind 通过 Discovery 动态解析。
 pub async fn get_resource_yaml(
     client: &Client,
     kind: &str,
     name: &str,
     namespace: Option<&str>,
 ) -> Result<String, ResourceError> {
-    let obj = get_resource_value(client, kind, name, namespace).await?;
-    serde_yaml::to_string(&obj).map_err(|e| ResourceError::Serialize(e.to_string()))
-}
-
-fn ns_or_default(ns: Option<&str>) -> &str {
-    ns.unwrap_or("default")
+    match get_resource_value(client, kind, name, namespace).await {
+        Ok(obj) => serde_yaml::to_string(&obj).map_err(|e| ResourceError::Serialize(e.to_string())),
+        Err(ResourceError::UnsupportedKind(_)) => {
+            get_resource_yaml_by_kind(client, kind, name, namespace).await
+        }
+        Err(e) => Err(e),
+    }
 }
 
 async fn get_and_serialize<K>(api: Api<K>, name: &str) -> Result<serde_json::Value, ResourceError>

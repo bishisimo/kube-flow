@@ -3,6 +3,7 @@
  */
 import { computed, ref, watch } from "vue";
 import * as monaco from "monaco-editor";
+import { createStorage } from "../utils/storage";
 
 export const YAML_THEMES = [
   { id: "atom-one-dark", label: "Atom One Dark" },
@@ -20,18 +21,19 @@ export const YAML_THEMES = [
 ] as const;
 type YamlThemeId = (typeof YAML_THEMES)[number]["id"];
 
-const STORAGE_KEY = "kube-flow:yaml-theme";
 const MONACO_THEME_PREFIX = "kube-flow-";
 
-function loadTheme(): string {
-  try {
-    const s = localStorage.getItem(STORAGE_KEY);
-    if (s && YAML_THEMES.some((t) => t.id === s)) return s;
-  } catch {}
-  return "atom-one-dark";
-}
+const themeStorage = createStorage<string>({
+  key: "kube-flow:yaml-theme",
+  version: 1,
+  fallback: "atom-one-dark",
+  migrate: (old) => {
+    const s = typeof old === "string" && YAML_THEMES.some((t) => t.id === old) ? old : "atom-one-dark";
+    return s;
+  },
+});
 
-const themeId = ref<string>(loadTheme());
+const themeId = ref<string>(themeStorage.read());
 
 const YAML_DARK_THEMES = new Set<YamlThemeId>([
   "atom-one-dark",
@@ -220,9 +222,7 @@ function ensureMonacoYamlThemesRegistered() {
 
 watch(themeId, (id) => {
   if (isYamlThemeId(id)) {
-    try {
-      localStorage.setItem(STORAGE_KEY, id);
-    } catch {}
+    themeStorage.write(id);
   }
 });
 

@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import BaseModal from "./base/BaseModal.vue";
+
 export interface ResourceRef {
   kind: string;
   name: string;
@@ -31,59 +33,27 @@ function onClose() {
 </script>
 
 <template>
-  <Teleport to="body">
-    <div v-if="visible" class="modal-backdrop" @click.self="onClose">
-      <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="delete-modal-title">
-        <h2 id="delete-modal-title" class="modal-title">删除资源</h2>
-        <p class="modal-desc">以下资源将被删除，此操作不可恢复。</p>
-        <ul class="delete-list">
-          <li v-for="(r, i) in resources" :key="i">
-            <span class="kind">{{ r.kind }}</span>
-            <span class="name">{{ formatResource(r) }}</span>
-          </li>
-        </ul>
-        <p v-if="error" class="modal-error">{{ error }}</p>
-        <div class="modal-actions">
-          <button type="button" class="btn-secondary" :disabled="deleting" @click="onClose">
-            取消
-          </button>
-          <button type="button" class="btn-danger" :disabled="deleting" @click="onConfirm">
-            {{ deleting ? "删除中…" : "确认删除" }}
-          </button>
-        </div>
-      </div>
-    </div>
-  </Teleport>
+  <BaseModal :visible="visible" title="删除资源" @close="onClose">
+    <p class="modal-desc">以下资源将被删除，此操作不可恢复。</p>
+    <ul class="delete-list">
+      <li v-for="(r, i) in resources" :key="i">
+        <span class="kind">{{ r.kind }}</span>
+        <span class="name">{{ formatResource(r) }}</span>
+      </li>
+    </ul>
+    <p v-if="error" class="modal-error">{{ error }}</p>
+    <template #footer>
+      <button type="button" class="btn-secondary" :disabled="deleting" @click="onClose">
+        取消
+      </button>
+      <button type="button" class="btn-danger" :disabled="deleting" @click="onConfirm">
+        {{ deleting ? "删除中…" : "确认删除" }}
+      </button>
+    </template>
+  </BaseModal>
 </template>
 
 <style scoped>
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.4);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
-.modal-panel {
-  background: var(--bg-card, #fff);
-  border-radius: 8px;
-  padding: 20px;
-  min-width: 360px;
-  max-width: 90vw;
-  max-height: 80vh;
-  overflow: auto;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
-}
-
-.modal-title {
-  margin: 0 0 12px;
-  font-size: 1.1rem;
-  font-weight: 600;
-}
-
 .modal-desc {
   margin: 0 0 12px;
   color: var(--text-secondary, #666);
@@ -119,12 +89,6 @@ function onClose() {
   margin: 0 0 12px;
   color: var(--color-danger, #dc2626);
   font-size: 0.9rem;
-}
-
-.modal-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
 }
 
 .btn-secondary {

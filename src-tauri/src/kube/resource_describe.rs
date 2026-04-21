@@ -3,6 +3,7 @@
 
 use crate::kube::resource_get;
 use crate::kube::resources::ResourceError;
+use crate::kube::resources::cluster::{format_cpu, format_mem, parse_cpu_millis, parse_mem_bytes};
 use chrono::{DateTime, Utc};
 use kube::api::{Api, ListParams};
 use kube::Client;
@@ -17,6 +18,52 @@ pub struct DescribeResult {
 /// 转义 Markdown 表格单元格中的 | 字符，避免破坏表格结构。
 fn escape_table_cell(s: &str) -> String {
     s.replace('|', "&#124;")
+}
+
+/// 写入 "## 基本信息" 表格的公共字段：Name、Namespace、Labels、（可选）Annotations、CreationTimestamp。
+/// - `namespace_override`：直接写入，不从 meta 读取（用于 minimal describe）；None 则从 meta 读取。
+/// - `meta`：资源的 metadata 对象，用于读取 namespace/labels/annotations/creationTimestamp。
+/// - `include_annotations`：是否输出 Annotations 行。
+fn append_basic_metadata(
+    md: &mut String,
+    name: &str,
+    namespace_override: Option<&str>,
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+    include_annotations: bool,
+) {
+    md.push_str("## 基本信息\n\n");
+    md.push_str("| 字段 | 值 |\n| --- | --- |\n");
+    md.push_str(&format!("| Name | {} |\n", escape_table_cell(name)));
+    if let Some(ns) = namespace_override {
+        md.push_str(&format!("| Namespace | {} |\n", escape_table_cell(ns)));
+    } else if let Some(ns) = meta.and_then(|m| m.get("namespace")).and_then(|v| v.as_str()) {
+        md.push_str(&format!("| Namespace | {} |\n", escape_table_cell(ns)));
+    }
+    if let Some(meta) = meta {
+        if let Some(labels) = meta.get("labels").and_then(|v| v.as_object()) {
+            if !labels.is_empty() {
+                let parts: Vec<String> = labels
+                    .iter()
+                    .map(|(k, v)| format!("{}={}", k, v.as_str().unwrap_or("")))
+                    .collect();
+                md.push_str(&format!("| Labels | {} |\n", escape_table_cell(&parts.join(", "))));
+            }
+        }
+        if include_annotations {
+            if let Some(ann) = meta.get("annotations").and_then(|v| v.as_object()) {
+                if !ann.is_empty() {
+                    let parts: Vec<String> = ann
+                        .iter()
+                        .map(|(k, v)| format!("{}={}", k, v.as_str().unwrap_or("")))
+                        .collect();
+                    md.push_str(&format!("| Annotations | {} |\n", escape_table_cell(&parts.join(", "))));
+                }
+            }
+        }
+        if let Some(ts) = meta.get("creationTimestamp").and_then(|v| v.as_str()) {
+            md.push_str(&format!("| CreationTimestamp | {} |\n", escape_table_cell(ts)));
+        }
+    }
 }
 
 /// 获取资源的 describe Markdown 文档。
@@ -64,35 +111,7 @@ async fn append_node_describe(
     let spec = obj.get("spec").and_then(|v| v.as_object());
     let status = obj.get("status").and_then(|v| v.as_object());
 
-    md.push_str("## 基本信息\n\n");
-    md.push_str("| 字段 | 值 |\n| --- | --- |\n");
-    md.push_str(&format!("| Name | {} |\n", escape_table_cell(name)));
-    if let Some(meta) = meta {
-        if let Some(ns) = meta.get("namespace").and_then(|v| v.as_str()) {
-            md.push_str(&format!("| Namespace | {} |\n", escape_table_cell(ns)));
-        }
-        if let Some(labels) = meta.get("labels").and_then(|v| v.as_object()) {
-            if !labels.is_empty() {
-                let parts: Vec<String> = labels
-                    .iter()
-                    .map(|(k, v)| format!("{}={}", k, v.as_str().unwrap_or("")))
-                    .collect();
-                md.push_str(&format!("| Labels | {} |\n", escape_table_cell(&parts.join(", "))));
-            }
-        }
-        if let Some(ann) = meta.get("annotations").and_then(|v| v.as_object()) {
-            if !ann.is_empty() {
-                let parts: Vec<String> = ann
-                    .iter()
-                    .map(|(k, v)| format!("{}={}", k, v.as_str().unwrap_or("")))
-                    .collect();
-                md.push_str(&format!("| Annotations | {} |\n", escape_table_cell(&parts.join(", "))));
-            }
-        }
-        if let Some(ts) = meta.get("creationTimestamp").and_then(|v| v.as_str()) {
-            md.push_str(&format!("| CreationTimestamp | {} |\n", escape_table_cell(ts)));
-        }
-    }
+    append_basic_metadata(md, name, None, meta, true);
     if let Some(spec) = spec {
         if let Some(taints) = spec.get("taints").and_then(|v| v.as_array()) {
             if !taints.is_empty() {
@@ -304,71 +323,6 @@ fn sum_pod_resources(pod: &Pod) -> (String, String, String, String) {
     )
 }
 
-fn parse_cpu_millis(s: &str) -> i64 {
-    let s = s.trim();
-    if s.is_empty() {
-        return 0;
-    }
-    if let Some(rest) = s.strip_suffix('m') {
-        if let Ok(n) = rest.parse::<i64>() {
-            return n;
-        }
-    }
-    if let Ok(n) = s.parse::<f64>() {
-        return (n * 1000.0) as i64;
-    }
-    0
-}
-
-fn parse_mem_bytes(s: &str) -> i64 {
-    let s = s.trim();
-    if s.is_empty() {
-        return 0;
-    }
-    let (num, unit) = if let Some(rest) = s.strip_suffix("Ki") {
-        (rest.parse::<f64>().unwrap_or(0.0), 1024i64)
-    } else if let Some(rest) = s.strip_suffix("Mi") {
-        (rest.parse::<f64>().unwrap_or(0.0), 1024 * 1024)
-    } else if let Some(rest) = s.strip_suffix("Gi") {
-        (rest.parse::<f64>().unwrap_or(0.0), 1024 * 1024 * 1024)
-    } else if let Some(rest) = s.strip_suffix("K") {
-        (rest.parse::<f64>().unwrap_or(0.0), 1000)
-    } else if let Some(rest) = s.strip_suffix("M") {
-        (rest.parse::<f64>().unwrap_or(0.0), 1000 * 1000)
-    } else if let Some(rest) = s.strip_suffix("G") {
-        (rest.parse::<f64>().unwrap_or(0.0), 1000 * 1000 * 1000)
-    } else if let Ok(n) = s.parse::<i64>() {
-        return n;
-    } else {
-        return 0;
-    };
-    (num * unit as f64) as i64
-}
-
-fn format_cpu(millis: i64) -> String {
-    if millis == 0 {
-        "0".to_string()
-    } else if millis % 1000 == 0 {
-        format!("{}", millis / 1000)
-    } else {
-        format!("{}m", millis)
-    }
-}
-
-fn format_mem(bytes: i64) -> String {
-    if bytes == 0 {
-        "0".to_string()
-    } else if bytes >= 1024 * 1024 * 1024 {
-        format!("{}Gi", bytes / (1024 * 1024 * 1024))
-    } else if bytes >= 1024 * 1024 {
-        format!("{}Mi", bytes / (1024 * 1024))
-    } else if bytes >= 1024 {
-        format!("{}Ki", bytes / 1024)
-    } else {
-        format!("{}", bytes)
-    }
-}
-
 fn pod_age(pod: &Pod) -> String {
     let ts = match &pod.metadata.creation_timestamp {
         Some(t) => t.0,
@@ -400,31 +354,9 @@ async fn append_pod_describe(
     let spec = obj.get("spec").and_then(|v| v.as_object());
     let status = obj.get("status").and_then(|v| v.as_object());
 
-    md.push_str("## 基本信息\n\n");
-    md.push_str("| 字段 | 值 |\n| --- | --- |\n");
-    md.push_str(&format!("| Name | {} |\n", escape_table_cell(name)));
-    if let Some(meta) = meta {
-        if let Some(ns) = meta.get("namespace").and_then(|v| v.as_str()) {
-            md.push_str(&format!("| Namespace | {} |\n", escape_table_cell(ns)));
-        }
-        if let Some(prio) = meta.get("priority").and_then(|v| v.as_i64()) {
-            md.push_str(&format!("| Priority | {} |\n", prio));
-        }
-        if let Some(labels) = meta.get("labels").and_then(|v| v.as_object()) {
-            if !labels.is_empty() {
-                let parts: Vec<String> = labels.iter().map(|(k, v)| format!("{}={}", k, v.as_str().unwrap_or(""))).collect();
-                md.push_str(&format!("| Labels | {} |\n", escape_table_cell(&parts.join(", "))));
-            }
-        }
-        if let Some(ann) = meta.get("annotations").and_then(|v| v.as_object()) {
-            if !ann.is_empty() {
-                let parts: Vec<String> = ann.iter().map(|(k, v)| format!("{}={}", k, v.as_str().unwrap_or(""))).collect();
-                md.push_str(&format!("| Annotations | {} |\n", escape_table_cell(&parts.join(", "))));
-            }
-        }
-        if let Some(ts) = meta.get("creationTimestamp").and_then(|v| v.as_str()) {
-            md.push_str(&format!("| CreationTimestamp | {} |\n", escape_table_cell(ts)));
-        }
+    append_basic_metadata(md, name, None, meta, true);
+    if let Some(prio) = meta.and_then(|m| m.get("priority")).and_then(|v| v.as_i64()) {
+        md.push_str(&format!("| Priority | {} |\n", prio));
     }
     if let Some(spec) = spec {
         if let Some(node) = spec.get("nodeName").and_then(|v| v.as_str()) {
@@ -524,23 +456,7 @@ async fn append_deployment_describe(
     let spec = obj.get("spec").and_then(|v| v.as_object());
     let status = obj.get("status").and_then(|v| v.as_object());
 
-    md.push_str("## 基本信息\n\n");
-    md.push_str("| 字段 | 值 |\n| --- | --- |\n");
-    md.push_str(&format!("| Name | {} |\n", escape_table_cell(name)));
-    if let Some(meta) = meta {
-        if let Some(ns) = meta.get("namespace").and_then(|v| v.as_str()) {
-            md.push_str(&format!("| Namespace | {} |\n", escape_table_cell(ns)));
-        }
-        if let Some(labels) = meta.get("labels").and_then(|v| v.as_object()) {
-            if !labels.is_empty() {
-                let parts: Vec<String> = labels.iter().map(|(k, v)| format!("{}={}", k, v.as_str().unwrap_or(""))).collect();
-                md.push_str(&format!("| Labels | {} |\n", escape_table_cell(&parts.join(", "))));
-            }
-        }
-        if let Some(ts) = meta.get("creationTimestamp").and_then(|v| v.as_str()) {
-            md.push_str(&format!("| CreationTimestamp | {} |\n", escape_table_cell(ts)));
-        }
-    }
+    append_basic_metadata(md, name, None, meta, false);
     if let Some(spec) = spec {
         if let Some(sel) = spec.get("selector").and_then(|v| v.as_object()) {
             if let Some(match_labels) = sel.get("matchLabels").and_then(|v| v.as_object()) {
@@ -612,23 +528,8 @@ fn append_minimal_describe(md: &mut String, obj: &serde_json::Value, name: &str,
         None => return,
     };
 
-    md.push_str("## 基本信息\n\n");
-    md.push_str("| 字段 | 值 |\n| --- | --- |\n");
-    md.push_str(&format!("| Name | {} |\n", escape_table_cell(name)));
-    if let Some(ns) = namespace {
-        md.push_str(&format!("| Namespace | {} |\n", escape_table_cell(ns)));
-    }
-    if let Some(meta) = obj.get("metadata").and_then(|v| v.as_object()) {
-        if let Some(labels) = meta.get("labels").and_then(|v| v.as_object()) {
-            if !labels.is_empty() {
-                let parts: Vec<String> = labels.iter().map(|(k, v)| format!("{}={}", k, v.as_str().unwrap_or(""))).collect();
-                md.push_str(&format!("| Labels | {} |\n", escape_table_cell(&parts.join(", "))));
-            }
-        }
-        if let Some(ts) = meta.get("creationTimestamp").and_then(|v| v.as_str()) {
-            md.push_str(&format!("| CreationTimestamp | {} |\n", escape_table_cell(ts)));
-        }
-    }
+    let meta = obj.get("metadata").and_then(|v| v.as_object());
+    append_basic_metadata(md, name, namespace, meta, false);
     md.push('\n');
 }
 

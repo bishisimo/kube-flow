@@ -32,9 +32,6 @@ export interface KubeContextInfo {
   namespace?: string | null;
 }
 
-/** 隧道映射方式：ssh=系统 ssh -L 子进程，builtin=libssh2 内置 */
-export type TunnelMappingMode = "ssh" | "builtin";
-
 export interface SshTunnel {
   id: string;
   name: string;
@@ -59,14 +56,6 @@ export function defaultNamespace(env: Environment): string | null {
   if (!name) return null;
   const ctx = env.contexts.find((c) => c.context_name === name);
   return ctx?.default_namespace ?? null;
-}
-
-export function appDataDir(): Promise<string | null> {
-  return invoke("app_data_dir");
-}
-
-export function ensureAppDataDir(): Promise<string | null> {
-  return invoke("ensure_app_data_dir");
 }
 
 export function envList(): Promise<Environment[]> {

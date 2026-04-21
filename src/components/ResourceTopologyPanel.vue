@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
-import { kubeGetResourceTopology, type TopologyItem, type ResourceTopology } from "../api/kube";
+import { computed, ref, watch } from "vue";
+import { kubeGetResourceGraph, type ResourceGraph, type ResourceGraphNode, type ResourceGraphEdge } from "../api/kube";
+import { extractErrorMessage } from "../utils/errorMessage";
 
 export interface ResourceRef {
   kind: string;
@@ -24,36 +25,106 @@ const emit = defineEmits<{
 
 const loading = ref(false);
 const error = ref<string | null>(null);
-const topology = ref<ResourceTopology | null>(null);
+const graph = ref<ResourceGraph | null>(null);
 
-function formatItem(item: TopologyItem): string {
-  if (!item.is_concrete || !item.name) return item.label;
-  return item.namespace ? `${item.namespace}/${item.name}` : item.name;
+// 将 relation_type 的 snake_case 转为可读标签
+function formatRelationType(rt: string): string {
+  const map: Record<string, string> = {
+    volume: "挂载",
+    env_from: "envFrom",
+    env_value: "env",
+    image_pull_secret: "imagePull",
+    service_account_ref: "SA",
+    owner_ref: "owner",
+    manages: "管理",
+    selector: "selector",
+    service_selector: "selector",
+    hpa_target: "HPA",
+    bound_volume: "绑定",
+    storage_class: "SC",
+    ingress_backend: "路由",
+    role_ref: "roleRef",
+    used_by: "被引用",
+    routes: "路由",
+    scaled_by: "弹性",
+  };
+  return map[rt] ?? rt;
 }
 
-function onJump(item: TopologyItem) {
+// 从图数据派生：以 root 为中心，分上游（root 依赖的）和下游（依赖 root 的）
+interface DisplayItem {
+  node: ResourceGraphNode;
+  edges: ResourceGraphEdge[];
+}
+
+const upstream = computed<DisplayItem[]>(() => {
+  if (!graph.value) return [];
+  const rootRef = graph.value.root;
+  // root 出发的边（root → target）：root 主动引用/依赖的资源
+  const outEdges = graph.value.edges.filter(
+    e => e.from.kind === rootRef.kind && e.from.name === rootRef.name && e.from.namespace === rootRef.namespace
+  );
+  const targetKeys = new Set(outEdges.map(e => nodeKey(e.to)));
+  return graph.value.nodes
+    .filter(n => n.resource_ref.kind !== rootRef.kind || n.resource_ref.name !== rootRef.name)
+    .filter(n => targetKeys.has(nodeKey(n.resource_ref)))
+    .map(n => ({
+      node: n,
+      edges: outEdges.filter(e => nodeKey(e.to) === nodeKey(n.resource_ref)),
+    }));
+});
+
+const downstream = computed<DisplayItem[]>(() => {
+  if (!graph.value) return [];
+  const rootRef = graph.value.root;
+  // 指向 root 的边（other → root）：谁依赖了 root，或者 root 管理的（如 Pod 聚合节点）
+  const inEdges = graph.value.edges.filter(
+    e => e.to.kind === rootRef.kind && e.to.name === rootRef.name && e.to.namespace === rootRef.namespace
+  );
+  const sourceKeys = new Set(inEdges.map(e => nodeKey(e.from)));
+  return graph.value.nodes
+    .filter(n => n.resource_ref.kind !== rootRef.kind || n.resource_ref.name !== rootRef.name)
+    .filter(n => sourceKeys.has(nodeKey(n.resource_ref)))
+    .map(n => ({
+      node: n,
+      edges: inEdges.filter(e => nodeKey(e.from) === nodeKey(n.resource_ref)),
+    }));
+});
+
+function nodeKey(ref: { kind: string; name: string; namespace?: string | null }): string {
+  return `${ref.kind}|${ref.namespace ?? ""}|${ref.name}`;
+}
+
+function formatNodeLabel(node: ResourceGraphNode): string {
+  const ref = node.resource_ref;
+  if (!node.is_concrete || !ref.name) return ref.name || `${ref.kind} (group)`;
+  return ref.namespace ? `${ref.namespace}/${ref.name}` : ref.name;
+}
+
+function onJump(item: DisplayItem) {
+  const ref = item.node.resource_ref;
   emit("navigate", {
-    targetKind: item.target_kind,
-    namespace: item.namespace ?? null,
-    labelSelector: item.label_selector ?? null,
-    resourceName: item.is_concrete && item.name ? item.name : (item.resource_name ?? null),
+    targetKind: ref.kind.toLowerCase() + "s",
+    namespace: ref.namespace ?? null,
+    labelSelector: item.node.label_selector ?? null,
+    resourceName: item.node.is_concrete && ref.name ? ref.name : null,
   });
 }
 
-async function fetchTopology() {
+async function fetchGraph() {
   if (!props.envId || !props.resource) return;
   loading.value = true;
   error.value = null;
-  topology.value = null;
+  graph.value = null;
   try {
-    topology.value = await kubeGetResourceTopology(
+    graph.value = await kubeGetResourceGraph(
       props.envId,
       props.resource.kind,
       props.resource.name,
       props.resource.namespace
     );
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
+    error.value = extractErrorMessage(e);
   } finally {
     loading.value = false;
   }
@@ -62,8 +133,8 @@ async function fetchTopology() {
 watch(
   () => [props.envId, props.resource?.kind, props.resource?.name, props.resource?.namespace] as const,
   () => {
-    if (props.resource) fetchTopology();
-    else topology.value = null;
+    if (props.resource) fetchGraph();
+    else graph.value = null;
   },
   { immediate: true }
 );
@@ -79,23 +150,23 @@ watch(
       <span class="error-icon">!</span>
       {{ error }}
     </div>
-    <template v-else-if="topology">
+    <template v-else-if="graph">
       <div class="topology-flow">
-        <section v-if="topology.upstream.length" class="topology-section topology-upstream">
+        <section v-if="upstream.length" class="topology-section topology-upstream">
           <div class="section-header">
             <span class="section-badge">引用</span>
-            <span class="section-count">{{ topology.upstream.length }}</span>
+            <span class="section-count">{{ upstream.length }}</span>
           </div>
           <ul class="topology-list">
             <li
-              v-for="(item, i) in topology.upstream"
+              v-for="(item, i) in upstream"
               :key="`u-${i}`"
               class="topology-item topology-item-clickable"
               @click="onJump(item)"
             >
-              <span class="item-kind-badge">{{ item.kind }}</span>
-              <span v-if="item.relation_type" class="item-relation-badge">{{ item.relation_type }}</span>
-              <span class="item-name">{{ formatItem(item) }}</span>
+              <span class="item-kind-badge">{{ item.node.resource_ref.kind }}</span>
+              <span v-if="item.edges[0]" class="item-relation-badge">{{ formatRelationType(item.edges[0].relation_type) }}</span>
+              <span class="item-name">{{ formatNodeLabel(item.node) }}</span>
             </li>
           </ul>
         </section>
@@ -107,28 +178,28 @@ watch(
           </div>
         </div>
 
-        <section v-if="topology.downstream.length" class="topology-section topology-downstream">
+        <section v-if="downstream.length" class="topology-section topology-downstream">
           <div class="section-header">
-            <span class="section-badge">管理</span>
-            <span class="section-count">{{ topology.downstream.length }}</span>
+            <span class="section-badge">关联</span>
+            <span class="section-count">{{ downstream.length }}</span>
           </div>
           <ul class="topology-list">
             <li
-              v-for="(item, i) in topology.downstream"
+              v-for="(item, i) in downstream"
               :key="`d-${i}`"
               class="topology-item topology-item-clickable"
               @click="onJump(item)"
             >
-              <span class="item-kind-badge">{{ item.kind }}</span>
-              <span v-if="item.relation_type" class="item-relation-badge">{{ item.relation_type }}</span>
-              <span class="item-name">{{ formatItem(item) }}</span>
+              <span class="item-kind-badge">{{ item.node.resource_ref.kind }}</span>
+              <span v-if="item.edges[0]" class="item-relation-badge">{{ formatRelationType(item.edges[0].relation_type) }}</span>
+              <span class="item-name">{{ formatNodeLabel(item.node) }}</span>
             </li>
           </ul>
         </section>
       </div>
 
       <div
-        v-if="!topology.upstream.length && !topology.downstream.length"
+        v-if="!upstream.length && !downstream.length"
         class="topology-empty topology-empty-inline"
       >
         <span class="empty-icon">◇</span>

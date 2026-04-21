@@ -1,0 +1,44 @@
+.main-layout {
+  display: flex;
+  flex-direction: row;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+
+.empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  color: #64748b;
+  font-size: 0.875rem;
+  background: #f8fafc;
+}
+.empty-state p {
+  margin: 0;
+}
+.empty-emoji {
+  font-size: 1.5rem;
+  line-height: 1;
+}
+.empty-title {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #334155;
+  font-weight: 600;
+}
+.empty-desc {
+  font-size: 0.8125rem;
+  color: #94a3b8;
+}

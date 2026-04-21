@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import * as jsYaml from "js-yaml";
+import { extractErrorMessage } from "../utils/errorMessage";
 import { kubeGetResource, kubePatchContainerImages } from "../api/kube";
 import {
   createResourceSnapshot,
@@ -116,7 +117,7 @@ async function fetchAndParse() {
     resourceYaml.value = yaml;
     containers.value = parseContainersFromYaml(yaml);
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
+    error.value = extractErrorMessage(e);
   } finally {
     loading.value = false;
   }
@@ -144,10 +145,11 @@ async function applyPatch() {
     const autoSnapshotEnabled = await ensureAutoSnapshotSettingLoaded();
     if (autoSnapshotEnabled && resourceYaml.value && snapshotResourceRef.value) {
       createResourceSnapshot(snapshotResourceRef.value, {
-        yaml: buildImageSnapshotYaml(containers.value),
+        yaml: buildImageSnapshotYaml(containers.value, true),
+        afterYaml: buildImageSnapshotYaml(containers.value, false),
         category: "image",
         source: "before-image-patch",
-        title: "镜像变更前快照",
+        title: "镜像变更快照",
         summary: summarizeImages(containers.value),
       });
     }
@@ -158,11 +160,11 @@ async function applyPatch() {
       props.resource.namespace,
       patches
     );
-    imagePatchInfo.value = "已自动保存变更前镜像快照，可在快照中心统一查看。";
+    imagePatchInfo.value = "已自动保存镜像变更前后快照，可在快照中心统一查看。";
     emit("success");
     emit("close");
   } catch (e) {
-    imagePatchError.value = e instanceof Error ? e.message : String(e);
+    imagePatchError.value = extractErrorMessage(e);
   } finally {
     imagePatchSaving.value = false;
   }

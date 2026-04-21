@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, computed, onUnmounted, onMounted } from "vue";
 import { listen } from "@tauri-apps/api/event";
+import { extractErrorMessage } from "../utils/errorMessage";
 import { AnsiUp } from "ansi_up";
 import {
   kubeGetPodContainers,
@@ -12,6 +13,7 @@ import { logGetDisplaySettings, type LogDisplayOrder } from "../api/log";
 import { useLogStore } from "../stores/log";
 import { useStrongholdAuthStore } from "../stores/strongholdAuth";
 import { registerLogStreamSession, unregisterLogStreamSession } from "../stores/logStreamManager";
+import { createStorage } from "../utils/storage";
 
 const props = withDefaults(
   defineProps<{
@@ -78,18 +80,15 @@ const contextLines = ref(-1);
 
 const LOG_BG_KEY = "kube-flow:log-bg-theme";
 type LogBgTheme = "light" | "dark";
-function getInitialLogBgTheme(): LogBgTheme {
-  try {
-    const s = localStorage.getItem(LOG_BG_KEY);
-    if (s === "light" || s === "dark") return s;
-  } catch {}
-  return "light";
-}
-const logBgTheme = ref<LogBgTheme>(getInitialLogBgTheme());
+const logBgStorage = createStorage<LogBgTheme>({
+  key: LOG_BG_KEY,
+  version: 1,
+  fallback: "light",
+  migrate: (old) => (old === "dark" ? "dark" : "light"),
+});
+const logBgTheme = ref<LogBgTheme>(logBgStorage.read());
 watch(logBgTheme, (v) => {
-  try {
-    localStorage.setItem(LOG_BG_KEY, v);
-  } catch {}
+  logBgStorage.write(v);
 });
 
 const TAIL_OPTIONS = [
@@ -317,7 +316,7 @@ async function loadLogs() {
       previous: previousLogs.value,
     });
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    const msg = extractErrorMessage(e);
     const isStrongholdRequired = await handleStrongholdLocked(msg, () => {
       void loadLogs();
     });
@@ -349,7 +348,7 @@ async function startFollow() {
     );
     streamId.value = id;
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    const msg = extractErrorMessage(e);
     const isStrongholdRequired = await handleStrongholdLocked(msg, () => {
       void startFollow();
     });

@@ -1,9 +1,10 @@
 import { ref } from "vue";
-import type { HostShellBootstrap, NodeTerminalStep, PodDebugTarget } from "../api/terminal";
+import type { HostShellBootstrap, NodeTerminalStep, NodeTerminalStepType, PodDebugTarget } from "../api/terminal";
+export type { NodeTerminalStepType } from "../api/terminal";
+import { uid } from "../utils/uid";
+import { createStorage } from "../utils/storage";
 
 const STORAGE_KEY = "kube-flow:node-terminal-strategies";
-
-export type NodeTerminalStepType = "ssh" | "switch_user";
 
 export interface NodeTerminalStepConfig {
   id: string;
@@ -19,11 +20,9 @@ export interface NodeTerminalStrategy {
   hasSavedPassword: boolean;
 }
 
-const strategies = ref<Record<string, NodeTerminalStrategy>>(loadStrategies());
-
 function createStep(type: NodeTerminalStepType, user = "root"): NodeTerminalStepConfig {
   return {
-    id: `step-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    id: uid("step"),
     type,
     user,
   };
@@ -43,34 +42,35 @@ function defaultStrategy(envId: string): NodeTerminalStrategy {
   };
 }
 
-function loadStrategies(): Record<string, NodeTerminalStrategy> {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as Record<string, Partial<NodeTerminalStrategy>>;
-    if (!parsed || typeof parsed !== "object") return {};
-    return Object.fromEntries(
-      Object.entries(parsed).map(([envId, strategy]) => [
+function sanitizeStrategies(raw: unknown): Record<string, NodeTerminalStrategy> {
+  if (!raw || typeof raw !== "object") return {};
+  const parsed = raw as Record<string, Partial<NodeTerminalStrategy>>;
+  return Object.fromEntries(
+    Object.entries(parsed).map(([envId, strategy]) => [
+      envId,
+      {
+        ...defaultStrategy(envId),
         envId,
-        {
-          ...defaultStrategy(envId),
-          envId,
-          enabled: Boolean(strategy?.enabled),
-          nodeAddressTemplate: strategy?.nodeAddressTemplate?.trim() || "{node}",
-          steps: sanitizeSteps(strategy?.steps),
-          hasSavedPassword: Boolean(strategy?.hasSavedPassword),
-        },
-      ])
-    );
-  } catch {
-    return {};
-  }
+        enabled: Boolean(strategy?.enabled),
+        nodeAddressTemplate: strategy?.nodeAddressTemplate?.trim() || "{node}",
+        steps: sanitizeSteps(strategy?.steps),
+        hasSavedPassword: Boolean(strategy?.hasSavedPassword),
+      },
+    ])
+  );
 }
 
+const strategiesStorage = createStorage<Record<string, NodeTerminalStrategy>>({
+  key: STORAGE_KEY,
+  version: 1,
+  fallback: {},
+  migrate: (old) => sanitizeStrategies(old),
+});
+
+const strategies = ref<Record<string, NodeTerminalStrategy>>(strategiesStorage.read());
+
 function persist() {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(strategies.value));
-  } catch {}
+  strategiesStorage.write(strategies.value);
 }
 
 export function getNodeTerminalStrategy(envId: string | null | undefined): NodeTerminalStrategy | null {

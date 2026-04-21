@@ -1,6 +1,9 @@
 import { ref } from "vue";
 import * as jsYaml from "js-yaml";
 import { useAppSettingsStore } from "./appSettings";
+import { createStorage } from "../utils/storage";
+import { uid } from "../utils/uid";
+import { stripManagedFields } from "../utils/yaml";
 
 export interface ResourceSnapshotRef {
   env_id: string;
@@ -13,50 +16,40 @@ export interface ResourceSnapshotItem extends ResourceSnapshotRef {
   id: string;
   created_at: string;
   category: "resource" | "config" | "image";
-  source: "manual" | "before-apply" | "before-image-patch";
+  source: "manual" | "before-apply" | "before-image-patch" | "after-image-patch";
   pinned: boolean;
   title: string;
   summary: string;
   yaml: string;
+  /** 镜像变更场景：变更后的镜像 YAML，与 yaml（变更前）配对展示 */
+  afterYaml?: string;
 }
 
-const STORAGE_KEY = "kube-flow:resource-snapshots";
-const snapshots = ref<ResourceSnapshotItem[]>(loadSnapshots());
-const { autoSnapshotLimitPerResource } = useAppSettingsStore();
-
-function loadSnapshots(): ResourceSnapshotItem[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
+const snapshotStorage = createStorage<ResourceSnapshotItem[]>({
+  key: "kube-flow:resource-snapshots",
+  version: 1,
+  fallback: [],
+  migrate: (old) => {
+    const arr = Array.isArray(old) ? old : [];
+    return arr
       .filter((item) => item && typeof item === "object")
       .map((item) => {
         const snapshot = item as Partial<ResourceSnapshotItem>;
         const category =
           snapshot.category ??
-          (snapshot.source === "before-image-patch" ? "image" : "resource");
-        return {
-          ...snapshot,
-          category,
-          pinned: snapshot.pinned === true,
-        } as ResourceSnapshotItem;
+          (snapshot.source === "before-image-patch" || snapshot.source === "after-image-patch" ? "image" : "resource");
+        return { ...snapshot, category, pinned: snapshot.pinned === true } as ResourceSnapshotItem;
       });
-  } catch {
-    return [];
-  }
-}
+  },
+});
+
+const snapshots = ref<ResourceSnapshotItem[]>(snapshotStorage.read());
+const { autoSnapshotLimitPerResource } = useAppSettingsStore();
 
 function persist() {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshots.value));
-  } catch {}
+  snapshotStorage.write(snapshots.value);
 }
 
-function uid(prefix: string): string {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
 
 function summarizeContainers(obj: Record<string, unknown>): string | null {
   const spec = obj.spec as Record<string, unknown> | undefined;
@@ -96,21 +89,9 @@ function renderStringMapSection(name: string, entries: Record<string, unknown> |
   return lines;
 }
 
-function stripManagedFieldsFromParsedObject(parsed: unknown): unknown {
-  if (!parsed || typeof parsed !== "object") return parsed;
-  const obj = parsed as Record<string, unknown>;
-  if (!obj.metadata || typeof obj.metadata !== "object") return obj;
-  const metadata = { ...(obj.metadata as Record<string, unknown>) };
-  delete metadata.managedFields;
-  return {
-    ...obj,
-    metadata,
-  };
-}
-
 export function formatResourceSnapshotYaml(yaml: string): string {
   try {
-    const parsed = stripManagedFieldsFromParsedObject(jsYaml.load(yaml));
+    const parsed = jsYaml.load(stripManagedFields(yaml));
     if (!parsed || typeof parsed !== "object") return yaml;
     const obj = parsed as Record<string, unknown>;
     const kind = typeof obj.kind === "string" ? obj.kind : "";
@@ -193,6 +174,7 @@ export function createResourceSnapshot(
   resource: ResourceSnapshotRef,
   input: {
     yaml: string;
+    afterYaml?: string;
     category: ResourceSnapshotItem["category"];
     source: ResourceSnapshotItem["source"];
     title?: string;
@@ -201,6 +183,7 @@ export function createResourceSnapshot(
 ): ResourceSnapshotItem | null {
   const yaml = formatResourceSnapshotYaml(input.yaml.trim()).trim();
   if (!yaml) return null;
+  const afterYaml = input.afterYaml ? formatResourceSnapshotYaml(input.afterYaml.trim()).trim() || undefined : undefined;
   const next: ResourceSnapshotItem = {
     ...resource,
     id: uid("snapshot"),
@@ -211,6 +194,7 @@ export function createResourceSnapshot(
     title: input.title?.trim() || "资源快照",
     summary: input.summary?.trim() || summarizeResourceYaml(yaml),
     yaml,
+    ...(afterYaml ? { afterYaml } : {}),
   };
   const sameResource = listResourceSnapshots(resource);
   const isAutomatic = input.source !== "manual";

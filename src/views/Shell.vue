@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from "vue";
+import { ref, computed, onMounted, watch, markRaw, type Component } from "vue";
 import { useEnvStore } from "../stores/env";
 import { useShellStore } from "../stores/shell";
 import { useLogCenterStore } from "../stores/logCenter";
@@ -13,7 +13,19 @@ import ResourceOrchestratorView from "./ResourceOrchestratorView.vue";
 
 type TabId = "env" | "main" | "orchestrator" | "shell" | "settings" | "logCenter";
 
+const VIEW_MAP: Record<TabId, Component> = {
+  env: markRaw(EnvManage),
+  main: markRaw(Main),
+  orchestrator: markRaw(ResourceOrchestratorView),
+  shell: markRaw(PodShellView),
+  logCenter: markRaw(LogCenterView),
+  settings: markRaw(Settings),
+};
+
+const KEEP_ALIVE_VIEWS = ["EnvManage", "Main", "ResourceOrchestratorView", "PodShellView", "LogCenterView"];
+
 const currentTab = ref<TabId>("env");
+const currentView = computed(() => VIEW_MAP[currentTab.value]);
 const { environments, openedEnvs, loadEnvironments } = useEnvStore();
 const { switchToShellRequested } = useShellStore();
 const { switchToLogCenterRequested } = useLogCenterStore();
@@ -112,12 +124,13 @@ onMounted(async () => {
       </button>
     </header>
     <main class="shell-content">
-      <EnvManage v-show="currentTab === 'env'" @use-env="onUseEnv" />
-      <Main v-show="currentTab === 'main'" />
-      <ResourceOrchestratorView v-show="currentTab === 'orchestrator'" />
-      <PodShellView v-show="currentTab === 'shell'" />
-      <LogCenterView v-show="currentTab === 'logCenter'" />
-      <Settings v-show="currentTab === 'settings'" />
+      <KeepAlive :include="KEEP_ALIVE_VIEWS">
+        <component
+          :is="currentView"
+          :key="currentTab"
+          @use-env="onUseEnv"
+        />
+      </KeepAlive>
     </main>
   </div>
 </template>

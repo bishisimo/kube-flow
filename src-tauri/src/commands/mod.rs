@@ -1,11 +1,23 @@
 //! Tauri 命令：配置、环境、K8s 资源、凭证；统一注册便于扩展。
+//!
+//! K8s 命令已按职责拆分到 `kube/` 子目录：
+//! - `kube/list_commands`     — kube_list_* 资源列表
+//! - `kube/resource_commands` — describe/get/delete/apply/patch
+//! - `kube/stream_commands`   — Pod 日志流与 exec
+//! - `kube/watch_commands`    — Watch、别名缓存、Client 生命周期
 
 pub mod config_commands;
 pub mod credential_commands;
 pub mod env_commands;
-pub mod kube_commands;
+pub mod kube_command_context;
+pub mod kube;
 pub mod log_commands;
 pub mod terminal_commands;
+
+/// 向后兼容：保留 kube_commands 路径，所有符号来自 kube 子模块。
+pub mod kube_commands {
+    pub use super::kube::*;
+}
 
 use crate::config::AppSettingsConfig;
 use crate::credentials::new_from_settings;

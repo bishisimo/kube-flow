@@ -3,6 +3,11 @@ import { ref, computed, onMounted } from "vue";
 import type { Environment, KubeContextInfo, SshTunnel } from "../api/env";
 import { useEnvStore } from "../stores/env";
 import { useShellStore } from "../stores/shell";
+import { extractErrorMessage } from "../utils/errorMessage";
+import { useTagInput } from "../features/env/useTagInput";
+import { useStrongholdGuardedAction } from "../features/env/useStrongholdGuardedAction";
+
+defineOptions({ name: "EnvManage" });
 import { useStrongholdAuthStore } from "../stores/strongholdAuth";
 import {
   buildNodeTerminalCommand,
@@ -34,6 +39,7 @@ const emit = defineEmits<{ (e: "use-env"): void }>();
 const { openEnv, removeEnv: storeRemoveEnv, loadEnvironments: syncStoreEnvironments } = useEnvStore();
 const { pendingOpen, requestSwitchToShell } = useShellStore();
 const strongholdAuth = useStrongholdAuthStore();
+const guardedAction = useStrongholdGuardedAction();
 const environments = ref<Environment[]>([]);
 const sshTunnels = ref<SshTunnel[]>([]);
 const listLoading = ref(false);
@@ -57,7 +63,6 @@ const newShowPassword = ref(false);
 const createLoading = ref(false);
 const createError = ref("");
 const newTags = ref<string[]>([]);
-const newTagDraft = ref("");
 
 // 编辑弹窗
 const showEditModal = ref(false);
@@ -79,7 +84,6 @@ const editShowPasswordInput = ref(false);
 const editPasswordLoading = ref(false);
 const editPasswordMsg = ref<{ type: "ok" | "err"; text: string } | null>(null);
 const editTags = ref<string[]>([]);
-const editTagDraft = ref("");
 
 // 终端策略弹窗
 const showStrategyModal = ref(false);
@@ -114,64 +118,20 @@ function strategyStepHint(type: NodeTerminalStepType): string {
     : "使用指定用户连接到节点地址模板解析出的目标主机。";
 }
 
-async function handleStrongholdLocked(message: string, onConfirmed: () => void): Promise<boolean> {
-  return strongholdAuth.checkAndHandle(message, onConfirmed, {
-    title: "解锁终端策略凭证",
-    description: "保存或清除切换用户密码需要访问凭证存储，请先输入 Stronghold 主密码解锁。",
-  });
-}
+const ENV_CREDENTIAL_GUARD: Parameters<typeof guardedAction.handleError>[3] = {
+  title: "解锁环境凭证",
+  description: "保存或清除环境 SSH 密码需要访问凭证存储，请先输入 Stronghold 主密码解锁。",
+  lockedText: "需要先解锁 Stronghold，解锁后会自动继续。",
+};
 
-async function handleEnvCredentialStrongholdLocked(
-  message: string,
-  onConfirmed: () => void
-): Promise<boolean> {
-  return strongholdAuth.checkAndHandle(message, onConfirmed, {
-    title: "解锁环境凭证",
-    description: "保存或清除环境 SSH 密码需要访问凭证存储，请先输入 Stronghold 主密码解锁。",
-  });
-}
+const STRATEGY_CREDENTIAL_GUARD: Parameters<typeof guardedAction.handleError>[3] = {
+  title: "解锁终端策略凭证",
+  description: "保存或清除切换用户密码需要访问凭证存储，请先输入 Stronghold 主密码解锁。",
+  lockedText: "需要先解锁 Stronghold，解锁后会自动继续。",
+};
 
-function addNewTagFromDraft() {
-  const t = newTagDraft.value.trim();
-  if (t && !newTags.value.includes(t)) {
-    newTags.value = [...newTags.value, t];
-    newTagDraft.value = "";
-  } else if (t) {
-    newTagDraft.value = "";
-  }
-}
-
-function removeNewTag(tag: string) {
-  newTags.value = newTags.value.filter((t) => t !== tag);
-}
-
-function addEditTagFromDraft() {
-  const t = editTagDraft.value.trim();
-  if (t && !editTags.value.includes(t)) {
-    editTags.value = [...editTags.value, t];
-    editTagDraft.value = "";
-  } else if (t) {
-    editTagDraft.value = "";
-  }
-}
-
-function removeEditTag(tag: string) {
-  editTags.value = editTags.value.filter((t) => t !== tag);
-}
-
-function onNewTagKeydown(e: KeyboardEvent) {
-  if (e.key === "Enter" || e.key === "," || e.key === "，") {
-    e.preventDefault();
-    addNewTagFromDraft();
-  }
-}
-
-function onEditTagKeydown(e: KeyboardEvent) {
-  if (e.key === "Enter" || e.key === "," || e.key === "，") {
-    e.preventDefault();
-    addEditTagFromDraft();
-  }
-}
+const { draft: newTagDraft, addFromDraft: _addNewTagFromDraft, removeTag: removeNewTag, onKeydown: onNewTagKeydown } = useTagInput(newTags);
+const { draft: editTagDraft, addFromDraft: _addEditTagFromDraft, removeTag: removeEditTag, onKeydown: onEditTagKeydown } = useTagInput(editTags);
 
 // 按标签筛选（多选：选中任一标签则展示含有该标签的环境）
 const selectedFilterTags = ref<Set<string>>(new Set());
@@ -258,8 +218,8 @@ async function discoverContexts() {
     const list = await envListContextsFromKubeconfig(newKubeconfigPath.value);
     discoveredContexts.value = list;
     selectedContextKeys.value = new Set(list.map((c) => c.context_name));
-  } catch (e: unknown) {
-    discoverError.value = e instanceof Error ? e.message : String(e);
+  } catch (e) {
+    discoverError.value = extractErrorMessage(e);
     discoveredContexts.value = [];
   } finally {
     discoverLoading.value = false;
@@ -332,9 +292,9 @@ async function doCreate() {
       };
       try {
         await finishCreate();
-      } catch (e: unknown) {
-        const message = e instanceof Error ? e.message : String(e);
-        const isStrongholdRequired = await handleEnvCredentialStrongholdLocked(message, () => {
+      } catch (e) {
+        const message = extractErrorMessage(e);
+        const isStrongholdRequired = await strongholdAuth.checkAndHandle(message, () => {
           createLoading.value = true;
           void finishCreate()
             .catch((retryError: unknown) => {
@@ -344,7 +304,7 @@ async function doCreate() {
             .finally(() => {
               createLoading.value = false;
             });
-        });
+        }, { title: ENV_CREDENTIAL_GUARD.title, description: ENV_CREDENTIAL_GUARD.description });
         if (isStrongholdRequired) {
           createError.value = "需要先解锁 Stronghold，解锁后会自动继续保存密码并完成创建。";
           return;
@@ -355,8 +315,8 @@ async function doCreate() {
     }
     await loadList();
     closeNewModal();
-  } catch (e: unknown) {
-    createError.value = e instanceof Error ? e.message : String(e);
+  } catch (e) {
+    createError.value = extractErrorMessage(e);
   } finally {
     createLoading.value = false;
   }
@@ -394,11 +354,11 @@ async function openEditModal(env: Environment) {
       }
       try {
         editCredentialExists.value = await credentialExists(env.ssh_tunnel_id);
-      } catch (e: unknown) {
-        const message = e instanceof Error ? e.message : String(e);
-        const isStrongholdRequired = await handleEnvCredentialStrongholdLocked(message, () => {
+      } catch (e) {
+        const message = extractErrorMessage(e);
+        const isStrongholdRequired = await strongholdAuth.checkAndHandle(message, () => {
           void openEditModal(env);
-        });
+        }, { title: ENV_CREDENTIAL_GUARD.title, description: ENV_CREDENTIAL_GUARD.description });
         if (!isStrongholdRequired) throw e;
       }
     } catch {
@@ -421,19 +381,12 @@ async function handleSavePassword() {
     editPasswordInput.value = "";
     editShowPasswordInput.value = false;
     editPasswordMsg.value = { type: "ok", text: "密码已保存到安全存储" };
-  } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : String(e);
-    const isStrongholdRequired = await handleEnvCredentialStrongholdLocked(message, () => {
-      void handleSavePassword();
+  } catch (e) {
+    const handled = await guardedAction.handleError(e, () => void handleSavePassword(), editPasswordMsg, {
+      ...ENV_CREDENTIAL_GUARD,
+      lockedText: "需要先解锁 Stronghold，解锁后会自动继续保存。",
     });
-    if (isStrongholdRequired) {
-      editPasswordMsg.value = {
-        type: "err",
-        text: "需要先解锁 Stronghold，解锁后会自动继续保存。",
-      };
-      return;
-    }
-    editPasswordMsg.value = { type: "err", text: message };
+    if (handled) return;
   } finally {
     editPasswordLoading.value = false;
   }
@@ -447,19 +400,12 @@ async function handleDeletePassword() {
     await credentialDelete(editTunnelId.value);
     editCredentialExists.value = false;
     editPasswordMsg.value = { type: "ok", text: "密码已清除" };
-  } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : String(e);
-    const isStrongholdRequired = await handleEnvCredentialStrongholdLocked(message, () => {
-      void handleDeletePassword();
+  } catch (e) {
+    const handled = await guardedAction.handleError(e, () => void handleDeletePassword(), editPasswordMsg, {
+      ...ENV_CREDENTIAL_GUARD,
+      lockedText: "需要先解锁 Stronghold，解锁后会自动继续清除。",
     });
-    if (isStrongholdRequired) {
-      editPasswordMsg.value = {
-        type: "err",
-        text: "需要先解锁 Stronghold，解锁后会自动继续清除。",
-      };
-      return;
-    }
-    editPasswordMsg.value = { type: "err", text: message };
+    if (handled) return;
   } finally {
     editPasswordLoading.value = false;
   }
@@ -503,8 +449,8 @@ async function doUpdate() {
     await envUpdate(payload);
     await loadList();
     closeEditModal();
-  } catch (e: unknown) {
-    editError.value = e instanceof Error ? e.message : String(e);
+  } catch (e) {
+    editError.value = extractErrorMessage(e);
   } finally {
     editLoading.value = false;
   }
@@ -562,8 +508,8 @@ async function saveStrategy() {
   try {
     setNodeTerminalStrategy(strategyEnv.value.id, strategyForm.value);
     closeStrategyModal();
-  } catch (e: unknown) {
-    strategyError.value = e instanceof Error ? e.message : String(e);
+  } catch (e) {
+    strategyError.value = extractErrorMessage(e);
   } finally {
     strategyLoading.value = false;
   }
@@ -631,22 +577,12 @@ async function handleSaveStrategyPassword() {
     };
     setNodeTerminalStrategy(strategyEnv.value.id, { hasSavedPassword: true });
     strategyPasswordMsg.value = { type: "ok", text: "切换用户密码已保存到当前凭证存储后端。" };
-  } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : String(e);
-    const isStrongholdRequired = await handleStrongholdLocked(message, () => {
-      void handleSaveStrategyPassword();
+  } catch (e) {
+    const handled = await guardedAction.handleError(e, () => void handleSaveStrategyPassword(), strategyPasswordMsg, {
+      ...STRATEGY_CREDENTIAL_GUARD,
+      lockedText: "需要先解锁 Stronghold，解锁后会自动继续保存。",
     });
-    if (isStrongholdRequired) {
-      strategyPasswordMsg.value = {
-        type: "err",
-        text: "需要先解锁 Stronghold，解锁后会自动继续保存。",
-      };
-      return;
-    }
-    strategyPasswordMsg.value = {
-      type: "err",
-      text: message,
-    };
+    if (handled) return;
   } finally {
     strategyPasswordLoading.value = false;
   }
@@ -667,22 +603,12 @@ async function handleDeleteStrategyPassword() {
     };
     setNodeTerminalStrategy(strategyEnv.value.id, { hasSavedPassword: false });
     strategyPasswordMsg.value = { type: "ok", text: "已清除切换用户密码。" };
-  } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : String(e);
-    const isStrongholdRequired = await handleStrongholdLocked(message, () => {
-      void handleDeleteStrategyPassword();
+  } catch (e) {
+    const handled = await guardedAction.handleError(e, () => void handleDeleteStrategyPassword(), strategyPasswordMsg, {
+      ...STRATEGY_CREDENTIAL_GUARD,
+      lockedText: "需要先解锁 Stronghold，解锁后会自动继续清除。",
     });
-    if (isStrongholdRequired) {
-      strategyPasswordMsg.value = {
-        type: "err",
-        text: "需要先解锁 Stronghold，解锁后会自动继续清除。",
-      };
-      return;
-    }
-    strategyPasswordMsg.value = {
-      type: "err",
-      text: message,
-    };
+    if (handled) return;
   } finally {
     strategyPasswordLoading.value = false;
   }
@@ -696,7 +622,7 @@ async function switchContext(env: Environment, contextName: string) {
     if (editingEnv.value?.id === env.id) {
       editingEnv.value = environments.value.find((e) => e.id === env.id) ?? editingEnv.value;
     }
-  } catch (e: unknown) {
+  } catch (e) {
     console.error(e);
   }
 }
@@ -706,7 +632,7 @@ async function removeEnv(id: string) {
     await storeRemoveEnv(id);
     await loadList();
     if (editingEnv.value?.id === id) closeEditModal();
-  } catch (e: unknown) {
+  } catch (e) {
     console.error(e);
   }
 }
