@@ -125,9 +125,6 @@ const editorOptions = {
 const manifestsByEnv = computed(() =>
   manifests.value.filter((m) => m.env_id === selectedEnvId.value)
 );
-const selectedEnvironment = computed(() =>
-  environments.value.find((env) => env.id === selectedEnvId.value) ?? null
-);
 
 const components = computed(() => {
   const names = new Set<string>();
@@ -902,21 +899,18 @@ function onViewHistory(item: ManifestHistoryItem) {
     <div v-if="activeView === 'resources'" class="body">
       <aside class="list">
         <div class="component-switcher">
-          <label class="env-select-card env-select-card-sidebar">
+          <div class="env-select-card env-select-card-sidebar">
             <span class="env-select-label">当前环境</span>
-            <div class="env-select-main">
+            <label class="env-select-main">
               <select v-model="selectedEnvId" class="select env-select">
                 <option value="" disabled>选择环境</option>
                 <option v-for="env in environments" :key="env.id" :value="env.id">
                   {{ env.display_name }}
                 </option>
               </select>
-              <div class="env-current-chip" :class="{ empty: !selectedEnvironment }">
-                <span class="env-current-dot" />
-                <span class="env-current-text">{{ selectedEnvironment?.display_name || "未选择环境" }}</span>
-              </div>
-            </div>
-          </label>
+              <span class="env-select-hint">已选择的环境即当前操作环境</span>
+            </label>
+          </div>
           <div v-if="!selectedEnvId" class="empty">请先选择环境</div>
           <template v-else>
             <div class="component-switcher-head">
@@ -1098,10 +1092,18 @@ function onViewHistory(item: ManifestHistoryItem) {
             <div class="meta-field">
               <span>当前所属组件</span>
               <strong class="meta-component-name">{{ selectedManifest.component }}</strong>
+              <button
+                type="button"
+                class="component-change-trigger"
+                aria-label="变更组件归属"
+                title="变更组件归属"
+                @click="openComponentAssignDialog"
+              >
+                更换
+              </button>
             </div>
           </div>
           <div class="meta-actions">
-            <button type="button" class="btn btn-move-component" @click="openComponentAssignDialog">变更组件</button>
             <button
               type="button"
               class="btn btn-diff"
@@ -1126,6 +1128,7 @@ function onViewHistory(item: ManifestHistoryItem) {
             >
               复制到其他环境
             </button>
+            <span class="btn-apply-sep" aria-hidden="true" />
             <button
               type="button"
               class="btn btn-primary"
