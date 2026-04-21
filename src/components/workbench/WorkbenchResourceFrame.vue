@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { NAlert, NButton, NSpin } from "naive-ui";
 import type { ConnectionProgressPayload } from "../../stores/connection";
 
 defineProps<{
@@ -20,24 +21,35 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <div v-if="currentId && envState === 'disconnected'" class="disconnect-banner">
-    <span class="disconnect-text">连接已断开</span>
-    <span class="disconnect-detail">{{ envError }}</span>
-    <button type="button" class="btn-reconnect" @click="emit('reconnect')">重连</button>
-  </div>
+  <NAlert v-if="currentId && envState === 'disconnected'" type="warning" class="state-alert" :show-icon="true">
+    <div class="alert-row">
+      <div>
+        <div class="disconnect-text">连接已断开</div>
+        <div class="disconnect-detail">{{ envError }}</div>
+      </div>
+      <NButton type="warning" secondary size="small" @click="emit('reconnect')">重连</NButton>
+    </div>
+  </NAlert>
   <div v-else-if="currentId && envState === 'connecting' && progress" class="connection-stepper">
-    <div class="stepper-title">连接中：{{ progress.stage_label }}</div>
+    <div class="stepper-title">
+      <NSpin size="small" />
+      <span>连接中：{{ progress.stage_label }}</span>
+    </div>
     <div v-if="progress.detail" class="stepper-detail">
       {{ progress.detail }}
     </div>
   </div>
-  <div v-else-if="listError" class="error-banner">
-    {{ listError }}
-    <button v-if="currentId && reconnectOnListError" type="button" class="btn-reconnect" @click="emit('reconnect')">
-      重连
-    </button>
-    <button type="button" class="error-dismiss" @click="emit('dismissError')">关闭</button>
-  </div>
+  <NAlert v-else-if="listError" type="error" class="state-alert" :show-icon="true">
+    <div class="alert-row">
+      <span class="error-message">{{ listError }}</span>
+      <div class="alert-actions">
+        <NButton v-if="currentId && reconnectOnListError" type="error" secondary size="small" @click="emit('reconnect')">
+          重连
+        </NButton>
+        <NButton size="small" quaternary @click="emit('dismissError')">关闭</NButton>
+      </div>
+    </div>
+  </NAlert>
   <div v-else-if="listLoading" class="loading-state">
     <div class="loading-state-title">
       {{ envSwitching ? `正在切换到 ${envSwitchingName || "目标环境"}` : "加载中…" }}
@@ -50,39 +62,31 @@ const emit = defineEmits<{
 </template>
 
 <style scoped>
-.disconnect-banner {
-  padding: 0.75rem 1rem;
-  background: #fef3c7;
-  color: #b45309;
-  border-bottom: 1px solid #fde68a;
+.state-alert {
+  border-radius: 0;
+  border-left: none;
+  border-right: none;
+}
+.alert-row {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.9rem;
+}
+.alert-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.error-message {
+  min-width: 0;
 }
 .disconnect-text {
   font-weight: 500;
 }
 .disconnect-detail {
-  flex: 1;
-  min-width: 0;
   font-size: 0.875rem;
-  opacity: 0.9;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.btn-reconnect {
-  flex-shrink: 0;
-  padding: 0.25rem 0.75rem;
-  background: #b45309;
-  color: #fff;
-  border: none;
-  border-radius: 4px;
-  font-size: 0.875rem;
-  cursor: pointer;
-}
-.btn-reconnect:hover {
-  background: #92400e;
+  opacity: 0.92;
 }
 .connection-stepper {
   padding: 0.75rem 1rem;
@@ -92,36 +96,15 @@ const emit = defineEmits<{
   font-size: 0.875rem;
 }
 .stepper-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
   font-weight: 500;
 }
 .stepper-detail {
   margin-top: 0.25rem;
   font-size: 0.8125rem;
   opacity: 0.9;
-}
-.error-banner {
-  padding: 0.75rem 1rem;
-  background: #fef2f2;
-  color: #dc2626;
-  font-size: 0.875rem;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  border-bottom: 1px solid #fecaca;
-}
-.error-dismiss {
-  flex-shrink: 0;
-  padding: 0.25rem 0.5rem;
-  border: 1px solid #fca5a5;
-  border-radius: 4px;
-  background: #fff;
-  color: #dc2626;
-  font-size: 0.8125rem;
-  cursor: pointer;
-}
-.error-dismiss:hover {
-  background: #fef2f2;
 }
 .loading-state {
   padding: 2rem 1.5rem;

@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
+import { NButton, NInput, NRadio, NRadioGroup, NSelect } from "naive-ui";
+import BaseModal from "../base/BaseModal.vue";
 import {
   WORKBENCH_POD_DEBUG_NAMESPACE_OPTIONS,
 } from "../../features/workbench";
@@ -82,11 +84,11 @@ const isConfirmDisabled = () =>
   !selectedContainer.value ||
   !!displayError() ||
   (processMode.value === "pid" && !pidInput.value.trim());
+const containerSelectOptions = () => props.containerOptions.map((name) => ({ label: name, value: name }));
 </script>
 
 <template>
-  <Teleport to="body">
-    <div v-if="visible" class="error-modal-overlay" @click.self="emit('close')">
+  <BaseModal :visible="visible" title="进入容器调试环境" width="760px" @close="emit('close')">
       <div class="pod-debug-modal" role="dialog" aria-label="进入容器调试环境">
         <h3 class="sync-orchestrator-title">进入容器调试环境</h3>
         <p class="sync-orchestrator-desc">
@@ -95,35 +97,24 @@ const isConfirmDisabled = () =>
         <div class="pod-debug-grid">
           <label class="sync-field">
             <span>容器</span>
-            <select v-model="selectedContainer" class="filter-input pod-debug-input" :disabled="loading || !containerOptions.length">
-              <option value="" disabled>选择容器</option>
-              <option v-for="name in containerOptions" :key="name" :value="name">
-                {{ name }}
-              </option>
-            </select>
+            <NSelect
+              v-model:value="selectedContainer"
+              class="filter-input pod-debug-input"
+              :disabled="loading || !containerOptions.length"
+              :options="containerSelectOptions()"
+              placeholder="选择容器"
+            />
           </label>
           <div class="sync-field">
             <span>进程目标</span>
-            <div class="pod-debug-radio-row">
-              <label class="pod-debug-radio">
-                <input v-model="processMode" type="radio" value="main" />
-                <span>容器主进程</span>
-              </label>
-              <label class="pod-debug-radio">
-                <input v-model="processMode" type="radio" value="pid" />
-                <span>指定 PID</span>
-              </label>
-            </div>
+            <NRadioGroup v-model:value="processMode" class="pod-debug-radio-row" name="pod-debug-mode">
+              <NRadio value="main">容器主进程</NRadio>
+              <NRadio value="pid">指定 PID</NRadio>
+            </NRadioGroup>
           </div>
           <label v-if="processMode === 'pid'" class="sync-field">
             <span>PID</span>
-            <input
-              v-model="pidInput"
-              type="text"
-              class="filter-input pod-debug-input"
-              inputmode="numeric"
-              placeholder="输入目标进程 PID"
-            />
+            <NInput v-model:value="pidInput" type="text" class="filter-input pod-debug-input" inputmode="numeric" placeholder="输入目标进程 PID" />
           </label>
         </div>
         <div class="pod-debug-section">
@@ -155,18 +146,12 @@ const isConfirmDisabled = () =>
           当前组合：{{ namespaces.join(" + ") }}，{{ processMode === "main" ? "默认进入容器主进程" : `按指定 PID ${pidInput || "..." } 进入` }}。
         </p>
         <p v-if="displayError()" class="form-error">{{ displayError() }}</p>
-        <div class="pod-debug-actions">
-          <button type="button" class="btn-secondary-outline pod-debug-cancel-btn" @click="emit('close')">取消</button>
-          <button
-            type="button"
-            class="btn-primary pod-debug-primary-btn"
-            :disabled="isConfirmDisabled()"
-            @click="onConfirm"
-          >
-            进入调试终端
-          </button>
-        </div>
       </div>
-    </div>
-  </Teleport>
+    <template #footer>
+      <NButton secondary class="pod-debug-cancel-btn" @click="emit('close')">取消</NButton>
+      <NButton type="primary" class="pod-debug-primary-btn" :disabled="isConfirmDisabled()" @click="onConfirm">
+            进入调试终端
+      </NButton>
+    </template>
+  </BaseModal>
 </template>

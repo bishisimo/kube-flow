@@ -21,9 +21,9 @@
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
-  color: #64748b;
+  color: var(--kf-text-secondary);
   font-size: 0.875rem;
-  background: #f8fafc;
+  background: var(--kf-bg-soft);
 }
 .empty-state p {
   margin: 0;
@@ -35,10 +35,10 @@
 .empty-title {
   margin: 0;
   font-size: 0.95rem;
-  color: #334155;
+  color: var(--kf-text-primary);
   font-weight: 600;
 }
 .empty-desc {
   font-size: 0.8125rem;
-  color: #94a3b8;
+  color: var(--kf-text-secondary);
 }

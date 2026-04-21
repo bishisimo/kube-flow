@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from "vue";
+import { NButton, NInput, NSelect } from "naive-ui";
 import type { ResourceKind } from "../../constants/resourceKinds";
 import type { NamespaceItem, ResolvedAliasTarget } from "../../api/kube";
 import { resourceSupportsWatch } from "../../resources/resourceRegistry";
@@ -71,6 +72,7 @@ const nsDropdownRef = ref<HTMLElement | null>(null);
 const kindDropdownRef = ref<HTMLElement | null>(null);
 const nsMenuRef = ref<HTMLElement | null>(null);
 const kindMenuRef = ref<HTMLElement | null>(null);
+const nodeFilterOptions = [{ label: "Node: All", value: "all" }];
 
 function onKindTriggerClick() {
   kindDropdownOpen.value = !kindDropdownOpen.value;
@@ -325,87 +327,95 @@ defineExpose({
           </div>
         </div>
         <div class="toolbar-actions">
-          <button
+          <NButton
             v-if="currentId && resourceSupportsWatch(selectedKind) && !selectedCustomTarget"
-            type="button"
             class="btn-watch"
             :class="{ active: watchEnabled }"
-            :title="watchEnabled ? '关闭 Watch 实时更新' : '开启 Watch 实时更新'"
+            quaternary
+            round
+            size="small"
             @click="watchEnabled = !watchEnabled"
           >
             {{ watchEnabled ? "Watch 开" : "Watch" }}
-          </button>
-          <button type="button" class="btn-refresh" :disabled="listLoading" @click="emit('refresh')">
+          </NButton>
+          <NButton class="btn-refresh" type="primary" strong secondary size="small" :loading="listLoading" @click="emit('refresh')">
             {{ listLoading ? "刷新中…" : "刷新" }}
-          </button>
+          </NButton>
           <template v-if="showBatchToolbar">
-            <button v-if="!batchDeleteMode" type="button" class="btn-secondary-outline" @click="emit('enter-batch-delete')">
+            <NButton v-if="!batchDeleteMode" class="btn-secondary-outline" secondary size="small" @click="emit('enter-batch-delete')">
               批量删除
-            </button>
+            </NButton>
             <template v-else>
-              <button type="button" class="btn-secondary-outline" @click="emit('exit-batch-delete')">取消</button>
-              <button
-                type="button"
+              <NButton class="btn-secondary-outline" secondary size="small" @click="emit('exit-batch-delete')">取消</NButton>
+              <NButton
                 class="btn-danger-outline"
+                type="error"
+                secondary
+                size="small"
                 :disabled="selectedRowCount === 0"
                 @click="emit('open-batch-delete-confirm')"
               >
                 删除选中 ({{ selectedRowCount }})
-              </button>
+              </NButton>
             </template>
           </template>
         </div>
       </div>
       <div v-if="currentId" class="toolbar-filters">
         <div class="toolbar-filters-primary">
-          <input
-            v-model="nameFilter"
-            type="text"
+          <NInput
+            v-model:value="nameFilter"
             class="filter-input"
             placeholder="按名称筛选…"
-            autocomplete="off"
             title="按名称包含匹配（前端过滤）"
+            clearable
+            size="small"
           />
-          <input
-            v-model="labelSelector"
-            type="text"
+          <NInput
+            v-model:value="labelSelector"
             class="filter-input filter-input-label"
             placeholder="Label 筛选，如 app=nginx"
-            autocomplete="off"
             title="K8s label selector，如 app=nginx 或 env in (prod,staging)"
+            clearable
+            size="small"
             @keyup.enter="emit('apply-label-filter')"
           />
         </div>
         <div v-if="selectedKindForIp === 'pods' || selectedKindForIp === 'services'" class="toolbar-filters-secondary">
-          <select v-if="selectedKindForIp === 'pods'" v-model="nodeFilter" class="filter-input" title="按 Node 选项筛选">
-            <option value="all">Node: All</option>
-            <option v-for="node in podNodeOptions" :key="node" :value="node">Node: {{ node }}</option>
-          </select>
-          <input
+          <NSelect
+            v-if="selectedKindForIp === 'pods'"
+            v-model:value="nodeFilter"
+            class="filter-input node-select"
+            :options="[...nodeFilterOptions, ...podNodeOptions.map((node) => ({ label: `Node: ${node}`, value: node }))]"
+            size="small"
+            title="按 Node 选项筛选"
+          />
+          <NInput
             v-if="supportsIpFilter"
-            v-model="podIpFilter"
-            type="text"
+            v-model:value="podIpFilter"
             class="filter-input"
             :placeholder="ipFilterPlaceholder"
-            autocomplete="off"
             :title="ipFilterTitle"
+            clearable
+            size="small"
           />
         </div>
       </div>
       <div v-if="activeFilterChips.length" class="filter-chip-bar">
         <span class="filter-chip-label">已启用筛选</span>
-        <button
+        <NButton
           v-for="chip in activeFilterChips"
           :key="chip.id"
-          type="button"
           class="filter-chip"
           :title="`点击移除 ${chip.label} 筛选`"
+          quaternary
+          size="tiny"
           @click="emit('clear-filter-chip', chip.id)"
         >
           {{ chip.label }}: {{ chip.value }}
           <span class="filter-chip-close" aria-hidden="true">×</span>
-        </button>
-        <button type="button" class="filter-chip-clear-all" @click="emit('clear-all-filters')">清除全部</button>
+        </NButton>
+        <NButton text type="primary" class="filter-chip-clear-all" @click="emit('clear-all-filters')">清除全部</NButton>
       </div>
     </div>
   </header>
@@ -422,11 +432,13 @@ defineExpose({
 .toolbar-card {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  padding: 0.65rem 0.75rem;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  background: #fff;
+  gap: 0.65rem;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.08);
 }
 .toolbar-main {
   display: flex;
@@ -667,20 +679,15 @@ defineExpose({
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
 .filter-input {
-  padding: 0.35rem 0.6rem;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  font-size: 0.8125rem;
   min-width: 120px;
-  max-width: 160px;
-}
-.filter-input:focus {
-  outline: none;
-  border-color: #2563eb;
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+  max-width: 190px;
 }
 .filter-input-label {
-  min-width: 160px;
+  min-width: 220px;
+  max-width: 300px;
+}
+.node-select {
+  min-width: 180px;
   max-width: 220px;
 }
 .combobox-item {
@@ -838,64 +845,13 @@ defineExpose({
 .toolbar-cr-hint.err {
   color: #b91c1c;
 }
-.btn-refresh {
-  padding: 0.35rem 0.75rem;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  background: #fff;
-  font-size: 0.8125rem;
-  cursor: pointer;
-}
-.btn-refresh:hover:not(:disabled) {
-  background: #f8fafc;
-}
-.btn-refresh:disabled {
-  opacity: 0.7;
-  cursor: not-allowed;
-}
 .btn-secondary-outline {
-  padding: 0.35rem 0.75rem;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  background: #fff;
-  color: #475569;
-  font-size: 0.8125rem;
-  cursor: pointer;
-}
-.btn-secondary-outline:hover {
-  background: #f8fafc;
 }
 .btn-danger-outline {
-  padding: 0.35rem 0.75rem;
-  border: 1px solid #dc2626;
-  border-radius: 6px;
-  background: #fff;
-  color: #dc2626;
-  font-size: 0.8125rem;
-  cursor: pointer;
-}
-.btn-danger-outline:hover {
-  background: #fef2f2;
-}
-.btn-danger-outline:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 .btn-watch {
-  padding: 0.35rem 0.75rem;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  background: #fff;
-  font-size: 0.8125rem;
-  cursor: pointer;
-  color: #64748b;
-}
-.btn-watch:hover {
-  background: #f8fafc;
 }
 .btn-watch.active {
-  border-color: #22c55e;
-  background: rgba(34, 197, 94, 0.08);
   color: #16a34a;
 }
 .filter-chip-bar {
@@ -912,16 +868,8 @@ defineExpose({
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
-  border: 1px solid #bfdbfe;
   border-radius: 999px;
-  padding: 0.2rem 0.55rem;
-  font-size: 0.75rem;
   color: #1d4ed8;
-  background: #eff6ff;
-  cursor: pointer;
-}
-.filter-chip:hover {
-  background: #dbeafe;
 }
 .filter-chip-close {
   opacity: 0.75;

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { NButton } from "naive-ui";
 import type { ResourceKind } from "../../constants/resourceKinds";
 defineProps<{
   drillFrom: { kind: string; name: string; namespace: string | null } | null;
@@ -20,28 +21,30 @@ const emit = defineEmits<{
     <span class="breadcrumb-kicker">当前位置</span>
     <div class="breadcrumb-trail">
       <template v-if="drillFrom">
-        <button
-          type="button"
+        <NButton
+          quaternary
+          size="small"
           class="breadcrumb-seg"
           :title="drillFrom.namespace || '全部'"
           @click="emit('drill-namespace')"
         >
           {{ drillFrom.namespace || "全部" }}
-        </button>
+        </NButton>
         <span class="breadcrumb-sep">›</span>
-        <button type="button" class="breadcrumb-seg" :title="drillFrom.kind" @click="emit('breadcrumb-kind')">
+        <NButton quaternary size="small" class="breadcrumb-seg" :title="drillFrom.kind" @click="emit('breadcrumb-kind')">
           {{ drillFrom.kind }}
-        </button>
+        </NButton>
         <span class="breadcrumb-sep">›</span>
-        <button
+        <NButton
           v-if="(apiKindToId[drillFrom.kind] ?? 'services') !== selectedKind"
-          type="button"
+          quaternary
+          size="small"
           class="breadcrumb-seg"
           :title="drillFrom.name"
           @click="emit('breadcrumb-resource')"
         >
           {{ drillFrom.name }}
-        </button>
+        </NButton>
         <template v-if="(apiKindToId[drillFrom.kind] ?? 'services') !== selectedKind">
           <span class="breadcrumb-sep">›</span>
           <span class="breadcrumb-seg breadcrumb-current" :title="workbenchKindLabel">{{ workbenchKindLabel }}</span>
@@ -101,11 +104,9 @@ const emit = defineEmits<{
   max-width: 260px;
   background: rgba(255, 255, 255, 0.9);
   border: 1px solid rgba(203, 213, 225, 0.9);
-  padding: 0.28rem 0.55rem;
+  padding: 0.18rem 0.48rem;
   border-radius: 999px;
-  cursor: pointer;
   color: inherit;
-  font: inherit;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

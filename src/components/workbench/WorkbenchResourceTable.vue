@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { computed } from "vue";
+import { NButton, NCheckbox } from "naive-ui";
 import type { ResourceKind } from "../../constants/resourceKinds";
 import { WORKBENCH_SORTABLE_KEYS } from "../../features/workbench";
 
@@ -6,7 +8,7 @@ type TableColumn = { key: string; label: string };
 
 type PodRollupBadge = { key: string; tone: string; value: string | number };
 
-defineProps<{
+const props = defineProps<{
   tableRows: Record<string, unknown>[];
   tableColumns: TableColumn[];
   batchDeleteMode: boolean;
@@ -45,6 +47,14 @@ defineProps<{
   selectAllNamespaces: () => void;
   openKindSelector: () => void;
 }>();
+
+const allRowsSelected = computed(
+  () => props.tableRows.length > 0 && props.tableRows.every((r) => props.selectedRowKeys.has(props.getRowKey(r)))
+);
+
+const someRowsSelected = computed(
+  () => props.selectedRowKeys.size > 0 && props.selectedRowKeys.size < props.tableRows.length
+);
 </script>
 
 <template>
@@ -53,11 +63,10 @@ defineProps<{
       <thead>
         <tr>
           <th v-if="batchDeleteMode" class="col-checkbox">
-            <input
-              type="checkbox"
-              :checked="tableRows.length > 0 && tableRows.every((r) => selectedRowKeys.has(getRowKey(r)))"
-              :indeterminate="selectedRowKeys.size > 0 && selectedRowKeys.size < tableRows.length"
-              @change="toggleSelectAll"
+            <NCheckbox
+              :checked="allRowsSelected"
+              :indeterminate="someRowsSelected"
+              @update:checked="toggleSelectAll"
             />
           </th>
           <th
@@ -84,7 +93,7 @@ defineProps<{
           @dblclick="selectedKind === 'namespaces' && row.name && onNamespaceRowDblClick(String(row.name))"
         >
           <td v-if="batchDeleteMode" class="col-checkbox" @click.stop>
-            <input type="checkbox" :checked="selectedRowKeys.has(getRowKey(row))" @change="toggleRowSelection(row)" />
+            <NCheckbox :checked="selectedRowKeys.has(getRowKey(row))" @update:checked="toggleRowSelection(row)" />
           </td>
           <td
             v-for="col in tableColumns"
@@ -163,16 +172,16 @@ defineProps<{
       <p class="empty-title">暂无资源</p>
       <p class="empty-desc">可尝试调整命名空间、资源类型或筛选条件。</p>
       <div class="empty-actions">
-        <button type="button" class="btn-secondary-outline" @click="clearAllFilters">清空筛选</button>
-        <button
+        <NButton secondary size="small" @click="clearAllFilters">清空筛选</NButton>
+        <NButton
           v-if="!nsSelectionDisabled && selectedNamespace !== null"
-          type="button"
-          class="btn-secondary-outline"
+          secondary
+          size="small"
           @click="selectAllNamespaces"
         >
           切回默认命名空间
-        </button>
-        <button type="button" class="btn-secondary-outline" @click="openKindSelector">切换资源类型</button>
+        </NButton>
+        <NButton secondary size="small" @click="openKindSelector">切换资源类型</NButton>
       </div>
     </div>
   </div>
@@ -183,15 +192,16 @@ defineProps<{
   flex: 1;
   overflow: auto;
   padding: 0.9rem 1rem 1rem;
-  background: #f8fafc;
+  background: linear-gradient(180deg, #f7faff 0%, #f3f7fc 100%);
 }
 .resource-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.8125rem;
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 14px;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
   overflow: hidden;
 }
 .resource-table th.col-checkbox,
@@ -214,7 +224,7 @@ defineProps<{
 .resource-table th {
   font-weight: 600;
   color: #475569;
-  background: #f8fafc;
+  background: linear-gradient(180deg, #f8fbff 0%, #f2f6fc 100%);
   position: sticky;
   top: 0;
   z-index: 1;
@@ -240,10 +250,10 @@ defineProps<{
   background: #fff;
 }
 .resource-table tbody tr.row-clickable:hover {
-  background: #f7faff;
+  background: #f3f8ff;
 }
 .resource-table tbody tr.row-clickable.row-selected {
-  background: #ecf4ff;
+  background: #eaf3ff;
   box-shadow: inset 3px 0 0 #2563eb;
 }
 .resource-table td.cell-drillable {
@@ -402,11 +412,12 @@ defineProps<{
 }
 .empty-table {
   margin: 1rem 0 0;
-  border: 1px dashed #cbd5e1;
-  border-radius: 10px;
-  background: #fff;
+  border: 1px dashed #bfcee3;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.88);
   padding: 1.25rem 1rem;
   text-align: center;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 .empty-actions {
   margin-top: 0.8rem;
@@ -429,17 +440,5 @@ defineProps<{
 .empty-desc {
   font-size: 0.8125rem;
   color: #94a3b8;
-}
-.btn-secondary-outline {
-  padding: 0.35rem 0.75rem;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  background: #fff;
-  color: #475569;
-  font-size: 0.8125rem;
-  cursor: pointer;
-}
-.btn-secondary-outline:hover {
-  background: #f8fafc;
 }
 </style>

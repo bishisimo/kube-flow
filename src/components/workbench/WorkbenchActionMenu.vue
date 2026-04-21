@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from "vue";
+import { NButton } from "naive-ui";
 import {
   WORKBENCH_SHELL_WORKLOAD_KINDS,
   WORKBENCH_NODE_TERMINAL_RESOURCE_KINDS,
@@ -60,23 +61,24 @@ const emit = defineEmits<{
       >
         <div class="action-menu-section">
           <div class="action-menu-section-title">查看与导航</div>
-          <button type="button" class="action-menu-item" @click="emit('openDetail')">
+          <NButton type="default" quaternary class="action-menu-item" @click="emit('openDetail')">
             <span class="action-menu-icon" aria-hidden="true">📄</span>
             <span class="action-menu-text">
               <span class="action-menu-main">查看详情</span>
               <span class="action-menu-sub">打开 YAML、Describe 与编辑面板</span>
             </span>
-          </button>
-          <button type="button" class="action-menu-item" @click="emit('openTopology')">
+          </NButton>
+          <NButton type="default" quaternary class="action-menu-item" @click="emit('openTopology')">
             <span class="action-menu-icon" aria-hidden="true">🧭</span>
             <span class="action-menu-text">
               <span class="action-menu-main">关联资源</span>
               <span class="action-menu-sub">查看上下游资源拓扑并快速跳转</span>
             </span>
-          </button>
-          <button
+          </NButton>
+          <NButton
             v-if="selectedResource && ['Pod', 'Deployment', 'StatefulSet', 'DaemonSet'].includes(selectedResource.kind)"
-            type="button"
+            type="default"
+            quaternary
             class="action-menu-item"
             @click="emit('openPodLogs')"
           >
@@ -85,10 +87,11 @@ const emit = defineEmits<{
               <span class="action-menu-main">打开日志中心</span>
               <span class="action-menu-sub">集中查看 Pod 或工作负载日志</span>
             </span>
-          </button>
-          <button
+          </NButton>
+          <NButton
             v-if="selectedResource && WORKBENCH_SHELL_WORKLOAD_KINDS.has(selectedResource.kind)"
-            type="button"
+            type="default"
+            quaternary
             class="action-menu-item"
             @click="emit('openPodShell')"
           >
@@ -97,10 +100,11 @@ const emit = defineEmits<{
               <span class="action-menu-main">打开 Shell</span>
               <span class="action-menu-sub">进入容器执行命令与排障</span>
             </span>
-          </button>
-          <button
+          </NButton>
+          <NButton
             v-if="selectedResource && WORKBENCH_NODE_TERMINAL_RESOURCE_KINDS.has(selectedResource.kind)"
-            type="button"
+            type="default"
+            quaternary
             class="action-menu-item"
             :class="{ 'action-menu-item-disabled': !canOpenNodeTerminal }"
             :disabled="!canOpenNodeTerminal"
@@ -112,10 +116,11 @@ const emit = defineEmits<{
               <span class="action-menu-main">{{ nodeTerminalMenuLabel }}</span>
               <span class="action-menu-sub">通过环境入口快速切换到目标节点主机</span>
             </span>
-          </button>
-          <button
+          </NButton>
+          <NButton
             v-if="selectedResource?.kind === 'Pod'"
-            type="button"
+            type="default"
+            quaternary
             class="action-menu-item"
             :class="{ 'action-menu-item-disabled': !canOpenPodDebug }"
             :disabled="!canOpenPodDebug"
@@ -127,13 +132,14 @@ const emit = defineEmits<{
               <span class="action-menu-main">进入容器调试环境</span>
               <span class="action-menu-sub">通过 nsenter 进入目标容器的网络或完整隔离空间</span>
             </span>
-          </button>
+          </NButton>
         </div>
         <div class="action-menu-section">
           <div class="action-menu-section-title">编辑与变更</div>
-          <button
+          <NButton
             v-if="selectedResource && (selectedResource.kind === 'ConfigMap' || selectedResource.kind === 'Secret')"
-            type="button"
+            type="default"
+            quaternary
             class="action-menu-item"
             @click="emit('openEditConfig')"
           >
@@ -142,10 +148,11 @@ const emit = defineEmits<{
               <span class="action-menu-main">修改配置</span>
               <span class="action-menu-sub">编辑 ConfigMap / Secret 内容</span>
             </span>
-          </button>
-          <button
+          </NButton>
+          <NButton
             v-if="selectedResource && WORKBENCH_IMAGE_PATCH_KINDS.has(selectedResource.kind)"
-            type="button"
+            type="default"
+            quaternary
             class="action-menu-item"
             @click="emit('openChangeImage')"
           >
@@ -154,19 +161,20 @@ const emit = defineEmits<{
               <span class="action-menu-main">修改镜像</span>
               <span class="action-menu-sub">更新工作负载容器镜像版本</span>
             </span>
-          </button>
-          <button type="button" class="action-menu-item" @click="emit('openSyncOrchestrator')">
+          </NButton>
+          <NButton type="default" quaternary class="action-menu-item" @click="emit('openSyncOrchestrator')">
             <span class="action-menu-icon" aria-hidden="true">🧱</span>
             <span class="action-menu-text">
               <span class="action-menu-main">编排中心</span>
               <span class="action-menu-sub">同步到编排中心并统一维护 YAML</span>
             </span>
-          </button>
+          </NButton>
         </div>
         <div class="action-menu-section action-menu-section-danger">
           <div class="action-menu-section-title">危险操作</div>
-          <button
-            type="button"
+          <NButton
+            type="error"
+            quaternary
             class="action-menu-item action-menu-item-danger"
             :class="{ 'action-menu-item-danger-armed': deleteActionArmed }"
             @click="emit('handleDelete')"
@@ -184,7 +192,7 @@ const emit = defineEmits<{
                 }}
               </span>
             </span>
-          </button>
+          </NButton>
         </div>
       </div>
     </div>
@@ -204,10 +212,11 @@ const emit = defineEmits<{
   max-width: calc(100vw - 20px);
   max-height: calc(100vh - 20px);
   padding: 0.5rem 0;
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.18);
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 14px;
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.2);
+  backdrop-filter: blur(6px);
   overflow: auto;
   overscroll-behavior: contain;
 }
@@ -232,14 +241,11 @@ const emit = defineEmits<{
   align-items: flex-start;
   gap: 0.5rem;
   width: 100%;
-  padding: 0.45rem 0.75rem;
-  border: none;
-  background: none;
+  padding: 0.5rem 0.75rem;
   font-size: 0.8125rem;
   text-align: left;
   color: #334155;
-  cursor: pointer;
-  border-radius: 4px;
+  border-radius: 8px;
 }
 .action-menu-icon {
   width: 1rem;
@@ -267,7 +273,6 @@ const emit = defineEmits<{
   color: #64748b;
 }
 .action-menu-item:hover {
-  background: #f1f5f9;
   color: #2563eb;
 }
 .action-menu-item-disabled {
