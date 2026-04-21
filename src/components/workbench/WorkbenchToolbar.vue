@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { NButton, NInput, NSelect } from "naive-ui";
+import { NButton, NInput, NPopover, NSelect } from "naive-ui";
 import type { ResourceKind } from "../../constants/resourceKinds";
 import type { NamespaceItem, ResolvedAliasTarget } from "../../api/kube";
 import { resourceSupportsWatch } from "../../resources/resourceRegistry";
@@ -94,39 +94,50 @@ defineExpose({
   <header class="toolbar">
     <div class="toolbar-card">
       <div class="toolbar-main">
-        <div v-if="currentEnv" class="active-env-banner">
-          <div class="active-env-copy">
-            <div class="active-env-name-row">
-              <span class="active-env-kicker">当前环境</span>
-              <span class="env-name">{{ currentEnv.display_name }}</span>
-              <span class="active-env-state" :class="`active-env-state-${envConnectionState}`">
-                {{ currentEnvStateLabel }}
-              </span>
-            </div>
-            <div class="active-env-meta-row">
-              <span class="active-env-chip">{{ currentEnvSourceLabel }}</span>
-              <span v-if="shouldShowCurrentEnvContext" class="active-env-chip subtle">
-                Context: {{ currentEnvContextLabel }}
-              </span>
+        <div v-if="currentEnv" class="toolbar-cluster toolbar-cluster-scope">
+          <div class="active-env-banner">
+            <div class="active-env-copy">
+              <div class="active-env-name-row">
+                <span class="env-name">{{ currentEnv.display_name }}</span>
+                <span class="active-env-state" :class="`active-env-state-${envConnectionState}`">
+                  {{ currentEnvStateLabel }}
+                </span>
+              </div>
+              <div class="active-env-meta-row">
+                <span class="active-env-chip">{{ currentEnvSourceLabel }}</span>
+                <span v-if="shouldShowCurrentEnvContext" class="active-env-chip subtle">
+                  Context: {{ currentEnvContextLabel }}
+                </span>
+              </div>
             </div>
           </div>
         </div>
-        <div v-if="currentId" ref="nsDropdownRef" class="combobox-wrap">
-          <button
-            type="button"
-            class="combobox-trigger"
-            :class="{ open: nsDropdownOpen, disabled: nsSelectionDisabled, 'combobox-trigger-strong': true }"
-            :disabled="nsSelectionDisabled"
-            :title="nsSelectionDisabled ? '当前资源为集群级，命名空间不生效' : '命名空间：输入筛选后选择'"
-            @click="emit('toggle-namespace')"
-          >
-            <span class="combobox-trigger-main">
-              <span class="combobox-label">命名空间</span>
-              <span class="combobox-value">{{ nsSelectionDisabled ? "集群级资源" : effectiveNamespace }}</span>
-            </span>
-            <span class="combobox-arrow">▼</span>
-          </button>
-          <div v-show="nsDropdownOpen" ref="nsMenuRef" class="combobox-menu">
+        <NPopover
+          v-if="currentId"
+          ref="nsDropdownRef"
+          class="combobox-wrap"
+          trigger="click"
+          placement="bottom-start"
+          :show-arrow="false"
+          :show="nsDropdownOpen"
+          @update:show="(v) => (nsDropdownOpen = v)"
+        >
+          <template #trigger>
+            <button
+              type="button"
+              class="combobox-trigger"
+              :class="{ open: nsDropdownOpen, 'combobox-trigger-strong': true }"
+              title="命名空间：输入筛选后选择"
+              @click="emit('toggle-namespace')"
+            >
+              <span class="combobox-trigger-main">
+                <span class="combobox-label">命名空间</span>
+                <span class="combobox-value">{{ effectiveNamespace }}</span>
+              </span>
+              <span class="combobox-arrow">▼</span>
+            </button>
+          </template>
+          <div ref="nsMenuRef" class="combobox-menu">
             <div class="combobox-panel-head">
               <div class="combobox-panel-title">选择命名空间</div>
               <div class="combobox-panel-subtitle">当前资源范围会基于这里切换</div>
@@ -158,7 +169,7 @@ defineExpose({
                 v-for="n in namespaceFavorites"
                 :key="`fav-${n.name}`"
                 type="button"
-                class="combobox-item combobox-item-with-action"
+                class="combobox-item combobox-item-with-action combobox-item-favorite"
                 :class="{ active: selectedNamespace === n.name }"
                 @click="emit('select-namespace', n.name)"
               >
@@ -180,7 +191,7 @@ defineExpose({
                 v-for="n in namespaceRecent"
                 :key="`recent-${n.name}`"
                 type="button"
-                class="combobox-item combobox-item-with-action"
+                class="combobox-item combobox-item-with-action combobox-item-recent"
                 :class="{ active: selectedNamespace === n.name }"
                 @click="emit('select-namespace', n.name)"
               >
@@ -226,22 +237,32 @@ defineExpose({
               </span>
             </button>
           </div>
-        </div>
-        <div ref="kindDropdownRef" class="combobox-wrap">
-          <button
-            type="button"
-            class="combobox-trigger"
-            :class="{ open: kindDropdownOpen, 'combobox-trigger-strong': true }"
-            title="资源类型：输入筛选后选择"
-            @click="onKindTriggerClick"
-          >
-            <span class="combobox-trigger-main">
-              <span class="combobox-label">资源类型</span>
-              <span class="combobox-value">{{ workbenchKindLabel }}</span>
-            </span>
-            <span class="combobox-arrow">▼</span>
-          </button>
-          <div v-show="kindDropdownOpen" ref="kindMenuRef" class="combobox-menu combobox-menu-grouped">
+        </NPopover>
+        <NPopover
+          ref="kindDropdownRef"
+          class="combobox-wrap"
+          trigger="click"
+          placement="bottom-start"
+          :show-arrow="false"
+          :show="kindDropdownOpen"
+          @update:show="(v) => (kindDropdownOpen = v)"
+        >
+          <template #trigger>
+            <button
+              type="button"
+              class="combobox-trigger"
+              :class="{ open: kindDropdownOpen, 'combobox-trigger-strong': true }"
+              title="资源类型：输入筛选后选择"
+              @click="onKindTriggerClick"
+            >
+              <span class="combobox-trigger-main">
+                <span class="combobox-label">资源类型</span>
+                <span class="combobox-value">{{ workbenchKindLabel }}</span>
+              </span>
+              <span class="combobox-arrow">▼</span>
+            </button>
+          </template>
+          <div ref="kindMenuRef" class="combobox-menu combobox-menu-grouped">
             <div class="combobox-panel-head">
               <div class="combobox-panel-title">选择资源类型</div>
               <div class="combobox-panel-subtitle">内置资源按分组浏览；CRD 在下方专区搜索后选择</div>
@@ -325,18 +346,20 @@ defineExpose({
               </button>
             </template>
           </div>
-        </div>
+        </NPopover>
+        <span class="toolbar-vsep" aria-hidden="true" />
         <div class="toolbar-actions">
           <NButton
             v-if="currentId && resourceSupportsWatch(selectedKind) && !selectedCustomTarget"
             class="btn-watch"
             :class="{ active: watchEnabled }"
-            quaternary
+            secondary
             round
             size="small"
             @click="watchEnabled = !watchEnabled"
           >
-            {{ watchEnabled ? "Watch 开" : "Watch" }}
+            <span class="watch-dot" aria-hidden="true" />
+            {{ watchEnabled ? "实时更新已开启" : "开启实时更新" }}
           </NButton>
           <NButton class="btn-refresh" type="primary" strong secondary size="small" :loading="listLoading" @click="emit('refresh')">
             {{ listLoading ? "刷新中…" : "刷新" }}
@@ -361,44 +384,46 @@ defineExpose({
           </template>
         </div>
       </div>
-      <div v-if="currentId" class="toolbar-filters">
-        <div class="toolbar-filters-primary">
-          <NInput
-            v-model:value="nameFilter"
-            class="filter-input"
-            placeholder="按名称筛选…"
-            title="按名称包含匹配（前端过滤）"
-            clearable
-            size="small"
-          />
-          <NInput
-            v-model:value="labelSelector"
-            class="filter-input filter-input-label"
-            placeholder="Label 筛选，如 app=nginx"
-            title="K8s label selector，如 app=nginx 或 env in (prod,staging)"
-            clearable
-            size="small"
-            @keyup.enter="emit('apply-label-filter')"
-          />
-        </div>
-        <div v-if="selectedKindForIp === 'pods' || selectedKindForIp === 'services'" class="toolbar-filters-secondary">
-          <NSelect
-            v-if="selectedKindForIp === 'pods'"
-            v-model:value="nodeFilter"
-            class="filter-input node-select"
-            :options="[...nodeFilterOptions, ...podNodeOptions.map((node) => ({ label: `Node: ${node}`, value: node }))]"
-            size="small"
-            title="按 Node 选项筛选"
-          />
-          <NInput
-            v-if="supportsIpFilter"
-            v-model:value="podIpFilter"
-            class="filter-input"
-            :placeholder="ipFilterPlaceholder"
-            :title="ipFilterTitle"
-            clearable
-            size="small"
-          />
+      <div v-if="currentId" class="toolbar-filters-shell">
+        <div class="toolbar-filters">
+          <div class="toolbar-filters-primary">
+            <NInput
+              v-model:value="nameFilter"
+              class="filter-input"
+              placeholder="按名称筛选…"
+              title="按名称包含匹配（前端过滤）"
+              clearable
+              size="small"
+            />
+            <NInput
+              v-model:value="labelSelector"
+              class="filter-input filter-input-label"
+              placeholder="Label 筛选，如 app=nginx"
+              title="K8s label selector，如 app=nginx 或 env in (prod,staging)"
+              clearable
+              size="small"
+              @keyup.enter="emit('apply-label-filter')"
+            />
+          </div>
+          <div v-if="selectedKindForIp === 'pods' || selectedKindForIp === 'services'" class="toolbar-filters-secondary">
+            <NSelect
+              v-if="selectedKindForIp === 'pods'"
+              v-model:value="nodeFilter"
+              class="filter-input node-select"
+              :options="[...nodeFilterOptions, ...podNodeOptions.map((node) => ({ label: `Node: ${node}`, value: node }))]"
+              size="small"
+              title="按 Node 选项筛选"
+            />
+            <NInput
+              v-if="supportsIpFilter"
+              v-model:value="podIpFilter"
+              class="filter-input"
+              :placeholder="ipFilterPlaceholder"
+              :title="ipFilterTitle"
+              clearable
+              size="small"
+            />
+          </div>
         </div>
       </div>
       <div v-if="activeFilterChips.length" class="filter-chip-bar">
@@ -424,50 +449,72 @@ defineExpose({
 <style scoped>
 .toolbar {
   padding: 0.75rem 1rem;
-  border-bottom: 1px solid #e2e8f0;
-  background: #f8fafc;
+  border-bottom: 1px solid var(--kf-border, rgba(148, 163, 184, 0.26));
+  background: var(--wb-canvas, #eef2f9);
   display: block;
   flex-shrink: 0;
+  position: relative;
+  z-index: 30;
 }
 .toolbar-card {
   display: flex;
   flex-direction: column;
   gap: 0.65rem;
   padding: 0.8rem 0.9rem;
-  border: 1px solid rgba(148, 163, 184, 0.2);
+  border: 1px solid var(--kf-border, rgba(148, 163, 184, 0.2));
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.78);
-  backdrop-filter: blur(6px);
-  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.08);
+  background: color-mix(in srgb, var(--kf-surface-strong, #ffffff) 90%, transparent);
+  backdrop-filter: blur(8px);
+  box-shadow: var(--kf-shadow-sm, 0 12px 32px rgba(15, 23, 42, 0.08));
+}
+.toolbar-cluster-scope {
+  flex: 0 1 auto;
 }
 .toolbar-main {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: 0.55rem;
+}
+.toolbar-vsep {
+  flex: 0 0 1px;
+  width: 1px;
+  min-height: 2.35rem;
+  align-self: stretch;
+  margin: 0 0.15rem;
+  background: var(--kf-border, rgba(148, 163, 184, 0.35));
+  border-radius: 1px;
+}
+.toolbar-filters-shell {
+  padding: 0.55rem 0.65rem;
+  border-radius: 12px;
+  background: var(--kf-bg-soft, #f4f7fc);
+  border: 1px solid color-mix(in srgb, var(--kf-border) 85%, transparent);
 }
 .toolbar-filters {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(280px, 1.25fr) minmax(240px, 1fr);
+  align-items: start;
   gap: 0.5rem;
-  padding-top: 0.1rem;
+  padding-top: 0;
 }
 .toolbar-filters-primary,
 .toolbar-filters-secondary {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 0.5rem;
+  min-width: 0;
 }
 .toolbar-filters-secondary {
-  margin-left: auto;
+  justify-content: flex-end;
 }
 .toolbar-actions {
   margin-left: auto;
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
+  flex-shrink: 0;
 }
 .env-name {
   font-weight: 800;
@@ -485,27 +532,19 @@ defineExpose({
   width: fit-content;
   max-width: min(100%, 300px);
   min-width: 0;
-  padding: 0.4rem 0.55rem;
+  padding: 0.44rem 0.62rem;
   border-radius: 12px;
-  border: 1px solid rgba(37, 99, 235, 0.14);
+  border: 1px solid color-mix(in srgb, var(--kf-primary) 28%, #fff);
   background:
-    radial-gradient(circle at top right, rgba(14, 165, 233, 0.14), transparent 26%),
+    radial-gradient(circle at top right, rgba(37, 99, 235, 0.16), transparent 34%),
     linear-gradient(135deg, #eff6ff, #f8fafc 72%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    0 6px 20px rgba(37, 99, 235, 0.08);
 }
 .active-env-copy {
   min-width: 0;
   width: auto;
-}
-.active-env-kicker {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.12rem 0.34rem;
-  border-radius: 999px;
-  background: rgba(37, 99, 235, 0.1);
-  font-size: 0.6rem;
-  font-weight: 700;
-  color: #2563eb;
-  flex-shrink: 0;
 }
 .active-env-name-row {
   display: flex;
@@ -518,23 +557,23 @@ defineExpose({
   align-items: center;
   flex-wrap: wrap;
   gap: 0.24rem;
-  margin-top: 0.28rem;
+  margin-top: 0.24rem;
 }
 .active-env-chip {
   display: inline-flex;
   align-items: center;
-  padding: 0.12rem 0.36rem;
+  padding: 0.1rem 0.34rem;
   border-radius: 999px;
-  background: rgba(37, 99, 235, 0.1);
-  color: #1d4ed8;
-  font-size: 0.64rem;
-  font-weight: 700;
+  background: rgba(37, 99, 235, 0.12);
+  color: #1e40af;
+  font-size: 0.62rem;
+  font-weight: 650;
   max-width: 100%;
 }
 .active-env-chip.subtle {
-  background: rgba(255, 255, 255, 0.78);
-  color: #475569;
-  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--kf-text-secondary);
+  border: 1px solid var(--kf-border);
 }
 .active-env-state {
   display: inline-flex;
@@ -566,23 +605,28 @@ defineExpose({
   align-items: center;
   justify-content: space-between;
   gap: 0.55rem;
-  padding: 0.48rem 0.7rem;
-  border: 1px solid #e2e8f0;
+  padding: 0.38rem 0.58rem;
+  border: 1px solid var(--kf-border);
   border-radius: 12px;
   background: #fff;
-  font-size: 0.8125rem;
-  color: #475569;
+  font-size: 0.79rem;
+  color: var(--kf-text-secondary);
   cursor: pointer;
   min-width: 0;
-  min-height: 48px;
+  min-height: 40px;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
 }
 .combobox-trigger:hover {
-  background: #f8fafc;
-  border-color: #cbd5e1;
+  background: var(--kf-bg-soft);
+  border-color: var(--kf-border-strong);
+}
+.combobox-trigger:focus-visible {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
 }
 .combobox-trigger-strong {
-  min-width: 190px;
+  min-width: 156px;
 }
 .combobox-trigger.disabled {
   opacity: 0.6;
@@ -608,7 +652,7 @@ defineExpose({
   letter-spacing: 0.06em;
 }
 .combobox-value {
-  max-width: 220px;
+  max-width: 170px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -620,8 +664,8 @@ defineExpose({
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.4rem;
-  height: 1.4rem;
+  width: 1.2rem;
+  height: 1.2rem;
   border-radius: 999px;
   background: #f1f5f9;
   font-size: 0.62rem;
@@ -629,21 +673,17 @@ defineExpose({
   flex-shrink: 0;
 }
 .combobox-menu {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 0;
-  min-width: max(280px, 100%);
-  width: fit-content;
-  max-width: min(560px, calc(100vw - 32px));
+  min-width: 220px;
+  width: min(360px, calc(100vw - 32px));
+  max-width: min(360px, calc(100vw - 32px));
   max-height: 420px;
   overflow-y: auto;
   overflow-x: hidden;
   background: #fff;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--kf-border);
   border-radius: 16px;
   box-shadow: 0 18px 40px rgba(15, 23, 42, 0.16);
   padding: 0.3rem 0;
-  z-index: 100;
   display: flex;
   flex-direction: column;
 }
@@ -679,16 +719,17 @@ defineExpose({
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
 .filter-input {
-  min-width: 120px;
-  max-width: 190px;
+  min-width: 0;
+  width: 100%;
 }
 .filter-input-label {
-  min-width: 220px;
-  max-width: 300px;
+  min-width: 0;
+  width: 100%;
 }
 .node-select {
-  min-width: 180px;
-  max-width: 220px;
+  min-width: 150px;
+  max-width: 240px;
+  width: 100%;
 }
 .combobox-item {
   display: flex;
@@ -756,9 +797,25 @@ defineExpose({
 .combobox-item:hover {
   background: #f8fafc;
 }
+.combobox-item-favorite {
+  background: rgba(255, 247, 237, 0.72);
+}
+.combobox-item-favorite:hover {
+  background: rgba(255, 237, 213, 0.92);
+}
+.combobox-item-recent {
+  background: rgba(236, 254, 255, 0.78);
+}
+.combobox-item-recent:hover {
+  background: rgba(165, 243, 252, 0.86);
+}
+.combobox-item:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px rgba(37, 99, 235, 0.28);
+}
 .combobox-item.active {
-  background: rgba(37, 99, 235, 0.09);
-  color: #1d4ed8;
+  background: rgba(22, 163, 74, 0.14);
+  color: #166534;
   font-weight: 600;
 }
 .combobox-group-label {
@@ -802,6 +859,10 @@ defineExpose({
 }
 .recent-kind-pill:hover {
   background: #dbeafe;
+}
+.recent-kind-pill:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.25);
 }
 .recent-kind-pill.active {
   border-color: #3b82f6;
@@ -850,9 +911,35 @@ defineExpose({
 .btn-danger-outline {
 }
 .btn-watch {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  color: #475569;
+  background: rgba(255, 255, 255, 0.86);
+}
+.btn-watch :deep(.n-button__content) {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.36rem;
+}
+.watch-dot {
+  width: 0.46rem;
+  height: 0.46rem;
+  border-radius: 999px;
+  background: #94a3b8;
+  box-shadow: 0 0 0 2px rgba(148, 163, 184, 0.22);
+  transition: all 0.18s ease;
 }
 .btn-watch.active {
-  color: #16a34a;
+  color: #166534;
+  border-color: rgba(34, 197, 94, 0.45);
+  background: rgba(240, 253, 244, 0.92);
+}
+.btn-watch.active .watch-dot {
+  background: #16a34a;
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.24);
+}
+.btn-watch:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
 }
 .filter-chip-bar {
   display: flex;
@@ -889,8 +976,15 @@ defineExpose({
     width: 100%;
     max-width: none;
   }
+  .toolbar-filters {
+    grid-template-columns: 1fr;
+  }
   .toolbar-filters-secondary {
-    margin-left: 0;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+  .toolbar-vsep {
+    display: none;
   }
 }
 </style>

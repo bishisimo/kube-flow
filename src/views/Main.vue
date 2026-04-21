@@ -19,6 +19,7 @@ import {
   WORKBENCH_NODE_ALLOC_REFRESH_MS,
   WORKBENCH_NODE_TERMINAL_RESOURCE_KINDS,
   WORKBENCH_SHELL_WORKLOAD_KINDS,
+  WORKBENCH_SORTABLE_KEYS,
   buildApiKindToIdMap,
   buildValidResourceKindSet,
   useWorkbenchCustomResource,
@@ -316,7 +317,7 @@ const sortOrder = ref<"asc" | "desc">("desc");
 const viewSessionId = ref(0);
 const latestListRequestId = ref(0);
 
-const { tableColumns, tableRows, onSortColumn } = useWorkbenchTableModel({
+const { tableColumns, tableRows } = useWorkbenchTableModel({
   selectedKind,
   selectedCustomTarget,
   nodeResourceUsageEnabled,
@@ -1134,20 +1135,16 @@ async function onDeleteConfirm() {
   loadList();
 }
 
-function toggleRowSelection(row: Record<string, unknown>) {
-  const key = getRowKey(row);
-  if (!key) return;
-  const next = new Set(selectedRowKeys.value);
-  if (next.has(key)) next.delete(key);
-  else next.add(key);
-  selectedRowKeys.value = next;
+/** 与 WorkbenchResourceTable 中 Naive DataTable 受控勾选同步。 */
+function replaceSelectedRowKeys(keys: string[]) {
+  selectedRowKeys.value = new Set(keys);
 }
 
-function toggleSelectAll() {
-  const rows = tableRows.value as Record<string, unknown>[];
-  const keys = rows.map(getRowKey).filter(Boolean);
-  const allSelected = keys.length > 0 && keys.every((k) => selectedRowKeys.value.has(k));
-  selectedRowKeys.value = allSelected ? new Set() : new Set(keys);
+/** 远程排序：DataTable 表头触发，由 useWorkbenchTableModel 对行重排。 */
+function setWorkbenchSort(key: string, order: "asc" | "desc") {
+  if (!WORKBENCH_SORTABLE_KEYS.has(key)) return;
+  sortBy.value = key;
+  sortOrder.value = order;
 }
 
 function closeDetailDrawer() {
@@ -1187,23 +1184,6 @@ const effectiveNamespace = computed(() => {
   if (ns) return ns;
   return "全部";
 });
-
-
-function isSelectedRow(row: Record<string, unknown>): boolean {
-  if (!selectedResource.value) return false;
-  const resource = selectResourceFromRow(row);
-  if (!resource) return false;
-  const cur = selectedResource.value;
-  const dynMatch =
-    (!!resource.dynamic && !!cur.dynamic && resource.dynamic.api_version === cur.dynamic.api_version) ||
-    (!resource.dynamic && !cur.dynamic);
-  return (
-    dynMatch &&
-    resource.kind === cur.kind &&
-    resource.name === cur.name &&
-    resource.namespace === cur.namespace
-  );
-}
 
 
 async function handleReconnect(envId: string) {
@@ -1483,6 +1463,8 @@ const {
           @dismiss-error="dismissError"
         >
           <WorkbenchResourceTable
+            :workbench-kind-label="workbenchKindLabel"
+            :effective-namespace="effectiveNamespace"
             :table-rows="tableRows"
             :table-columns="tableColumns"
             :batch-delete-mode="batchDeleteMode"
@@ -1490,16 +1472,15 @@ const {
             :sort-by="sortBy"
             :sort-order="sortOrder"
             :selected-kind="selectedKind"
+            :list-loading="listLoading"
             :ns-selection-disabled="nsSelectionDisabled"
             :selected-namespace="selectedNamespace"
             :get-row-key="getRowKey"
-            :toggle-select-all="toggleSelectAll"
-            :toggle-row-selection="toggleRowSelection"
+            :replace-selected-row-keys="replaceSelectedRowKeys"
+            :set-workbench-sort="setWorkbenchSort"
             :on-row-click="onRowClick"
             :on-row-context-menu="onRowContextMenu"
             :on-namespace-row-dbl-click="onNamespaceRowClick"
-            :is-selected-row="isSelectedRow"
-            :on-sort-column="onSortColumn"
             :is-cell-drillable="isCellDrillable"
             :on-replicas-click="onReplicasClick"
             :on-role-ref-click="onRoleRefClick"

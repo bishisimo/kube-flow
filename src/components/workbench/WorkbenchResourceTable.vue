@@ -1,14 +1,23 @@
 <script setup lang="ts">
-import { computed } from "vue";
-import { NButton, NCheckbox } from "naive-ui";
+import { computed, h, Fragment } from "vue";
+import {
+  NButton,
+  NCard,
+  NDataTable,
+  NEmpty,
+  NSpace,
+  NTag,
+} from "naive-ui";
+import type { DataTableColumns, DataTableRowKey, DataTableSortState } from "naive-ui";
 import type { ResourceKind } from "../../constants/resourceKinds";
 import { WORKBENCH_SORTABLE_KEYS } from "../../features/workbench";
 
 type TableColumn = { key: string; label: string };
-
 type PodRollupBadge = { key: string; tone: string; value: string | number };
 
 const props = defineProps<{
+  workbenchKindLabel?: string;
+  effectiveNamespace?: string;
   tableRows: Record<string, unknown>[];
   tableColumns: TableColumn[];
   batchDeleteMode: boolean;
@@ -16,16 +25,17 @@ const props = defineProps<{
   sortBy: string;
   sortOrder: "asc" | "desc";
   selectedKind: ResourceKind;
+  listLoading?: boolean;
   nsSelectionDisabled: boolean;
   selectedNamespace: string | null;
   getRowKey: (row: Record<string, unknown>) => string;
-  toggleSelectAll: () => void;
-  toggleRowSelection: (row: Record<string, unknown>) => void;
+  /** 与 DataTable 受控勾选对齐，替代逐行 toggle。 */
+  replaceSelectedRowKeys: (keys: string[]) => void;
+  /** 远程排序：由列表模型统一重排数据。 */
+  setWorkbenchSort: (key: string, order: "asc" | "desc") => void;
   onRowClick: (row: Record<string, unknown>) => void;
   onRowContextMenu: (row: Record<string, unknown>, e: MouseEvent) => void;
   onNamespaceRowDblClick: (name: string) => void;
-  isSelectedRow: (row: Record<string, unknown>) => boolean;
-  onSortColumn: (key: string) => void;
   isCellDrillable: (key: string, row: Record<string, unknown>) => boolean;
   onReplicasClick: (row: Record<string, unknown>) => void;
   onRoleRefClick: (row: Record<string, unknown>) => void;
@@ -48,397 +58,506 @@ const props = defineProps<{
   openKindSelector: () => void;
 }>();
 
-const allRowsSelected = computed(
-  () => props.tableRows.length > 0 && props.tableRows.every((r) => props.selectedRowKeys.has(props.getRowKey(r)))
-);
+const firstDataColumnKey = computed(() => props.tableColumns[0]?.key ?? "");
 
-const someRowsSelected = computed(
-  () => props.selectedRowKeys.size > 0 && props.selectedRowKeys.size < props.tableRows.length
-);
+const checkedRowKeys = computed<DataTableRowKey[]>(() => Array.from(props.selectedRowKeys));
+const tableMaxHeight = "68vh";
+
+function statusTagType(tone: string): "success" | "warning" | "error" | "default" {
+  if (tone === "ok") return "success";
+  if (tone === "warn") return "warning";
+  if (tone === "error") return "error";
+  return "default";
+}
+
+function rollupTagType(tone: string): "success" | "warning" | "error" | "default" | "info" {
+  switch (tone) {
+    case "running":
+      return "success";
+    case "pending":
+      return "warning";
+    case "failed":
+      return "error";
+    case "abnormal":
+      return "error";
+    case "succeeded":
+      return "default";
+    default:
+      return "info";
+  }
+}
+
+function podRollupBordered(tone: string): boolean {
+  return tone !== "succeeded";
+}
+
+function renderCell(col: TableColumn, row: Record<string, unknown>) {
+  const key = col.key;
+  const isPrimaryColumn = key === firstDataColumnKey.value;
+
+  if (key === "subjects" && props.getSubjectsList(row).length > 0) {
+    const items = props.getSubjectsList(row);
+    return h(
+      Fragment,
+      {},
+      items.map((s, si) =>
+        h(Fragment, { key: si }, [
+          h(
+            NButton,
+            {
+              text: true,
+              type: "primary",
+              size: "tiny",
+              onClick: (e: MouseEvent) => {
+                e.stopPropagation();
+                props.onSubjectClick(row, s);
+              },
+            },
+            { default: () => props.getSubjectLabel(s, row) },
+          ),
+          si < items.length - 1 ? ", " : null,
+        ]),
+      ),
+    );
+  }
+
+  if (props.isStatusColumn(key)) {
+    const raw = row[key as keyof typeof row];
+    const normalized = props.normalizeStatus(raw);
+    return h(
+      NTag,
+      {
+        size: "small",
+        bordered: true,
+        type: statusTagType(props.statusTone(raw)),
+        style: { maxWidth: "100%" },
+      },
+      { default: () => normalized },
+    );
+  }
+
+  if (props.isPodRollupColumn(key)) {
+    const raw = row[key as keyof typeof row];
+    const badges = props.buildPodRollupBadges(raw);
+    if (badges.length === 0) {
+      return "—";
+    }
+    return h(
+      NSpace,
+      { size: 6, wrap: true, inline: true },
+      {
+        default: () =>
+          badges.map((b) =>
+            h(
+              NTag,
+              {
+                key: b.key,
+                size: "small",
+                round: true,
+                bordered: podRollupBordered(b.tone),
+                type: rollupTagType(b.tone),
+              },
+              { default: () => b.value },
+            ),
+          ),
+      },
+    );
+  }
+
+  if (key === "recentRestart") {
+    const hot = props.isRecentRestartHot(row.podRollup);
+    const text = props.formatRecentRestart(row.podRollup);
+    return h(
+      "span",
+      { class: { "wb-restart-hot": hot }, style: hot ? { fontWeight: "600", color: "var(--n-color-error)" } : undefined },
+      text,
+    );
+  }
+
+  if (props.isNodeAllocColumn(key)) {
+    const raw = row[key as keyof typeof row];
+    const tone = props.nodeAllocTone(raw);
+    const nTagType = tone === "warn" ? "warning" : tone === "danger" ? "error" : "default";
+    return h(
+      NTag,
+      { size: "small", bordered: false, type: nTagType },
+      { default: () => String(raw ?? "") },
+    );
+  }
+
+  if (props.selectedKind === "nodes" && key === "taints") {
+    const raw = row[key as keyof typeof row];
+    const empty = raw === "无";
+    const text = String(raw ?? "无");
+    return h(
+      NButton,
+      {
+        size: "small",
+        secondary: true,
+        round: true,
+        onClick: (e: MouseEvent) => {
+          e.stopPropagation();
+          props.openNodeTaintsFromRow(row);
+        },
+      },
+      {
+        default: () =>
+          empty
+            ? h("span", { class: ["wb-taint-val", "wb-taint-val-muted"] }, text)
+            : h("span", { class: "wb-taint-inner" }, [
+                h("span", { class: "wb-taint-label" }, "污点"),
+                h("span", { class: "wb-taint-val" }, text),
+              ]),
+      },
+    );
+  }
+
+  const drillable = props.isCellDrillable(key, row) && key !== "subjects";
+  if (isPrimaryColumn) {
+    const valueText = String(row[key as keyof typeof row] ?? "—");
+    const content = h("span", { class: "wb-primary-cell-content" }, [
+      h("span", { class: "wb-primary-dot", "aria-hidden": "true" }),
+      h("span", { class: "wb-primary-title" }, valueText),
+    ]);
+    if (!drillable) return content;
+    return h(
+      NButton,
+      {
+        text: true,
+        type: "primary",
+        size: "small",
+        class: "wb-primary-btn",
+        onClick: (e: MouseEvent) => {
+          e.stopPropagation();
+          if (key === "replicas") props.onReplicasClick(row);
+          else if (key === "roleRef") props.onRoleRefClick(row);
+          else props.onPvcCellClick(row, key);
+        },
+      },
+      { default: () => content },
+    );
+  }
+
+  if (drillable) {
+    const val = row[key as keyof typeof row];
+    return h(
+      NButton,
+      {
+        text: true,
+        type: "primary",
+        size: "small",
+        onClick: (e: MouseEvent) => {
+          e.stopPropagation();
+          if (key === "replicas") props.onReplicasClick(row);
+          else if (key === "roleRef") props.onRoleRefClick(row);
+          else props.onPvcCellClick(row, key);
+        },
+      },
+      { default: () => (val == null ? "—" : String(val)) },
+    );
+  }
+
+  const v = row[key as keyof typeof row];
+  return v == null ? "—" : String(v);
+}
+
+const columns = computed<DataTableColumns<Record<string, unknown>>>(() => {
+  const out: DataTableColumns<Record<string, unknown>> = [];
+  if (props.batchDeleteMode) {
+    out.push({ type: "selection", width: 44 });
+  }
+  const firstKey = firstDataColumnKey.value;
+  for (const col of props.tableColumns) {
+    const sortable = WORKBENCH_SORTABLE_KEYS.has(col.key);
+    out.push({
+      title: col.label,
+      key: col.key,
+      minWidth: col.key === firstKey ? 140 : 88,
+      ellipsis: col.key === "name" || col.key === firstKey ? { tooltip: true } : false,
+      sorter: sortable ? "default" : false,
+      sortOrder:
+        sortable && props.sortBy === col.key ? (props.sortOrder === "asc" ? "ascend" : "descend") : false,
+      className: col.key === firstKey ? "wb-col-emphasis" : undefined,
+      render(row) {
+        return renderCell(col, row);
+      },
+    });
+  }
+  return out;
+});
+
+function rowKey(row: Record<string, unknown>) {
+  return props.getRowKey(row);
+}
+
+function rowProps(row: Record<string, unknown>) {
+  return {
+    style: { cursor: "pointer" },
+    onClick: (e: MouseEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (el?.closest?.(".n-checkbox, .n-radio, .n-data-table-td--selection, button, a")) {
+        return;
+      }
+      props.onRowClick(row);
+    },
+    onContextmenu: (e: MouseEvent) => {
+      e.preventDefault();
+      props.onRowContextMenu(row, e);
+    },
+    onDblclick: () => {
+      if (props.selectedKind === "namespaces" && row.name) {
+        props.onNamespaceRowDblClick(String(row.name));
+      }
+    },
+  };
+}
+
+function handleSorterChange(sorter: DataTableSortState | DataTableSortState[] | null) {
+  if (Array.isArray(sorter)) return;
+  if (!sorter || sorter.order === false) {
+    props.setWorkbenchSort("creationTime", "desc");
+    return;
+  }
+  const colKey = String(sorter.columnKey);
+  if (!WORKBENCH_SORTABLE_KEYS.has(colKey)) return;
+  props.setWorkbenchSort(colKey, sorter.order === "ascend" ? "asc" : "desc");
+}
+
+function onUpdateCheckedRowKeys(keys: DataTableRowKey[]) {
+  if (!props.batchDeleteMode) return;
+  props.replaceSelectedRowKeys(keys.map((k) => String(k)));
+}
 </script>
 
 <template>
-  <div class="table-wrap">
-    <table class="resource-table">
-      <thead>
-        <tr>
-          <th v-if="batchDeleteMode" class="col-checkbox">
-            <NCheckbox
-              :checked="allRowsSelected"
-              :indeterminate="someRowsSelected"
-              @update:checked="toggleSelectAll"
-            />
-          </th>
-          <th
-            v-for="col in tableColumns"
-            :key="col.key"
-            :class="{ sortable: WORKBENCH_SORTABLE_KEYS.has(col.key) }"
-            @click="WORKBENCH_SORTABLE_KEYS.has(col.key) && onSortColumn(col.key)"
-          >
-            {{ col.label }}
-            <span v-if="WORKBENCH_SORTABLE_KEYS.has(col.key) && sortBy === col.key" class="sort-indicator">
-              {{ sortOrder === "asc" ? "↑" : "↓" }}
-            </span>
-          </th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr
-          v-for="(row, i) in tableRows"
-          :key="i"
-          class="row-clickable"
-          :class="{ 'row-selected': isSelectedRow(row) }"
-          @click="onRowClick(row)"
-          @contextmenu.prevent="onRowContextMenu(row, $event)"
-          @dblclick="selectedKind === 'namespaces' && row.name && onNamespaceRowDblClick(String(row.name))"
-        >
-          <td v-if="batchDeleteMode" class="col-checkbox" @click.stop>
-            <NCheckbox :checked="selectedRowKeys.has(getRowKey(row))" @update:checked="toggleRowSelection(row)" />
-          </td>
-          <td
-            v-for="col in tableColumns"
-            :key="col.key"
-            :class="{ 'cell-drillable': isCellDrillable(col.key, row) && col.key !== 'subjects' }"
-            @click="
-              (e) => {
-                if (isCellDrillable(col.key, row) && col.key !== 'subjects') {
-                  e.stopPropagation();
-                  if (col.key === 'replicas') onReplicasClick(row);
-                  else if (col.key === 'roleRef') onRoleRefClick(row);
-                  else onPvcCellClick(row, col.key);
-                }
-              }
-            "
-          >
-            <template v-if="col.key === 'subjects' && getSubjectsList(row).length > 0">
-              <template v-for="(s, si) in getSubjectsList(row)" :key="si">
-                <span class="cell-link" @click="(e: MouseEvent) => { e.stopPropagation(); onSubjectClick(row, s); }">
-                  {{ getSubjectLabel(s, row) }}
-                </span>
-                <span v-if="si < getSubjectsList(row).length - 1">, </span>
-              </template>
-            </template>
-            <template v-else>
-              <span
-                v-if="isStatusColumn(col.key)"
-                class="status-pill"
-                :class="`status-${statusTone(row[col.key as keyof typeof row])}`"
-              >
-                {{ normalizeStatus(row[col.key as keyof typeof row]) }}
-              </span>
-              <template v-else-if="isPodRollupColumn(col.key)">
-                <div class="pod-rollup-cell">
-                  <template v-for="badge in buildPodRollupBadges(row[col.key as keyof typeof row])" :key="badge.key">
-                    <span class="pod-rollup-badge" :class="`pod-rollup-badge-${badge.tone}`"
-                      ><span class="pod-rollup-dot" />{{ badge.value }}</span
-                    >
-                  </template>
-                  <span v-if="buildPodRollupBadges(row[col.key as keyof typeof row]).length === 0" class="pod-rollup-empty"
-                    >-</span
-                  >
-                </div>
-              </template>
-              <template v-else-if="col.key === 'recentRestart'">
-                <span :class="{ 'recent-restart-hot': isRecentRestartHot(row.podRollup) }">{{
-                  formatRecentRestart(row.podRollup)
-                }}</span>
-              </template>
-              <template v-else-if="isNodeAllocColumn(col.key)">
-                <span class="node-alloc-pill" :class="`node-alloc-pill-${nodeAllocTone(row[col.key as keyof typeof row])}`">
-                  {{ row[col.key as keyof typeof row] }}
-                </span>
-              </template>
-              <template v-else-if="selectedKind === 'nodes' && col.key === 'taints'">
-                <button
-                  type="button"
-                  class="taint-entry-btn"
-                  :class="{ 'taint-entry-btn-empty': row[col.key as keyof typeof row] === '无' }"
-                  @click.stop="openNodeTaintsFromRow(row)"
-                >
-                  <span class="taint-entry-label">污点</span>
-                  <span class="taint-entry-value">{{ row[col.key as keyof typeof row] }}</span>
-                </button>
-              </template>
-              <template v-else>
-                {{ row[col.key as keyof typeof row] }}
-              </template>
-            </template>
-          </td>
-        </tr>
-      </tbody>
-    </table>
-    <div v-if="!tableRows.length" class="empty-table">
-      <div class="empty-emoji" aria-hidden="true">📭</div>
-      <p class="empty-title">暂无资源</p>
-      <p class="empty-desc">可尝试调整命名空间、资源类型或筛选条件。</p>
-      <div class="empty-actions">
-        <NButton secondary size="small" @click="clearAllFilters">清空筛选</NButton>
-        <NButton
-          v-if="!nsSelectionDisabled && selectedNamespace !== null"
-          secondary
+  <div class="wb-table-root">
+    <NCard class="wb-list-card" :bordered="false" size="small" content-style="padding: 0">
+      <template #header>
+        <div class="wb-list-header">
+          <div class="wb-list-head-row">
+            <div class="wb-list-heading">
+              <span class="wb-list-title">资源列表</span>
+              <span class="wb-list-badge" :title="`${tableRows.length} 条`">{{ tableRows.length }}</span>
+            </div>
+          </div>
+        </div>
+      </template>
+      <div class="wb-table-scroll">
+        <NDataTable
+          class="wb-data-table"
           size="small"
-          @click="selectAllNamespaces"
+          :columns="columns"
+          :data="tableRows"
+          :row-key="rowKey"
+          :row-props="rowProps"
+          :striped="false"
+          :single-line="false"
+          :bordered="true"
+          :bottom-bordered="true"
+          :remote="true"
+          :max-height="tableMaxHeight"
+          :pagination="false"
+          :loading="false"
+          :checked-row-keys="batchDeleteMode ? checkedRowKeys : undefined"
+          @update:checked-row-keys="onUpdateCheckedRowKeys"
+          @update:sorter="handleSorterChange"
         >
-          切回默认命名空间
-        </NButton>
-        <NButton secondary size="small" @click="openKindSelector">切换资源类型</NButton>
+          <template #empty>
+            <div v-if="listLoading" class="wb-empty-wrap">
+              <NEmpty description="正在加载资源…" size="medium" />
+            </div>
+            <div v-else class="wb-empty-wrap">
+              <NEmpty description="暂无资源" size="medium">
+                <template #extra>
+                  <div class="wb-empty-actions">
+                    <NButton size="small" secondary @click="clearAllFilters">清空筛选</NButton>
+                    <NButton
+                      v-if="!nsSelectionDisabled && selectedNamespace !== null"
+                      size="small"
+                      secondary
+                      @click="selectAllNamespaces"
+                    >
+                      切回默认命名空间
+                    </NButton>
+                    <NButton size="small" secondary @click="openKindSelector">切换资源类型</NButton>
+                  </div>
+                </template>
+              </NEmpty>
+              <p class="wb-empty-hint">可尝试调整命名空间、资源类型或筛选条件。</p>
+            </div>
+          </template>
+        </NDataTable>
       </div>
-    </div>
+    </NCard>
   </div>
 </template>
 
 <style scoped>
-.table-wrap {
+.wb-table-root {
   flex: 1;
-  overflow: auto;
-  padding: 0.9rem 1rem 1rem;
-  background: linear-gradient(180deg, #f7faff 0%, #f3f7fc 100%);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0.65rem 1rem 1rem;
+  background: var(--wb-canvas, #eef2f9);
 }
-.resource-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.8125rem;
-  background: rgba(255, 255, 255, 0.95);
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  border-radius: 14px;
-  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
-  overflow: hidden;
+.wb-list-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: transparent;
+  box-shadow: none;
 }
-.resource-table th.col-checkbox,
-.resource-table td.col-checkbox {
-  width: 2.5rem;
-  padding: 0.5rem 0.5rem;
-  vertical-align: middle;
+.wb-list-card:deep(.n-card__content) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
-.col-checkbox input {
-  cursor: pointer;
+.wb-list-card:deep(.n-card-header) {
+  padding: 0.55rem 0.75rem 0.45rem;
+  border-bottom: 1px solid var(--kf-border, rgba(148, 163, 184, 0.22));
 }
-.resource-table th,
-.resource-table td {
-  padding: 0.5rem 0.75rem;
-  text-align: left;
+.wb-list-header {
+  min-width: 0;
 }
-.resource-table td {
-  border-bottom: 1px solid #e2e8f0;
-}
-.resource-table th {
-  font-weight: 600;
-  color: #475569;
-  background: linear-gradient(180deg, #f8fbff 0%, #f2f6fc 100%);
-  position: sticky;
-  top: 0;
-  z-index: 1;
-}
-.resource-table th.sortable {
-  cursor: pointer;
-  user-select: none;
-}
-.resource-table th.sortable:hover {
-  color: #2563eb;
-}
-.sort-indicator {
-  margin-left: 0.25rem;
-  font-size: 0.75rem;
-  color: #64748b;
-}
-.resource-table tbody tr:nth-child(odd),
-.resource-table tbody tr:nth-child(even) {
-  background: #fff;
-}
-.resource-table tbody tr.row-clickable {
-  cursor: pointer;
-  background: #fff;
-}
-.resource-table tbody tr.row-clickable:hover {
-  background: #f3f8ff;
-}
-.resource-table tbody tr.row-clickable.row-selected {
-  background: #eaf3ff;
-  box-shadow: inset 3px 0 0 #2563eb;
-}
-.resource-table td.cell-drillable {
-  cursor: pointer;
-  color: #2563eb;
-}
-.resource-table td.cell-drillable:hover {
-  text-decoration: underline;
-}
-.status-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.12rem 0.48rem;
-  border-radius: 999px;
-  font-size: 0.75rem;
-  line-height: 1.2;
-  font-weight: 600;
-  border: 1px solid transparent;
-}
-.status-pill.status-ok {
-  color: #15803d;
-  background: #f0fdf4;
-  border-color: #bbf7d0;
-}
-.status-pill.status-warn {
-  color: #b45309;
-  background: #fffbeb;
-  border-color: #fde68a;
-}
-.status-pill.status-error {
-  color: #b91c1c;
-  background: #fef2f2;
-  border-color: #fecaca;
-}
-.status-pill.status-neutral {
-  color: #475569;
-  background: #f8fafc;
-  border-color: #e2e8f0;
-}
-.pod-rollup-cell {
+.wb-list-heading {
   display: flex;
   align-items: center;
+  gap: 0.5rem;
   flex-wrap: wrap;
-  gap: 6px;
 }
-.pod-rollup-badge {
-  display: inline-flex;
+.wb-list-head-row {
+  display: flex;
   align-items: center;
-  border-radius: 999px;
-  padding: 2px 8px;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.3;
-  border: 1px solid transparent;
+  justify-content: space-between;
+  gap: 0.6rem;
 }
-.pod-rollup-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  background: currentColor;
-  margin-right: 6px;
-  opacity: 0.9;
+.wb-list-title {
+  font-size: 1rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: var(--kf-text-primary, #0f172a);
 }
-.pod-rollup-badge-running {
-  background: rgba(34, 197, 94, 0.16);
-  color: #166534;
-  border-color: rgba(34, 197, 94, 0.35);
-}
-.pod-rollup-badge-pending {
-  background: rgba(245, 158, 11, 0.16);
-  color: #92400e;
-  border-color: rgba(245, 158, 11, 0.35);
-}
-.pod-rollup-badge-succeeded {
-  background: rgba(100, 116, 139, 0.16);
-  color: #334155;
-  border-color: rgba(100, 116, 139, 0.35);
-}
-.pod-rollup-badge-failed {
-  background: rgba(239, 68, 68, 0.16);
-  color: #991b1b;
-  border-color: rgba(239, 68, 68, 0.35);
-}
-.pod-rollup-badge-abnormal {
-  background: rgba(190, 24, 93, 0.18);
-  color: #9f1239;
-  border-color: rgba(190, 24, 93, 0.35);
-}
-.pod-rollup-empty {
-  color: rgba(15, 23, 42, 0.45);
-}
-.recent-restart-hot {
-  color: #b91c1c;
-  font-weight: 600;
-}
-.resource-table .cell-link {
-  cursor: pointer;
-  color: #2563eb;
-}
-.resource-table .cell-link:hover {
-  text-decoration: underline;
-}
-.taint-entry-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  min-height: 1.85rem;
-  padding: 0 0.55rem;
-  border: 1px solid #bfdbfe;
-  border-radius: 999px;
-  background: #eff6ff;
-  color: #1d4ed8;
-  cursor: pointer;
-  font: inherit;
-}
-.taint-entry-btn:hover {
-  background: #dbeafe;
-  border-color: #93c5fd;
-}
-.taint-entry-btn-empty {
-  border-color: #cbd5e1;
-  background: #f8fafc;
-  color: #475569;
-}
-.taint-entry-btn-empty:hover {
-  background: #f1f5f9;
-  border-color: #94a3b8;
-}
-.taint-entry-label {
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-}
-.taint-entry-value {
-  font-size: 0.78rem;
-  font-weight: 700;
-}
-.node-alloc-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.2rem 0.55rem;
-  border-radius: 999px;
-  background: #f8fafc;
-  color: #334155;
-  font-size: 0.75rem;
-  line-height: 1.3;
-  white-space: nowrap;
-}
-.node-alloc-pill-warn {
-  background: #fef3c7;
-  color: #b45309;
-}
-.node-alloc-pill-danger {
-  background: #fee2e2;
-  color: #b91c1c;
-}
-.empty-table {
-  margin: 1rem 0 0;
-  border: 1px dashed #bfcee3;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.88);
-  padding: 1.25rem 1rem;
-  text-align: center;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
-}
-.empty-actions {
-  margin-top: 0.8rem;
+.wb-list-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  min-width: 1.65rem;
+  padding: 0.08rem 0.4rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--kf-primary, #2563eb);
+  background: var(--kf-primary-soft, #e8f0ff);
+  border: 1px solid rgba(37, 99, 235, 0.2);
+}
+.wb-data-table {
+  --n-border-radius: 12px;
+  width: 100%;
+}
+.wb-table-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.wb-table-scroll:deep(.n-data-table-base-table) {
+  min-width: 0;
+}
+.wb-data-table:deep(.n-data-table-wrapper) {
+  border-radius: 0 0 12px 12px;
+  background: #ffffff;
+}
+.wb-data-table:deep(.n-data-table-base-table-header) {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    inset 0 -1px 0 rgba(100, 116, 139, 0.36);
+}
+.wb-data-table:deep(.n-data-table-th) {
+  font-weight: 650;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  background: linear-gradient(180deg, #edf3fb 0%, #e1eaf6 100%);
+  border-bottom: 1px solid rgba(100, 116, 139, 0.32);
+}
+.wb-data-table:deep(.n-data-table-td) {
+  background: #ffffff;
+}
+.wb-data-table:deep(.wb-col-emphasis) {
+  font-weight: 600;
+  color: var(--kf-text-primary, #0f172a);
+}
+.wb-primary-btn {
+  padding: 0;
+}
+.wb-primary-btn:deep(.n-button__content) {
+  width: 100%;
+}
+.wb-primary-cell-content {
+  display: inline-flex;
+  align-items: center;
   gap: 0.45rem;
-  flex-wrap: wrap;
+  max-width: 100%;
 }
-.empty-emoji {
-  font-size: 1.5rem;
-  line-height: 1;
+.wb-primary-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  margin-top: 0.32rem;
+  background: var(--kf-primary, #2563eb);
+  opacity: 0.9;
+  flex-shrink: 0;
 }
-.empty-title {
-  margin: 0;
-  font-size: 0.95rem;
-  color: #334155;
+.wb-primary-title {
+  font-weight: 620;
+  color: var(--kf-text-primary, #0f172a);
+  line-height: 1.3;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wb-taint-inner {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.wb-taint-label {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  opacity: 0.85;
+}
+.wb-taint-val {
+  font-size: 0.78rem;
   font-weight: 600;
 }
-.empty-desc {
+.wb-taint-val-muted {
+  opacity: 0.75;
+}
+.wb-empty-wrap {
+  padding: 1.25rem 0.75rem 1.5rem;
+}
+.wb-empty-hint {
+  margin: 0.65rem 0 0;
   font-size: 0.8125rem;
-  color: #94a3b8;
+  color: var(--kf-text-secondary, #64748b);
+  text-align: center;
+}
+.wb-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  justify-content: center;
+}
+@media (max-width: 980px) {
+  .wb-list-head-row {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
 }
 </style>

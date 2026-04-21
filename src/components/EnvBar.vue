@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onUnmounted } from "vue";
+import { NButton, NCard, NScrollbar, NTag } from "naive-ui";
 import { useEnvStore } from "../stores/env";
 import { useConnectionStore } from "../stores/connection";
 import { kubeGetTunnelLocalPort } from "../api/kube";
@@ -149,79 +150,89 @@ function toggle() {
 <template>
   <aside class="env-bar" :class="{ collapsed: collapsed }">
     <div class="header" @click="toggle">
-      <span class="icon" aria-hidden="true">{{ collapsed ? "»" : "«" }}</span>
-      <span v-if="!collapsed" class="title">已打开环境</span>
+      <NButton text class="collapse-btn" tabindex="-1">
+        <span class="icon" aria-hidden="true">{{ collapsed ? "»" : "«" }}</span>
+      </NButton>
+      <span class="title" :class="{ 'title-hidden': collapsed }">已打开环境</span>
     </div>
-    <ul v-if="!collapsed && hasOpened" class="list">
-      <li
-        v-for="e in openedEnvs"
-        :key="e.id"
-        class="item"
-        :class="{ active: currentId === e.id }"
-        @click="setCurrent(e.id)"
-      >
-        <div class="item-topline">
-          <div class="item-title-wrap">
-            <span class="name" :class="{ 'name-current': currentId === e.id }" :title="e.display_name">
-              {{ e.display_name }}
-            </span>
-          </div>
-          <div class="item-top-actions">
-            <span class="meta-chip soft">{{ sourceLabel(e.source) }}</span>
-            <span
-              class="env-item-status-wrap"
-              @mouseenter="onStatusEnter($event, e.id)"
-              @mouseleave="onStatusLeave"
-            >
-              <span
-                class="status-icon"
-                :class="{
-                  'status-disconnected': getState(e.id) === 'disconnected',
-                  'status-connecting': getState(e.id) === 'connecting',
-                  'status-ready': getState(e.id) === 'connected' || getState(e.id) === 'error',
-                }"
-                :aria-label="statusLabel(e.id)"
-              />
-            </span>
-            <button
-              type="button"
-              class="close"
-              title="关闭"
-              @click.stop="closeEnv(e.id)"
-            >
-              ×
-            </button>
-          </div>
-        </div>
-        <div
-          class="item-context"
-          :title="e.source === 'ssh_tunnel' ? remoteKubeconfigLabel(e) : contextLabel(e)"
-        >
-          {{ e.source === "ssh_tunnel" ? remoteKubeconfigLabel(e) : contextLabel(e) }}
-        </div>
-        <div class="item-actions-row">
-          <button
-            v-if="props.onOpenTerminal"
-            type="button"
-            class="item-action-btn primary"
-            title="打开终端"
-            @click.stop="props.onOpenTerminal(e.id)"
+    <div class="env-content" :class="{ 'env-content-hidden': collapsed }">
+      <NScrollbar class="list-scroll" trigger="none" x-scrollable>
+        <ul v-if="hasOpened" class="list">
+          <li
+            v-for="e in openedEnvs"
+            :key="e.id"
+            class="item-shell"
+            :class="{ active: currentId === e.id }"
           >
-            终端
-          </button>
-          <button
-            v-if="getState(e.id) === 'disconnected' && props.onReconnect"
-            type="button"
-            class="btn-reconnect-small"
-            title="重连"
-            @click.stop="props.onReconnect(e.id)"
-          >
-            重连
-          </button>
-        </div>
-      </li>
-    </ul>
-    <p v-if="!collapsed && !hasOpened" class="empty">暂无打开的环境</p>
+            <NCard
+              size="small"
+              class="item"
+              :class="{ active: currentId === e.id }"
+              :bordered="false"
+              @click="setCurrent(e.id)"
+            >
+              <div class="item-topline">
+                <div class="item-title-wrap">
+                  <span class="name" :class="{ 'name-current': currentId === e.id }" :title="e.display_name">
+                    {{ e.display_name }}
+                  </span>
+                </div>
+                <div class="item-top-actions">
+                  <NTag size="small" round :bordered="false" class="meta-chip soft">{{ sourceLabel(e.source) }}</NTag>
+                  <span
+                    class="env-item-status-wrap"
+                    @mouseenter="onStatusEnter($event, e.id)"
+                    @mouseleave="onStatusLeave"
+                  >
+                    <span
+                      class="status-icon"
+                      :class="{
+                        'status-disconnected': getState(e.id) === 'disconnected',
+                        'status-connecting': getState(e.id) === 'connecting',
+                        'status-ready': getState(e.id) === 'connected' || getState(e.id) === 'error',
+                      }"
+                      :aria-label="statusLabel(e.id)"
+                    />
+                  </span>
+                  <NButton text size="tiny" class="close" title="关闭" @click.stop="closeEnv(e.id)">×</NButton>
+                </div>
+              </div>
+              <div
+                class="item-context"
+                :title="e.source === 'ssh_tunnel' ? remoteKubeconfigLabel(e) : contextLabel(e)"
+              >
+                {{ e.source === "ssh_tunnel" ? remoteKubeconfigLabel(e) : contextLabel(e) }}
+              </div>
+              <div class="item-actions-row">
+                <NButton
+                  v-if="props.onOpenTerminal"
+                  size="tiny"
+                  tertiary
+                  type="primary"
+                  class="item-action-btn"
+                  title="打开终端"
+                  @click.stop="props.onOpenTerminal(e.id)"
+                >
+                  终端
+                </NButton>
+                <NButton
+                  v-if="getState(e.id) === 'disconnected' && props.onReconnect"
+                  size="tiny"
+                  secondary
+                  type="warning"
+                  class="btn-reconnect-small"
+                  title="重连"
+                  @click.stop="props.onReconnect(e.id)"
+                >
+                  重连
+                </NButton>
+              </div>
+            </NCard>
+          </li>
+        </ul>
+        <p v-else class="empty">暂无打开的环境</p>
+      </NScrollbar>
+    </div>
   </aside>
   <Teleport to="body">
     <div
@@ -248,62 +259,112 @@ function toggle() {
   background: var(--sidebar-bg, #fafafa);
   display: flex;
   flex-direction: column;
-  transition: min-width 0.2s, width 0.2s;
+  transition: min-width 0.22s ease, width 0.22s ease;
+  will-change: width;
+  overflow: hidden;
 }
 .env-bar.collapsed {
   width: 40px;
   min-width: 40px;
 }
 .header {
-  padding: 0.75rem;
+  padding: 0.58rem 0.6rem;
   display: flex;
   align-items: center;
   gap: 0.5rem;
   cursor: pointer;
   user-select: none;
-  border-bottom: 1px solid var(--border-color, #e0e0e0);
+  border-bottom: 1px solid var(--kf-border, #e0e0e0);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(248, 250, 252, 0.88));
 }
 .header:hover {
-  background: rgba(0, 0, 0, 0.04);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(241, 245, 249, 0.94));
 }
 .icon {
   font-size: 1rem;
-  color: #666;
+  color: var(--kf-text-secondary, #66768f);
 }
 .title {
   font-size: 0.875rem;
-  font-weight: 500;
+  font-weight: 650;
+  color: var(--kf-text-primary, #0f172a);
+  white-space: nowrap;
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+.title-hidden {
+  opacity: 0;
+  transform: translateX(-4px);
+}
+.collapse-btn {
+  padding: 0.16rem;
+}
+.env-content {
+  flex: 1;
+  min-height: 0;
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+.env-content-hidden {
+  opacity: 0;
+  transform: translateX(-5px);
+  pointer-events: none;
+}
+.list-scroll {
+  height: 100%;
 }
 .list {
   list-style: none;
   margin: 0;
-  padding: 0.65rem;
+  padding: 0.62rem;
   overflow: auto;
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
+  gap: 0.52rem;
+}
+.item-shell {
+  list-style: none;
 }
 .item {
   display: flex;
   flex-direction: column;
-  padding: 0.7rem 0.75rem;
+  padding: 0;
   cursor: pointer;
-  gap: 0.5rem;
-  border: 1px solid #e2e8f0;
   border-radius: 12px;
-  background: #fff;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+  border: 1px solid var(--kf-border, #d9e2ec);
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  transition: border-color 0.16s ease, background-color 0.16s ease, box-shadow 0.16s ease;
+}
+.item:deep(.n-card__content) {
+  display: flex;
+  flex-direction: column;
+  gap: 0.42rem;
+  padding: 0.62rem 0.68rem;
+  background: transparent;
+}
+.item:deep(.n-card__border),
+.item:deep(.n-card-header__main),
+.item:deep(.n-card-header) {
+  border: none;
+}
+.item:deep(.n-card) {
+  border-radius: 12px;
 }
 .item:hover {
-  border-color: #cbd5e1;
-  background: #f8fafc;
+  border-color: var(--kf-border-strong, #cbd5e1);
+  background: var(--kf-bg-soft, #f8fafc);
+  box-shadow: 0 3px 10px rgba(15, 23, 42, 0.06);
 }
 .item.active {
-  border-color: #2563eb;
+  border-color: var(--kf-primary, #2563eb);
   background:
     linear-gradient(135deg, rgba(37, 99, 235, 0.14), rgba(14, 165, 233, 0.06)),
     #eff6ff;
-  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.08);
+  box-shadow:
+    0 0 0 1px rgba(37, 99, 235, 0.1),
+    0 4px 14px rgba(37, 99, 235, 0.12);
+}
+.item.active .name {
+  color: #1d4ed8;
 }
 .item-topline {
   display: flex;
@@ -340,8 +401,8 @@ function toggle() {
   word-break: break-word;
 }
 .item-context {
-  font-size: 0.76rem;
-  color: #64748b;
+  font-size: 0.75rem;
+  color: var(--kf-text-secondary, #64748b);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -353,22 +414,11 @@ function toggle() {
   flex-wrap: wrap;
 }
 .name-current {
-  color: #166534;
+  color: var(--kf-primary, #2563eb);
 }
-.meta-chip {
-  display: inline-flex;
-  align-items: center;
-  border-radius: 999px;
-  padding: 0.14rem 0.45rem;
-  font-size: 0.69rem;
-  font-weight: 600;
-  line-height: 1.2;
-  border: 1px solid transparent;
-}
-.meta-chip.primary,
 .meta-chip.soft {
-  background: #eef2ff;
-  color: #4338ca;
+  color: #334155;
+  background: #edf2ff;
 }
 .env-item-status-wrap {
   position: relative;
@@ -377,10 +427,11 @@ function toggle() {
   align-items: center;
 }
 .status-icon {
-  width: 8px;
-  height: 8px;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
   flex-shrink: 0;
+  box-shadow: 0 0 0 2px #ffffff;
 }
 .status-disconnected {
   background: #dc2626;
@@ -411,46 +462,31 @@ function toggle() {
   border-color: #fb923c;
 }
 .item-action-btn {
-  flex-shrink: 0;
-  padding: 0.28rem 0.75rem;
-  font-size: 0.72rem;
-  border: 1px solid #cbd5e1;
-  background: #fff;
-  color: #475569;
+  --n-height: 22px;
+  --n-padding: 0 9px;
+  --n-font-size: 11px;
+  --n-border-radius: 999px;
   border-radius: 999px;
-  cursor: pointer;
 }
-.item-action-btn.primary {
-  background: #eff6ff;
-  border-color: #bfdbfe;
-  color: #1d4ed8;
-}
-.item-action-btn:hover {
-  border-color: #94a3b8;
-  color: #0f172a;
-  background: #f8fafc;
-}
-.item-action-btn.primary:hover {
-  border-color: #93c5fd;
-  color: #1d4ed8;
-  background: #dbeafe;
+.btn-reconnect-small {
+  --n-height: 22px;
+  --n-padding: 0 9px;
+  --n-font-size: 11px;
+  --n-border-radius: 999px;
 }
 .close {
   flex-shrink: 0;
   width: 20px;
   height: 20px;
   padding: 0;
-  border: none;
-  background: transparent;
-  color: #666;
-  cursor: pointer;
-  font-size: 1.1rem;
+  color: var(--kf-text-secondary, #66768f);
+  font-size: 1rem;
   line-height: 1;
-  border-radius: 4px;
+  border-radius: 6px;
 }
 .close:hover {
-  background: rgba(0, 0, 0, 0.08);
-  color: #333;
+  background: color-mix(in srgb, var(--kf-bg-soft, #f3f6fb) 86%, transparent);
+  color: var(--kf-text-primary, #0f172a);
 }
 .empty {
   padding: 0.75rem;

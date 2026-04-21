@@ -65,12 +65,11 @@ const emit = defineEmits<{
   display: flex;
   align-items: center;
   gap: 0.55rem;
-  padding: 0.55rem 1rem;
+  padding: 0.6rem 1rem;
   font-size: 0.8rem;
-  color: #64748b;
-  background:
-    linear-gradient(180deg, #f8fafc, #f1f5f9);
-  border-bottom: 1px solid #e2e8f0;
+  color: var(--kf-text-secondary, #64748b);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--kf-bg-soft, #f4f7fc) 92%, #fff), var(--kf-surface-strong, #ffffff));
+  border-bottom: 1px solid var(--kf-border, rgba(148, 163, 184, 0.26));
   flex-shrink: 0;
   min-width: 0;
 }

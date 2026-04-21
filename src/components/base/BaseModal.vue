@@ -22,7 +22,6 @@ const cardStyle = computed(() => (props.width ? { width: props.width } : undefin
 <template>
   <NModal
     :show="visible"
-    preset="card"
     :mask-closable="true"
     :auto-focus="false"
     :trap-focus="false"
