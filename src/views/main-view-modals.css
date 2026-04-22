@@ -1,4 +1,4 @@
-/* Styles for Teleport-based modal dialogs (must be global, not scoped) */
+/* 工作台弹窗与表单的全局样式：被 Dialog/Modal 组件（SyncOrchestratorDialog、PodDebugDialog 等）复用，不能 scoped。 */
 .filter-input {
   padding: 0.35rem 0.6rem;
   border: 1px solid #e2e8f0;
@@ -46,15 +46,6 @@
   margin: 0.35rem 0 0;
   font-size: 0.8rem;
   color: #b91c1c;
-}
-.error-modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.4);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 9999;
 }
 .sync-orchestrator-modal {
   width: min(92vw, 520px);

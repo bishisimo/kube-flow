@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onUnmounted } from "vue";
-import { NButton, NCard, NScrollbar, NTag } from "naive-ui";
+import { NBadge, NButton, NCard, NScrollbar, NTag, NTooltip } from "naive-ui";
 import { useEnvStore } from "../stores/env";
 import { useConnectionStore } from "../stores/connection";
 import { kubeGetTunnelLocalPort } from "../api/kube";
@@ -9,11 +9,11 @@ import type { SshTunnel } from "../api/env";
 import { effectiveContext } from "../api/env";
 
 const props = defineProps<{
+  /** 透传自 NLayoutSider，用于内部文案随折叠态隐藏；折叠动画由 sider 驱动 */
   collapsed: boolean;
   onReconnect?: (envId: string) => void;
   onOpenTerminal?: (envId: string) => void;
 }>();
-const emit = defineEmits<{ (e: "toggle"): void }>();
 
 const {
   openedEnvs,
@@ -115,44 +115,28 @@ function hoverLines(e: { id: string; source: string; ssh_tunnel_id?: string | nu
   return lines;
 }
 
-/** 当前 hover 的状态图标对应的 env id，用于浮层展示 */
-const hoveredEnvId = ref<string | null>(null);
-/** 触发浮层的元素位置，用于 fixed 定位 */
-const triggerRect = ref<{ left: number; top: number; height: number } | null>(null);
-
-function onStatusEnter(ev: MouseEvent, envId: string) {
-  const el = ev.currentTarget as HTMLElement;
-  const rect = el.getBoundingClientRect();
-  hoveredEnvId.value = envId;
-  triggerRect.value = { left: rect.right, top: rect.top, height: rect.height };
+/** 状态点配色：connected/error 绿色；connecting 蓝色（带 processing 动画）；disconnected 红色。 */
+function statusBadgeType(envId: string): "success" | "info" | "error" {
+  const s = getState(envId);
+  if (s === "disconnected") return "error";
+  if (s === "connecting") return "info";
+  return "success";
 }
 
-function onStatusLeave() {
-  hoveredEnvId.value = null;
-  triggerRect.value = null;
+function statusIsConnecting(envId: string): boolean {
+  return getState(envId) === "connecting";
 }
-
-const hoveredEnv = computed(() =>
-  hoveredEnvId.value ? openedEnvs.value.find((e) => e.id === hoveredEnvId.value) ?? null : null
-);
 
 watch([openedEnvs, currentId], scheduleRefresh);
 onMounted(scheduleRefresh);
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer);
 });
-
-function toggle() {
-  emit("toggle");
-}
 </script>
 
 <template>
-  <aside class="env-bar" :class="{ collapsed: collapsed }">
-    <div class="header" @click="toggle">
-      <NButton text class="collapse-btn" tabindex="-1">
-        <span class="icon" aria-hidden="true">{{ collapsed ? "»" : "«" }}</span>
-      </NButton>
+  <aside class="env-bar">
+    <div class="header">
       <span class="title" :class="{ 'title-hidden': collapsed }">已打开环境</span>
     </div>
     <div class="env-content" :class="{ 'env-content-hidden': collapsed }">
@@ -179,21 +163,21 @@ function toggle() {
                 </div>
                 <div class="item-top-actions">
                   <NTag size="small" round :bordered="false" class="meta-chip soft">{{ sourceLabel(e.source) }}</NTag>
-                  <span
-                    class="env-item-status-wrap"
-                    @mouseenter="onStatusEnter($event, e.id)"
-                    @mouseleave="onStatusLeave"
-                  >
-                    <span
-                      class="status-icon"
-                      :class="{
-                        'status-disconnected': getState(e.id) === 'disconnected',
-                        'status-connecting': getState(e.id) === 'connecting',
-                        'status-ready': getState(e.id) === 'connected' || getState(e.id) === 'error',
-                      }"
-                      :aria-label="statusLabel(e.id)"
-                    />
-                  </span>
+                  <NTooltip placement="right" :show-arrow="false">
+                    <template #trigger>
+                      <span class="env-item-status-wrap">
+                        <NBadge
+                          dot
+                          :type="statusBadgeType(e.id)"
+                          :processing="statusIsConnecting(e.id)"
+                          :aria-label="statusLabel(e.id)"
+                        />
+                      </span>
+                    </template>
+                    <div class="env-status-tip">
+                      <div v-for="line in hoverLines(e)" :key="line">{{ line }}</div>
+                    </div>
+                  </NTooltip>
                   <NButton text size="tiny" class="close" title="关闭" @click.stop="closeEnv(e.id)">×</NButton>
                 </div>
               </div>
@@ -234,55 +218,29 @@ function toggle() {
       </NScrollbar>
     </div>
   </aside>
-  <Teleport to="body">
-    <div
-      v-if="hoveredEnv && triggerRect"
-      class="env-status-popover"
-      role="tooltip"
-      :style="{
-        left: `${triggerRect.left + 6}px`,
-        top: `${triggerRect.top}px`,
-      }"
-    >
-      <div class="env-status-popover-content">
-        {{ hoveredEnv ? hoverLines(hoveredEnv).join('\n') : '' }}
-      </div>
-    </div>
-  </Teleport>
 </template>
 
 <style scoped>
 .env-bar {
-  width: 236px;
-  min-width: 236px;
-  border-right: 1px solid var(--border-color, #e0e0e0);
+  --wb-env-btn-height-s: 24px;
+  --wb-env-pill-radius: 999px;
+  width: 100%;
+  height: 100%;
   background: var(--sidebar-bg, #fafafa);
   display: flex;
   flex-direction: column;
-  transition: min-width 0.22s ease, width 0.22s ease;
-  will-change: width;
   overflow: hidden;
 }
-.env-bar.collapsed {
-  width: 40px;
-  min-width: 40px;
-}
 .header {
-  padding: 0.58rem 0.6rem;
+  padding: 0.58rem 0.75rem;
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  cursor: pointer;
   user-select: none;
   border-bottom: 1px solid var(--kf-border, #e0e0e0);
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(248, 250, 252, 0.88));
-}
-.header:hover {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(241, 245, 249, 0.94));
-}
-.icon {
-  font-size: 1rem;
-  color: var(--kf-text-secondary, #66768f);
+  min-height: 42px;
+  flex-shrink: 0;
 }
 .title {
   font-size: 0.875rem;
@@ -294,9 +252,6 @@ function toggle() {
 .title-hidden {
   opacity: 0;
   transform: translateX(-4px);
-}
-.collapse-btn {
-  padding: 0.16rem;
 }
 .env-content {
   flex: 1;
@@ -332,7 +287,7 @@ function toggle() {
   border: 1px solid var(--kf-border, #d9e2ec);
   background: #ffffff;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
-  transition: border-color 0.16s ease, background-color 0.16s ease, box-shadow 0.16s ease;
+  transition: border-color 0.18s ease, background-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
 }
 .item:deep(.n-card__content) {
   display: flex;
@@ -353,6 +308,7 @@ function toggle() {
   border-color: var(--kf-border-strong, #cbd5e1);
   background: var(--kf-bg-soft, #f8fafc);
   box-shadow: 0 3px 10px rgba(15, 23, 42, 0.06);
+  transform: translateY(-1px);
 }
 .item.active {
   border-color: var(--kf-primary, #2563eb);
@@ -362,6 +318,11 @@ function toggle() {
   box-shadow:
     0 0 0 1px rgba(37, 99, 235, 0.1),
     0 4px 14px rgba(37, 99, 235, 0.12);
+}
+.item:focus-within {
+  box-shadow:
+    0 0 0 2px rgba(37, 99, 235, 0.18),
+    0 4px 14px rgba(37, 99, 235, 0.1);
 }
 .item.active .name {
   color: #1d4ed8;
@@ -425,54 +386,31 @@ function toggle() {
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
+  padding: 0 2px;
+  cursor: help;
 }
-.status-icon {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  box-shadow: 0 0 0 2px #ffffff;
-}
-.status-disconnected {
-  background: #dc2626;
-}
-.status-connecting {
-  background: #0369a1;
-  animation: status-pulse 1s ease-in-out infinite;
-}
-.status-ready {
-  background: #16a34a;
-}
-@keyframes status-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
-}
-.btn-reconnect-small {
-  flex-shrink: 0;
-  padding: 0.28rem 0.7rem;
-  font-size: 0.72rem;
-  background: #fff7ed;
-  color: #b45309;
-  border: 1px solid #fdba74;
-  border-radius: 999px;
-  cursor: pointer;
-}
-.btn-reconnect-small:hover {
-  background: #ffedd5;
-  border-color: #fb923c;
+.env-status-tip {
+  font-size: 0.78rem;
+  line-height: 1.5;
+  white-space: pre-line;
+  max-width: 280px;
 }
 .item-action-btn {
-  --n-height: 22px;
+  --n-height: var(--wb-env-btn-height-s);
   --n-padding: 0 9px;
   --n-font-size: 11px;
-  --n-border-radius: 999px;
-  border-radius: 999px;
+  --n-border-radius: var(--wb-env-pill-radius);
+  border-radius: var(--wb-env-pill-radius);
 }
 .btn-reconnect-small {
-  --n-height: 22px;
+  --n-height: var(--wb-env-btn-height-s);
   --n-padding: 0 9px;
   --n-font-size: 11px;
-  --n-border-radius: 999px;
+  --n-border-radius: var(--wb-env-pill-radius);
+}
+.item-actions-row :deep(.n-button):focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
 }
 .close {
   flex-shrink: 0;
@@ -488,31 +426,14 @@ function toggle() {
   background: color-mix(in srgb, var(--kf-bg-soft, #f3f6fb) 86%, transparent);
   color: var(--kf-text-primary, #0f172a);
 }
+.close:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+}
 .empty {
   padding: 0.75rem;
   margin: 0;
   font-size: 0.875rem;
   color: #666;
-}
-</style>
-
-<style>
-/* 浮层挂到 body，需全局样式，可覆盖右侧工作区 */
-.env-status-popover {
-  position: fixed;
-  z-index: 10000;
-  padding: 0;
-  pointer-events: none;
-}
-.env-status-popover-content {
-  padding: 0.5rem 0.75rem;
-  font-size: 0.8125rem;
-  line-height: 1.4;
-  white-space: pre-line;
-  max-width: 280px;
-  background: var(--tooltip-bg, #1f2937);
-  color: var(--tooltip-fg, #f9fafb);
-  border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 }
 </style>

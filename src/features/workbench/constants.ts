@@ -12,9 +12,8 @@ export const WORKBENCH_ALL_NAMESPACES_SENTINEL = "__all__";
 /** 节点分配信息轮询间隔 */
 export const WORKBENCH_NODE_ALLOC_REFRESH_MS = 30_000;
 
-/** 行操作菜单相对光标偏移与视口边距 */
+/** 行操作菜单相对光标的偏移，避免菜单角与点击点完全重合 */
 export const WORKBENCH_ACTION_MENU_OFFSET = 6;
-export const WORKBENCH_ACTION_MENU_VIEWPORT_GAP = 10;
 
 /** 支持修改镜像的 API Kind 名 */
 export const WORKBENCH_IMAGE_PATCH_KINDS = new Set(["Deployment", "StatefulSet", "DaemonSet"]);

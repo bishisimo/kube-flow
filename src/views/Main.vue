@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick, type Ref } from "vue";
+import { NLayout, NLayoutSider } from "naive-ui";
 
 defineOptions({ name: "Main" });
 import { extractErrorMessage } from "../utils/errorMessage";
@@ -14,7 +15,6 @@ import { RESOURCE_GROUPS, RESOURCE_KINDS_FLAT, type ResourceKind } from "../cons
 import { resourceKindMatchesSearch } from "../constants/resourceAliases";
 import {
   WORKBENCH_ACTION_MENU_OFFSET,
-  WORKBENCH_ACTION_MENU_VIEWPORT_GAP,
   WORKBENCH_ENV_BAR_COLLAPSED_KEY,
   WORKBENCH_NODE_ALLOC_REFRESH_MS,
   WORKBENCH_NODE_TERMINAL_RESOURCE_KINDS,
@@ -476,7 +476,6 @@ function onDocClick(e: MouseEvent) {
   const kindRoot = tb ? toolbarHTMLElement(tb, "kindDropdownRef") : null;
   if (nsDropdownOpen.value && nsRoot && !nsRoot.contains(target)) nsDropdownOpen.value = false;
   if (kindDropdownOpen.value && kindRoot && !kindRoot.contains(target)) kindDropdownOpen.value = false;
-  if (actionMenuVisible.value && actionMenuComponentRef.value?.menuEl && !actionMenuComponentRef.value.menuEl.contains(target)) closeActionMenu();
 }
 
 const filteredNamespaceOptions = computed(() => {
@@ -662,8 +661,15 @@ const {
 /** 操作菜单：点击行时显示，区分资源管理与资源钻取 */
 const actionMenuVisible = ref(false);
 const actionMenuPosition = ref({ x: 0, y: 0 });
-const actionMenuComponentRef = ref<{ menuEl: HTMLElement | null } | null>(null);
 const deleteActionArmed = ref(false);
+
+/** 当前被 ActionMenu 锁定的行 key，用于表格行高亮（与 getRowKey 规则保持一致）。 */
+const activeRowKey = computed<string | null>(() => {
+  if (!actionMenuVisible.value) return null;
+  const r = selectedResource.value;
+  if (!r) return null;
+  return r.namespace ? `${r.namespace}/${r.name}` : r.name;
+});
 
 function selectResourceFromRow(row: Record<string, unknown>): SelectedResourceRef | null {
   const name = row.name as string | undefined;
@@ -717,13 +723,13 @@ function onRowContextMenu(row: Record<string, unknown>, e: MouseEvent) {
   if (!resource) return;
   selectedResource.value = resource;
   deleteActionArmed.value = false;
-  actionMenuVisible.value = true;
+  actionMenuVisible.value = false;
   actionMenuPosition.value = {
     x: e.clientX + WORKBENCH_ACTION_MENU_OFFSET,
     y: e.clientY + WORKBENCH_ACTION_MENU_OFFSET,
   };
   nextTick(() => {
-    adjustActionMenuPosition();
+    actionMenuVisible.value = true;
   });
 }
 
@@ -747,23 +753,6 @@ function openNodeTaintsFromRow(row: Record<string, unknown>) {
 function closeActionMenu() {
   actionMenuVisible.value = false;
   deleteActionArmed.value = false;
-}
-
-function adjustActionMenuPosition() {
-  if (!actionMenuVisible.value || !actionMenuComponentRef.value?.menuEl) return;
-  const rect = actionMenuComponentRef.value.menuEl.getBoundingClientRect();
-  const maxX = Math.max(
-    WORKBENCH_ACTION_MENU_VIEWPORT_GAP,
-    window.innerWidth - rect.width - WORKBENCH_ACTION_MENU_VIEWPORT_GAP
-  );
-  const maxY = Math.max(
-    WORKBENCH_ACTION_MENU_VIEWPORT_GAP,
-    window.innerHeight - rect.height - WORKBENCH_ACTION_MENU_VIEWPORT_GAP
-  );
-  actionMenuPosition.value = {
-    x: Math.min(Math.max(WORKBENCH_ACTION_MENU_VIEWPORT_GAP, actionMenuPosition.value.x), maxX),
-    y: Math.min(Math.max(WORKBENCH_ACTION_MENU_VIEWPORT_GAP, actionMenuPosition.value.y), maxY),
-  };
 }
 
 function openResourceDetail() {
@@ -1202,15 +1191,11 @@ onMounted(async () => {
   const id = currentId.value;
   if (id) restoreEnvViewState(id);
   document.addEventListener("click", onDocClick);
-  window.addEventListener("resize", adjustActionMenuPosition);
-  window.addEventListener("scroll", adjustActionMenuPosition, true);
   unlistenConnection = await setupConnectionProgressListener();
 });
 
 onUnmounted(() => {
   document.removeEventListener("click", onDocClick);
-  window.removeEventListener("resize", adjustActionMenuPosition);
-  window.removeEventListener("scroll", adjustActionMenuPosition, true);
   unlistenConnection?.();
   stopNodeAllocationPolling();
 });
@@ -1373,16 +1358,26 @@ const {
 </script>
 
 <template>
-  <div class="main-layout">
-    <template v-if="openedEnvs.length">
+  <NLayout :has-sider="openedEnvs.length > 0" class="main-layout">
+    <NLayoutSider
+      v-if="openedEnvs.length"
+      bordered
+      :width="236"
+      :collapsed-width="44"
+      show-trigger="arrow-circle"
+      collapse-mode="transform"
+      :collapsed="envBarCollapsed"
+      content-style="height: 100%; overflow: hidden;"
+      @update:collapsed="setEnvBarCollapsed"
+    >
       <EnvBar
         :collapsed="envBarCollapsed"
         :on-reconnect="handleReconnect"
         :on-open-terminal="openEnvironmentTerminal"
-        @toggle="setEnvBarCollapsed(!envBarCollapsed)"
       />
-      <div class="content">
-        <WorkbenchBreadcrumb
+    </NLayoutSider>
+    <div v-if="openedEnvs.length" class="content">
+      <WorkbenchBreadcrumb
           v-if="currentId"
           :drill-from="drillFrom"
           :api-kind-to-id="API_KIND_TO_ID"
@@ -1473,6 +1468,8 @@ const {
             :sort-order="sortOrder"
             :selected-kind="selectedKind"
             :list-loading="listLoading"
+            :active-row-key="activeRowKey"
+            :delete-action-armed="deleteActionArmed"
             :ns-selection-disabled="nsSelectionDisabled"
             :selected-namespace="selectedNamespace"
             :get-row-key="getRowKey"
@@ -1503,17 +1500,15 @@ const {
             :open-kind-selector="openKindSelector"
           />
         </WorkbenchResourceFrame>
-      </div>
-    </template>
+    </div>
     <div v-else class="empty-state">
       <div class="empty-emoji" aria-hidden="true">🌐</div>
       <p class="empty-title">暂无打开的环境</p>
       <p class="empty-desc">请先在「环境管理」中打开至少一个环境。</p>
     </div>
 
-    <!-- 资源操作菜单：资源管理 vs 资源钻取 -->
+    <!-- overlay 组件全部基于 Teleport 渲染到 body，不会影响 NLayout 的 flex 布局 -->
     <WorkbenchActionMenu
-      ref="actionMenuComponentRef"
       :visible="actionMenuVisible"
       :position="actionMenuPosition"
       :selected-resource="selectedResource"
@@ -1582,8 +1577,7 @@ const {
       @close="deleteConfirmVisible = false"
       @confirm="onDeleteConfirm"
     />
-
-  </div>
+  </NLayout>
 </template>
 
 

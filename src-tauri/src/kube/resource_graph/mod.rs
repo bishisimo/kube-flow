@@ -76,7 +76,6 @@ pub enum RelationType {
     IngressBackend,
     RoleRef,
     // E类：反向派生
-    UsedBy,
     Routes,
     ScaledBy,
 }

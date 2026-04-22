@@ -80,11 +80,13 @@ const groupedResources = computed(() => {
 
 <style scoped>
 .delete-overview {
+  --wb-modal-btn-height: 32px;
+  --wb-modal-btn-radius: 9px;
   display: flex;
   align-items: center;
   gap: 0.35rem;
   padding: 0.5rem 0.68rem;
-  border-radius: 10px;
+  border-radius: 12px;
   background: color-mix(in srgb, var(--kf-primary-soft, #e8f0ff) 62%, #fff);
   border: 1px solid color-mix(in srgb, var(--kf-primary, #2563eb) 24%, #fff);
   margin-bottom: 0.55rem;
@@ -105,8 +107,8 @@ const groupedResources = computed(() => {
 .delete-table-wrap {
   max-height: 300px;
   overflow-y: auto;
-  border: 1px solid var(--kf-border, rgba(226, 232, 240, 0.95));
-  border-radius: 10px;
+  border: 1px solid var(--wb-line, rgba(148, 163, 184, 0.22));
+  border-radius: 12px;
   background: #fff;
 }
 .delete-table-head {
@@ -117,8 +119,8 @@ const groupedResources = computed(() => {
   grid-template-columns: 1.1fr 1fr 1.8fr;
   gap: 0.5rem;
   padding: 0.52rem 0.68rem;
-  background: #f8fafc;
-  border-bottom: 1px solid rgba(226, 232, 240, 0.95);
+  background: linear-gradient(180deg, #f8fbff, #f1f5fb);
+  border-bottom: 1px solid var(--wb-line, rgba(148, 163, 184, 0.22));
   font-size: 0.72rem;
   font-weight: 700;
   color: #475569;
@@ -134,7 +136,11 @@ const groupedResources = computed(() => {
   gap: 0.5rem;
   align-items: center;
   padding: 0.46rem 0.68rem;
-  border-bottom: 1px solid rgba(241, 245, 249, 0.92);
+  border-bottom: 1px solid rgba(226, 232, 240, 0.82);
+  transition: background-color 0.16s ease;
+}
+.delete-row:hover {
+  background: rgba(239, 246, 255, 0.72);
 }
 .delete-row:last-child {
   border-bottom: none;
@@ -162,5 +168,14 @@ const groupedResources = computed(() => {
 }
 .modal-error {
   margin: 0.75rem 0 0.25rem;
+}
+:deep(.n-button) {
+  --n-height: var(--wb-modal-btn-height);
+  --n-border-radius: var(--wb-modal-btn-radius);
+  --n-padding: 0 14px;
+}
+:deep(.n-button):focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
 }
 </style>

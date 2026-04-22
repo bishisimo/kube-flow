@@ -1,9 +1,17 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { NButton, NInput, NPopover, NSelect } from "naive-ui";
+import { NButton, NInput, NPopover, NSelect, NTag } from "naive-ui";
 import type { ResourceKind } from "../../constants/resourceKinds";
 import type { NamespaceItem, ResolvedAliasTarget } from "../../api/kube";
 import { resourceSupportsWatch } from "../../resources/resourceRegistry";
+
+/** 环境连接状态 → NTag 语义类型：connected/error 归绿，connecting 归蓝，disconnected 归红 */
+function envStateTagType(state: string): "success" | "info" | "error" | "default" {
+  if (state === "connected" || state === "error") return "success";
+  if (state === "connecting") return "info";
+  if (state === "disconnected") return "error";
+  return "default";
+}
 
 type KindGroup = { id: string; label: string; kinds: { id: ResourceKind; label: string }[] };
 type FilterChip = { id: string; label: string; value: string };
@@ -96,20 +104,30 @@ defineExpose({
       <div class="toolbar-main">
         <div v-if="currentEnv" class="toolbar-cluster toolbar-cluster-scope">
           <div class="active-env-banner">
-            <div class="active-env-copy">
-              <div class="active-env-name-row">
-                <span class="env-name">{{ currentEnv.display_name }}</span>
-                <span class="active-env-state" :class="`active-env-state-${envConnectionState}`">
-                  {{ currentEnvStateLabel }}
-                </span>
-              </div>
-              <div class="active-env-meta-row">
-                <span class="active-env-chip">{{ currentEnvSourceLabel }}</span>
-                <span v-if="shouldShowCurrentEnvContext" class="active-env-chip subtle">
-                  Context: {{ currentEnvContextLabel }}
-                </span>
-              </div>
-            </div>
+            <span class="env-name" :title="currentEnv.display_name">{{ currentEnv.display_name }}</span>
+            <NTag
+              size="small"
+              round
+              :bordered="false"
+              :type="envStateTagType(envConnectionState)"
+              class="active-env-state-tag"
+            >
+              <span class="state-dot" :class="`state-dot-${envConnectionState}`" aria-hidden="true" />
+              {{ currentEnvStateLabel }}
+            </NTag>
+            <NTag size="small" round :bordered="false" type="info" class="active-env-meta">
+              {{ currentEnvSourceLabel }}
+            </NTag>
+            <NTag
+              v-if="shouldShowCurrentEnvContext"
+              size="small"
+              round
+              :bordered="true"
+              class="active-env-meta subtle"
+              :title="currentEnvContextLabel"
+            >
+              Context: {{ currentEnvContextLabel }}
+            </NTag>
           </div>
         </div>
         <NPopover
@@ -143,12 +161,11 @@ defineExpose({
               <div class="combobox-panel-subtitle">当前资源范围会基于这里切换</div>
             </div>
             <div class="combobox-search">
-              <input
-                v-model="nsFilter"
-                type="text"
-                class="combobox-input"
+              <NInput
+                v-model:value="nsFilter"
+                size="small"
+                clearable
                 placeholder="搜索命名空间…"
-                autocomplete="off"
               />
             </div>
             <button
@@ -268,12 +285,11 @@ defineExpose({
               <div class="combobox-panel-subtitle">内置资源按分组浏览；CRD 在下方专区搜索后选择</div>
             </div>
             <div class="combobox-search">
-              <input
-                v-model="kindFilter"
-                type="text"
-                class="combobox-input"
+              <NInput
+                v-model:value="kindFilter"
+                size="small"
+                clearable
                 placeholder="筛选内置类型，或在 CRD 专区匹配 Kind / plural / 短名…"
-                autocomplete="off"
               />
             </div>
             <div v-if="kindFilter.trim() && customResourceHintLine" class="kind-custom-hint-wrap">
@@ -428,19 +444,21 @@ defineExpose({
       </div>
       <div v-if="activeFilterChips.length" class="filter-chip-bar">
         <span class="filter-chip-label">已启用筛选</span>
-        <NButton
+        <NTag
           v-for="chip in activeFilterChips"
           :key="chip.id"
           class="filter-chip"
+          type="info"
+          size="small"
+          round
+          closable
           :title="`点击移除 ${chip.label} 筛选`"
-          quaternary
-          size="tiny"
-          @click="emit('clear-filter-chip', chip.id)"
+          @close="emit('clear-filter-chip', chip.id)"
         >
-          {{ chip.label }}: {{ chip.value }}
-          <span class="filter-chip-close" aria-hidden="true">×</span>
-        </NButton>
-        <NButton text type="primary" class="filter-chip-clear-all" @click="emit('clear-all-filters')">清除全部</NButton>
+          <span class="filter-chip-name">{{ chip.label }}:</span>
+          <span class="filter-chip-value">{{ chip.value }}</span>
+        </NTag>
+        <NButton text type="primary" size="tiny" class="filter-chip-clear-all" @click="emit('clear-all-filters')">清除全部</NButton>
       </div>
     </div>
   </header>
@@ -449,21 +467,25 @@ defineExpose({
 <style scoped>
 .toolbar {
   padding: 0.75rem 1rem;
-  border-bottom: 1px solid var(--kf-border, rgba(148, 163, 184, 0.26));
+  border-bottom: 1px solid var(--wb-line, rgba(148, 163, 184, 0.22));
   background: var(--wb-canvas, #eef2f9);
   display: block;
   flex-shrink: 0;
   position: relative;
   z-index: 30;
+  --wb-ctrl-height: 40px;
+  --wb-ctrl-radius: 10px;
+  --wb-ctrl-font: 0.8rem;
+  --wb-focus-ring: 0 0 0 3px rgba(37, 99, 235, 0.18);
 }
 .toolbar-card {
   display: flex;
   flex-direction: column;
   gap: 0.65rem;
   padding: 0.8rem 0.9rem;
-  border: 1px solid var(--kf-border, rgba(148, 163, 184, 0.2));
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--kf-surface-strong, #ffffff) 90%, transparent);
+  border: 1px solid var(--wb-line, rgba(148, 163, 184, 0.22));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--wb-panel-elevated, #ffffff) 92%, transparent);
   backdrop-filter: blur(8px);
   box-shadow: var(--kf-shadow-sm, 0 12px 32px rgba(15, 23, 42, 0.08));
 }
@@ -482,14 +504,14 @@ defineExpose({
   min-height: 2.35rem;
   align-self: stretch;
   margin: 0 0.15rem;
-  background: var(--kf-border, rgba(148, 163, 184, 0.35));
+  background: var(--wb-line, rgba(148, 163, 184, 0.22));
   border-radius: 1px;
 }
 .toolbar-filters-shell {
   padding: 0.55rem 0.65rem;
   border-radius: 12px;
-  background: var(--kf-bg-soft, #f4f7fc);
-  border: 1px solid color-mix(in srgb, var(--kf-border) 85%, transparent);
+  background: var(--wb-panel-soft, #f8fbff);
+  border: 1px solid var(--wb-line, rgba(148, 163, 184, 0.22));
 }
 .toolbar-filters {
   display: grid;
@@ -516,86 +538,60 @@ defineExpose({
   gap: 0.5rem;
   flex-shrink: 0;
 }
+.active-env-banner {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  flex: 0 1 auto;
+  max-width: min(100%, 420px);
+  min-width: 0;
+  gap: 0.36rem;
+  padding: 0.38rem 0.56rem;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--kf-primary) 22%, #fff);
+  background:
+    radial-gradient(circle at top right, rgba(37, 99, 235, 0.12), transparent 38%),
+    linear-gradient(135deg, #eff6ff, #f8fafc 72%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    0 4px 14px rgba(37, 99, 235, 0.06);
+}
 .env-name {
   font-weight: 800;
-  font-size: 0.88rem;
-  color: #0f172a;
+  font-size: 0.84rem;
+  color: var(--wb-text-primary, #0f172a);
+  max-width: 220px;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  letter-spacing: -0.01em;
 }
-.active-env-banner {
+.active-env-state-tag :deep(.n-tag__icon),
+.active-env-state-tag :deep(.n-tag__content) {
   display: inline-flex;
   align-items: center;
-  flex: 0 1 auto;
-  width: fit-content;
-  max-width: min(100%, 300px);
-  min-width: 0;
-  padding: 0.44rem 0.62rem;
-  border-radius: 12px;
-  border: 1px solid color-mix(in srgb, var(--kf-primary) 28%, #fff);
-  background:
-    radial-gradient(circle at top right, rgba(37, 99, 235, 0.16), transparent 34%),
-    linear-gradient(135deg, #eff6ff, #f8fafc 72%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.85),
-    0 6px 20px rgba(37, 99, 235, 0.08);
+  gap: 0.3rem;
 }
-.active-env-copy {
-  min-width: 0;
-  width: auto;
-}
-.active-env-name-row {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.38rem;
-}
-.active-env-meta-row {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.24rem;
-  margin-top: 0.24rem;
-}
-.active-env-chip {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.1rem 0.34rem;
+.state-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
   border-radius: 999px;
-  background: rgba(37, 99, 235, 0.12);
-  color: #1e40af;
-  font-size: 0.62rem;
-  font-weight: 650;
-  max-width: 100%;
+  background: currentColor;
 }
-.active-env-chip.subtle {
-  background: rgba(255, 255, 255, 0.86);
+.state-dot-connecting {
+  animation: toolbar-state-pulse 1s ease-in-out infinite;
+}
+@keyframes toolbar-state-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.active-env-meta {
+  max-width: 220px;
+}
+.active-env-meta.subtle :deep(.n-tag__content) {
   color: var(--kf-text-secondary);
-  border: 1px solid var(--kf-border);
-}
-.active-env-state {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.12rem 0.34rem;
-  border-radius: 999px;
-  font-size: 0.62rem;
-  font-weight: 700;
-  flex-shrink: 0;
-}
-.active-env-state-connected,
-.active-env-state-error {
-  background: #ecfdf5;
-  color: #15803d;
-}
-.active-env-state-connecting {
-  background: #e0f2fe;
-  color: #0369a1;
-}
-.active-env-state-disconnected {
-  background: #fef2f2;
-  color: #dc2626;
 }
 .combobox-wrap {
   position: relative;
@@ -607,14 +603,15 @@ defineExpose({
   gap: 0.55rem;
   padding: 0.38rem 0.58rem;
   border: 1px solid var(--kf-border);
-  border-radius: 12px;
-  background: #fff;
-  font-size: 0.79rem;
-  color: var(--kf-text-secondary);
+  border-radius: var(--wb-ctrl-radius);
+  background: var(--wb-panel, #fff);
+  font-size: var(--wb-ctrl-font);
+  color: var(--wb-text-secondary, #66768f);
   cursor: pointer;
   min-width: 0;
-  min-height: 40px;
+  min-height: var(--wb-ctrl-height);
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+  transition: border-color 0.16s ease, background-color 0.16s ease, box-shadow 0.16s ease;
 }
 .combobox-trigger:hover {
   background: var(--kf-bg-soft);
@@ -623,7 +620,7 @@ defineExpose({
 .combobox-trigger:focus-visible {
   outline: none;
   border-color: #2563eb;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+  box-shadow: var(--wb-focus-ring);
 }
 .combobox-trigger-strong {
   min-width: 156px;
@@ -636,7 +633,7 @@ defineExpose({
 .combobox-trigger.open {
   border-color: #2563eb;
   background: #eff6ff;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.14);
 }
 .combobox-trigger-main {
   display: flex;
@@ -645,7 +642,7 @@ defineExpose({
   min-width: 0;
 }
 .combobox-label {
-  color: #64748b;
+  color: var(--wb-text-secondary, #66768f);
   font-size: 0.68rem;
   font-weight: 700;
   text-transform: uppercase;
@@ -656,7 +653,7 @@ defineExpose({
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #0f172a;
+  color: var(--wb-text-primary, #0f172a);
   font-weight: 700;
   line-height: 1.25;
 }
@@ -679,9 +676,9 @@ defineExpose({
   max-height: 420px;
   overflow-y: auto;
   overflow-x: hidden;
-  background: #fff;
-  border: 1px solid var(--kf-border);
-  border-radius: 16px;
+  background: var(--wb-panel-elevated, #fff);
+  border: 1px solid var(--wb-line, rgba(148, 163, 184, 0.22));
+  border-radius: 12px;
   box-shadow: 0 18px 40px rgba(15, 23, 42, 0.16);
   padding: 0.3rem 0;
   display: flex;
@@ -703,20 +700,10 @@ defineExpose({
 .combobox-search {
   padding: 0.2rem 0.6rem 0.35rem;
 }
-.combobox-input {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 0.55rem 0.7rem;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  font-size: 0.8125rem;
-  background: #f8fafc;
-}
-.combobox-input:focus {
-  outline: none;
-  border-color: #2563eb;
-  background: #fff;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+.combobox-search :deep(.n-input) {
+  --n-border-radius: var(--wb-ctrl-radius);
+  --n-color: #f8fafc;
+  --n-color-focus: #ffffff;
 }
 .filter-input {
   min-width: 0;
@@ -745,8 +732,9 @@ defineExpose({
   text-align: left;
   cursor: pointer;
   color: #334155;
-  border-radius: 10px;
+  border-radius: var(--wb-ctrl-radius);
   margin: 0 0.35rem;
+  transition: background-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
 }
 .combobox-item-with-action {
   display: flex;
@@ -811,11 +799,11 @@ defineExpose({
 }
 .combobox-item:focus-visible {
   outline: none;
-  box-shadow: inset 0 0 0 2px rgba(37, 99, 235, 0.28);
+  box-shadow: inset 0 0 0 2px rgba(37, 99, 235, 0.32);
 }
 .combobox-item.active {
-  background: rgba(22, 163, 74, 0.14);
-  color: #166534;
+  background: rgba(37, 99, 235, 0.14);
+  color: #1d4ed8;
   font-weight: 600;
 }
 .combobox-group-label {
@@ -851,7 +839,7 @@ defineExpose({
   border: 1px solid #bfdbfe;
   background: #eff6ff;
   color: #1d4ed8;
-  border-radius: 999px;
+  border-radius: var(--wb-ctrl-radius);
   padding: 0.2rem 0.6rem;
   font-size: 0.75rem;
   line-height: 1.2;
@@ -862,7 +850,7 @@ defineExpose({
 }
 .recent-kind-pill:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.25);
+  box-shadow: var(--wb-focus-ring);
 }
 .recent-kind-pill.active {
   border-color: #3b82f6;
@@ -914,6 +902,9 @@ defineExpose({
   border: 1px solid rgba(148, 163, 184, 0.35);
   color: #475569;
   background: rgba(255, 255, 255, 0.86);
+  --n-height: 34px;
+  --n-border-radius: 10px;
+  transition: border-color 0.16s ease, background-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
 }
 .btn-watch :deep(.n-button__content) {
   display: inline-flex;
@@ -939,7 +930,7 @@ defineExpose({
 }
 .btn-watch:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+  box-shadow: var(--wb-focus-ring);
 }
 .filter-chip-bar {
   display: flex;
@@ -952,14 +943,26 @@ defineExpose({
   color: #64748b;
 }
 .filter-chip {
+  cursor: pointer;
+  max-width: 260px;
+}
+.filter-chip :deep(.n-tag__content) {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  border-radius: 999px;
-  color: #1d4ed8;
+  gap: 0.3rem;
+  min-width: 0;
+  overflow: hidden;
 }
-.filter-chip-close {
-  opacity: 0.75;
+.filter-chip-name {
+  font-weight: 600;
+  opacity: 0.8;
+  flex-shrink: 0;
+}
+.filter-chip-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 .filter-chip-clear-all {
   border: none;
@@ -969,6 +972,11 @@ defineExpose({
   cursor: pointer;
   text-decoration: underline;
   padding: 0.1rem 0.2rem;
+  border-radius: 6px;
+}
+.filter-chip-clear-all:focus-visible {
+  outline: none;
+  box-shadow: var(--wb-focus-ring);
 }
 @media (max-width: 960px) {
   .active-env-banner {

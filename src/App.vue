@@ -153,6 +153,15 @@ function onStrongholdCancel() {
   /* Workbench 主列表 */
   --wb-canvas: #edf2f9;
   --wb-panel: #ffffff;
+  --wb-panel-soft: #f8fbff;
+  --wb-panel-elevated: #ffffff;
+  --wb-line: rgba(148, 163, 184, 0.22);
+  --wb-line-strong: rgba(100, 116, 139, 0.34);
+  --wb-text-primary: #0f172a;
+  --wb-text-secondary: #66768f;
+  --wb-chip: #e8f0ff;
+  --wb-chip-text: #1d4ed8;
+  --wb-overlay: linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(246, 249, 253, 0.98));
   --wb-table-header: linear-gradient(180deg, #e9f0f9 0%, #dde7f4 100%);
   --wb-table-border: rgba(148, 163, 184, 0.3);
   --wb-row-stripe: rgba(248, 250, 252, 0.7);

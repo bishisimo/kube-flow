@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NAlert, NButton, NSpin } from "naive-ui";
+import { NAlert, NButton, NSkeleton, NSpin } from "naive-ui";
 import type { ConnectionProgressPayload } from "../../stores/connection";
 
 defineProps<{
@@ -52,17 +52,35 @@ const emit = defineEmits<{
       </div>
     </NAlert>
     <div v-else-if="listLoading" class="loading-state">
-      <NSpin size="large" class="loading-state-spin" />
-      <div class="loading-state-title">
-        {{ envSwitching ? `正在切换到 ${envSwitchingName || "目标环境"}` : "加载中…" }}
+      <div class="loading-state-head">
+        <div class="loading-state-title">
+          <NSpin size="small" stroke="#2563eb" :stroke-width="18" />
+          <span>
+            {{ envSwitching ? `正在切换到 ${envSwitchingName || "目标环境"}` : "加载中…" }}
+          </span>
+        </div>
+        <div class="loading-state-detail">
+          {{ envSwitching ? "旧环境数据已清空，正在拉取新环境资源。" : "正在同步当前环境下的资源列表。" }}
+        </div>
       </div>
-      <div class="loading-state-detail">
-        {{ envSwitching ? "旧环境数据已清空，正在拉取新环境资源。" : "正在同步当前环境下的资源列表。" }}
+      <div class="loading-state-skeleton" aria-hidden="true">
+        <div class="loading-skeleton-row loading-skeleton-header">
+          <NSkeleton text width="20%" :sharp="false" />
+          <NSkeleton text width="14%" :sharp="false" />
+          <NSkeleton text width="14%" :sharp="false" />
+          <NSkeleton text width="12%" :sharp="false" />
+          <NSkeleton text width="10%" :sharp="false" />
+        </div>
+        <div v-for="n in 8" :key="n" class="loading-skeleton-row">
+          <NSkeleton text width="24%" :sharp="false" />
+          <NSkeleton text width="18%" :sharp="false" />
+          <NSkeleton text width="16%" :sharp="false" />
+          <NSkeleton text width="14%" :sharp="false" />
+          <NSkeleton text width="10%" :sharp="false" />
+        </div>
       </div>
     </div>
-    <div v-else class="resource-frame-body">
-      <slot />
-    </div>
+    <slot v-else />
   </section>
 </template>
 
@@ -73,16 +91,10 @@ const emit = defineEmits<{
   display: flex;
   flex-direction: column;
 }
-.resource-frame-body {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
 .state-alert {
-  border-radius: 0;
-  border-left: none;
-  border-right: none;
+  margin: 0.55rem 1rem 0;
+  border-radius: 12px;
+  border: 1px solid var(--wb-line, rgba(148, 163, 184, 0.22));
 }
 .alert-row {
   display: flex;
@@ -106,10 +118,12 @@ const emit = defineEmits<{
   opacity: 0.92;
 }
 .connection-stepper {
-  padding: 0.75rem 1rem;
-  background: #f0f9ff;
-  color: #0369a1;
-  border-bottom: 1px solid #bae6fd;
+  margin: 0.55rem 1rem 0;
+  padding: 0.75rem 0.9rem;
+  background: linear-gradient(180deg, #f0f9ff, #f8fbff);
+  color: #075985;
+  border: 1px solid #bae6fd;
+  border-radius: 12px;
   font-size: 0.875rem;
 }
 .stepper-title {
@@ -126,31 +140,58 @@ const emit = defineEmits<{
 .loading-state {
   display: flex;
   flex-direction: column;
-  align-items: center;
   gap: 0.75rem;
-  margin: 0.75rem 1rem 1.25rem;
-  padding: 2rem 1.5rem;
-  text-align: center;
-  color: var(--kf-text-secondary, #64748b);
-  font-size: 0.875rem;
-  background: var(--wb-panel, #ffffff);
-  border: 1px solid var(--kf-border, rgba(148, 163, 184, 0.26));
-  border-radius: 14px;
+  margin: 0.65rem 1rem 1rem;
+  padding: 1rem 1.15rem 1.2rem;
+  background: var(--wb-panel-elevated, #ffffff);
+  border: 1px solid var(--wb-line, rgba(148, 163, 184, 0.22));
+  border-radius: 12px;
   box-shadow: var(--kf-shadow-sm, 0 10px 24px rgba(15, 23, 42, 0.08));
 }
-.loading-state-spin {
-  margin-bottom: 0.15rem;
+.loading-state-head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px dashed var(--wb-line, rgba(148, 163, 184, 0.22));
 }
 .loading-state-title {
-  font-size: 0.95rem;
-  font-weight: 600;
-  color: var(--kf-text-primary, #334155);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.9rem;
+  font-weight: 650;
+  color: var(--kf-text-primary, #0f172a);
 }
 .loading-state-detail {
-  margin-top: 0;
   font-size: 0.8125rem;
   color: var(--kf-text-secondary, #64748b);
-  max-width: 22rem;
-  line-height: 1.45;
+  line-height: 1.5;
+}
+.loading-state-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.25rem 0.1rem 0.25rem;
+}
+.loading-skeleton-row {
+  display: grid;
+  grid-template-columns: 24% 18% 16% 14% 10% 1fr;
+  gap: 0.8rem;
+  align-items: center;
+  padding: 0.35rem 0.2rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+}
+.loading-skeleton-row:last-child {
+  border-bottom: none;
+}
+.loading-skeleton-header {
+  padding: 0.4rem 0.2rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.24);
+}
+.loading-skeleton-header :deep(.n-skeleton) {
+  --n-color-start: #e2e8f0;
+  --n-color-end: #cbd5e1;
+  opacity: 0.75;
 }
 </style>

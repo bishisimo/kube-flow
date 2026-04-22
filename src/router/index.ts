@@ -3,7 +3,7 @@ import { createRouter, createWebHistory } from "vue-router";
 const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { path: "/", name: "shell", component: () => import("../views/Shell.vue"), meta: { title: "Kube-Flow" } },
+    { path: "/", name: "app-shell", component: () => import("../views/AppShell.vue"), meta: { title: "Kube-Flow" } },
   ],
 });
 

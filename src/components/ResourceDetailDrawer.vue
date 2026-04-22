@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, watch, onUnmounted } from "vue";
+import { ref, computed, h, watch } from "vue";
 import * as jsYaml from "js-yaml";
+import { NButton, NCheckbox, NDrawer, NDrawerContent, NTab, NTabs } from "naive-ui";
 import { extractErrorMessage } from "../utils/errorMessage";
 import { stripManagedFields } from "../utils/yaml";
 import { marked } from "marked";
@@ -65,7 +66,33 @@ const emit = defineEmits<{
 }>();
 
 type DetailTab = "yaml" | "describe" | "edit" | "editConfig" | "logs" | "topology" | "snapshots" | "taints";
+const VALID_DETAIL_TABS: readonly DetailTab[] = [
+  "yaml",
+  "edit",
+  "describe",
+  "taints",
+  "logs",
+  "editConfig",
+  "topology",
+  "snapshots",
+];
 const activeTab = ref<DetailTab>("yaml");
+
+function onTabChange(v: string | number) {
+  if (typeof v !== "string") return;
+  if ((VALID_DETAIL_TABS as readonly string[]).includes(v)) {
+    activeTab.value = v as DetailTab;
+  }
+}
+
+/** 给 NTab 的 tab prop 用：渲染"字母徽章 + 中文标题"双段式视觉。 */
+function renderTabLabel(badge: string, text: string) {
+  return () =>
+    h("span", { class: "detail-tab-label" }, [
+      h("span", { class: "detail-tab-badge", "aria-hidden": "true" }, badge),
+      h("span", { class: "detail-tab-text" }, text),
+    ]);
+}
 
 const rawYaml = ref("");
 const editYaml = ref("");
@@ -231,36 +258,15 @@ async function handleStrongholdLocked(message: string, onConfirmed: () => void):
 }
 const drawerWidth = ref(Math.min(DRAWER_MAX, Math.max(DRAWER_MIN, drawerWidthStorage.read())));
 
-let resizeStartX = 0;
-let resizeStartW = 0;
-
-function onResizeStart(e: MouseEvent) {
-  resizeStartX = e.clientX;
-  resizeStartW = drawerWidth.value;
-  document.addEventListener("mousemove", onResizeMove);
-  document.addEventListener("mouseup", onResizeEnd);
-  document.body.style.cursor = "col-resize";
-  document.body.style.userSelect = "none";
-}
-
-function onResizeMove(e: MouseEvent) {
-  const delta = resizeStartX - e.clientX;
-  const w = Math.min(DRAWER_MAX, Math.max(DRAWER_MIN, resizeStartW + delta));
+function onDrawerWidthUpdate(value: number) {
+  const w = Math.min(DRAWER_MAX, Math.max(DRAWER_MIN, Math.round(value)));
   drawerWidth.value = w;
   drawerWidthStorage.write(w);
 }
 
-function onResizeEnd() {
-  document.removeEventListener("mousemove", onResizeMove);
-  document.removeEventListener("mouseup", onResizeEnd);
-  document.body.style.cursor = "";
-  document.body.style.userSelect = "";
+function onDrawerShowUpdate(value: boolean) {
+  if (!value) emit("close");
 }
-
-onUnmounted(() => {
-  document.removeEventListener("mousemove", onResizeMove);
-  document.removeEventListener("mouseup", onResizeEnd);
-});
 
 const displayYaml = computed(() => {
   if (!rawYaml.value) return "";
@@ -500,125 +506,92 @@ watch(
 </script>
 
 <template>
-  <Teleport to="body">
-    <div v-if="visible" class="drawer-overlay" @click.self="emit('close')">
-      <div
-        class="resize-handle"
-        aria-label="拖拽调整宽度"
-        @mousedown.prevent="onResizeStart"
-      />
-      <aside class="drawer" role="dialog" aria-labelledby="drawer-title" :style="{ width: drawerWidth + 'px' }">
-        <header class="drawer-header">
-          <h2 id="drawer-title" class="drawer-title">
+  <NDrawer
+    :show="visible"
+    placement="right"
+    resizable
+    :width="drawerWidth"
+    :min-width="DRAWER_MIN"
+    :max-width="DRAWER_MAX"
+    :default-width="DRAWER_DEFAULT"
+    :mask-closable="true"
+    :trap-focus="false"
+    :auto-focus="false"
+    :block-scroll="false"
+    @update:show="onDrawerShowUpdate"
+    @update:width="onDrawerWidthUpdate"
+  >
+    <NDrawerContent
+      class="detail-drawer-content"
+      closable
+      :native-scrollbar="true"
+      body-class="detail-drawer-body"
+      body-content-class="detail-drawer-body-content"
+      body-style="padding: 0; overflow: hidden;"
+      body-content-style="display: flex; flex-direction: column; height: 100%; min-height: 0;"
+    >
+      <template #header>
+        <div class="detail-drawer-header">
+          <span class="detail-drawer-title">
             {{ resource ? `${resource.kind} / ${resource.name}` : "资源详情" }}
-          </h2>
-          <div class="drawer-header-actions">
-            <label v-if="activeTab === 'yaml' && rawYaml" class="checkbox-label checkbox-label-inline drawer-header-toggle">
-              <input v-model="showManagedFields" type="checkbox" />
-              <span>managedFields</span>
-            </label>
-            <button type="button" class="btn-close" aria-label="关闭" @click="emit('close')">×</button>
-          </div>
-        </header>
-        <div v-if="props.resource" class="drawer-toolbar">
-          <div class="toolbar-head">
-            <template v-if="(activeTab === 'edit' || activeTab === 'taints') && rawYaml">
-              <button
-                type="button"
-                class="btn-primary toolbar-apply"
-                :disabled="editSaving"
+          </span>
+          <NCheckbox
+            v-if="activeTab === 'yaml' && rawYaml"
+            v-model:checked="showManagedFields"
+            size="small"
+            class="detail-drawer-header-toggle"
+          >
+            managedFields
+          </NCheckbox>
+        </div>
+      </template>
+      <div v-if="props.resource" class="drawer-toolbar">
+          <NTabs
+            :value="activeTab"
+            type="line"
+            size="small"
+            animated
+            class="detail-tabs"
+            @update:value="onTabChange"
+          >
+            <template #suffix>
+              <NButton
+                v-if="(activeTab === 'edit' || activeTab === 'taints') && rawYaml"
+                type="primary"
+                size="small"
+                :loading="editSaving"
                 @click="activeTab === 'taints' ? applyNodeTaints() : applyEdit()"
               >
                 {{ editSaving ? "保存中…" : "应用" }}
-              </button>
+              </NButton>
             </template>
-          </div>
-          <div class="toolbar-row">
-            <div class="tab-grid">
-              <button
-                type="button"
-                class="tab-btn tab-compact"
-                :class="{ active: activeTab === 'yaml' }"
-                @click="activeTab = 'yaml'"
-              >
-                <span class="tab-icon" aria-hidden="true">Y</span>
-                <span class="tab-title">YAML</span>
-              </button>
-              <button
-                type="button"
-                class="tab-btn tab-compact"
-                :class="{ active: activeTab === 'edit' }"
-                @click="activeTab = 'edit'"
-              >
-                <span class="tab-icon" aria-hidden="true">E</span>
-                <span class="tab-title">编辑</span>
-              </button>
-              <button
-                type="button"
-                class="tab-btn tab-compact"
-                :class="{ active: activeTab === 'describe' }"
-                @click="activeTab = 'describe'"
-              >
-                <span class="tab-icon" aria-hidden="true">D</span>
-                <span class="tab-title">详情</span>
-              </button>
-              <button
-                v-if="resource?.kind === 'Node'"
-                type="button"
-                class="tab-btn tab-compact"
-                :class="{ active: activeTab === 'taints' }"
-                @click="activeTab = 'taints'"
-              >
-                <span class="tab-icon" aria-hidden="true">T</span>
-                <span class="tab-title">污点</span>
-              </button>
-              <button
-                v-if="
-                  resource &&
-                  (resource.kind === 'Pod' ||
-                    resource.kind === 'Deployment' ||
-                    resource.kind === 'StatefulSet' ||
-                    resource.kind === 'DaemonSet')
-                "
-                type="button"
-                class="tab-btn tab-compact"
-                :class="{ active: activeTab === 'logs' }"
-                @click="activeTab = 'logs'"
-              >
-                <span class="tab-icon" aria-hidden="true">L</span>
-                <span class="tab-title">日志</span>
-              </button>
-              <button
-                v-if="resource && (resource.kind === 'ConfigMap' || resource.kind === 'Secret')"
-                type="button"
-                class="tab-btn tab-compact"
-                :class="{ active: activeTab === 'editConfig' }"
-                @click="activeTab = 'editConfig'"
-              >
-                <span class="tab-icon" aria-hidden="true">C</span>
-                <span class="tab-title">配置</span>
-              </button>
-              <button
-                v-if="resource && !resource.dynamic"
-                type="button"
-                class="tab-btn tab-compact"
-                :class="{ active: activeTab === 'topology' }"
-                @click="activeTab = 'topology'"
-              >
-                <span class="tab-icon" aria-hidden="true">R</span>
-                <span class="tab-title">关联</span>
-              </button>
-              <button
-                type="button"
-                class="tab-btn tab-compact"
-                :class="{ active: activeTab === 'snapshots' }"
-                @click="activeTab = 'snapshots'"
-              >
-                <span class="tab-icon" aria-hidden="true">S</span>
-                <span class="tab-title">快照</span>
-              </button>
-            </div>
-          </div>
+            <NTab name="yaml" :tab="renderTabLabel('Y', 'YAML')" />
+            <NTab name="edit" :tab="renderTabLabel('E', '编辑')" />
+            <NTab name="describe" :tab="renderTabLabel('D', '详情')" />
+            <NTab v-if="resource?.kind === 'Node'" name="taints" :tab="renderTabLabel('T', '污点')" />
+            <NTab
+              v-if="
+                resource &&
+                (resource.kind === 'Pod' ||
+                  resource.kind === 'Deployment' ||
+                  resource.kind === 'StatefulSet' ||
+                  resource.kind === 'DaemonSet')
+              "
+              name="logs"
+              :tab="renderTabLabel('L', '日志')"
+            />
+            <NTab
+              v-if="resource && (resource.kind === 'ConfigMap' || resource.kind === 'Secret')"
+              name="editConfig"
+              :tab="renderTabLabel('C', '配置')"
+            />
+            <NTab
+              v-if="resource && !resource.dynamic"
+              name="topology"
+              :tab="renderTabLabel('R', '关联')"
+            />
+            <NTab name="snapshots" :tab="renderTabLabel('S', '快照')" />
+          </NTabs>
         </div>
         <div class="drawer-body">
           <div v-if="loading && (activeTab === 'yaml' || activeTab === 'edit' || activeTab === 'editConfig' || activeTab === 'taints')" class="loading-state">加载中…</div>
@@ -761,9 +734,8 @@ watch(
           </div>
           <div v-else class="loading-state">加载中…</div>
         </div>
-      </aside>
-    </div>
-  </Teleport>
+    </NDrawerContent>
+  </NDrawer>
   <ResourceSnapshotViewer
     :visible="!!viewingSnapshot"
     :snapshot="viewingSnapshot"
@@ -773,70 +745,32 @@ watch(
 </template>
 
 <style scoped>
-.drawer-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.3);
-  z-index: 1000;
-  display: flex;
-  justify-content: flex-end;
-  align-items: stretch;
-}
-.resize-handle {
-  width: 6px;
-  flex-shrink: 0;
-  cursor: col-resize;
-  background: transparent;
-}
-.resize-handle:hover {
-  background: rgba(37, 99, 235, 0.15);
-}
-.drawer {
-  height: 100%;
-  max-width: 90vw;
-  background: #fff;
-  box-shadow: -4px 0 20px rgba(0, 0, 0, 0.1);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  flex-shrink: 0;
-}
-.drawer-header {
+.detail-drawer-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 0.75rem;
-  padding: 0.75rem 1rem;
-  border-bottom: 1px solid #e2e8f0;
-  flex-shrink: 0;
+  min-width: 0;
+  width: 100%;
+  padding-right: 2.5rem;
 }
-.drawer-title {
-  margin: 0;
+.detail-drawer-title {
   font-size: 0.9375rem;
   font-weight: 600;
   color: #1e293b;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
 }
-.drawer-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.55rem;
+.detail-drawer-header-toggle {
   flex-shrink: 0;
-}
-.btn-close {
-  width: 2rem;
-  height: 2rem;
-  border: none;
-  background: transparent;
-  font-size: 1.5rem;
-  line-height: 1;
-  color: #64748b;
-  cursor: pointer;
-  border-radius: 4px;
-}
-.btn-close:hover {
-  background: #f1f5f9;
-  color: #334155;
+  padding: 0.18rem 0.5rem;
+  border: 1px solid var(--wb-line, #dbe3ee);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.88);
+  max-width: min(32vw, 180px);
+  overflow: hidden;
 }
 .drawer-toolbar {
   padding: 0.75rem 1rem 0.9rem;
@@ -846,118 +780,55 @@ watch(
     linear-gradient(180deg, #f8fbff 0%, #f8fafc 100%);
   flex-shrink: 0;
 }
-.toolbar-head {
-  display: flex;
+.detail-tabs :deep(.n-tabs-nav) {
   align-items: center;
-  justify-content: flex-end;
-  gap: 0.75rem;
-  margin-bottom: 0.75rem;
 }
-.toolbar-row {
-  display: flex;
-  align-items: stretch;
-  gap: 0.75rem;
-  min-width: 0;
+.detail-tabs :deep(.n-tabs-nav__suffix) {
+  padding-left: 0.75rem;
 }
-.toolbar-apply {
-  flex-shrink: 0;
-}
-.tab-grid {
-  display: flex;
-  align-items: center;
-  gap: 0.55rem;
-  min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  padding-bottom: 0.1rem;
-  scrollbar-width: thin;
-}
-.tab-btn {
-  flex-shrink: 0;
-  border: 1px solid #dbe3ee;
+.detail-tabs :deep(.n-tabs-tab) {
+  padding: 0.36rem 0.7rem;
   border-radius: 999px;
-  background: #fff;
-  cursor: pointer;
-  color: #475569;
-  transition:
-    border-color 0.16s ease,
-    box-shadow 0.16s ease,
-    background 0.16s ease;
+  transition: background 0.16s ease, color 0.16s ease;
 }
-.tab-btn:hover {
-  background: #fff;
-  border-color: #93c5fd;
-  box-shadow: 0 6px 16px rgba(148, 163, 184, 0.12);
+.detail-tabs :deep(.n-tabs-tab:hover) {
+  background: rgba(191, 219, 254, 0.35);
 }
-.tab-compact {
-  min-height: 0;
-  padding: 0.5rem 0.8rem;
-  display: flex;
+.detail-tabs :deep(.n-tabs-tab--active) {
+  background: linear-gradient(180deg, rgba(219, 234, 254, 0.88) 0%, rgba(239, 246, 255, 1) 100%);
+}
+.detail-tab-label {
+  display: inline-flex;
   align-items: center;
-  gap: 0.45rem;
+  gap: 0.4rem;
   white-space: nowrap;
 }
-.tab-btn.active {
-  background: linear-gradient(180deg, rgba(219, 234, 254, 0.88) 0%, rgba(239, 246, 255, 1) 100%);
-  border-color: #60a5fa;
-  color: #1d4ed8;
-  box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.22), 0 8px 18px rgba(59, 130, 246, 0.12);
-}
-.tab-icon {
-  width: 1.35rem;
-  height: 1.35rem;
-  flex-shrink: 0;
+.detail-tab-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  width: 1.3rem;
+  height: 1.3rem;
   border-radius: 999px;
   background: #eff6ff;
   color: #2563eb;
-  font-size: 0.68rem;
+  font-size: 0.66rem;
   font-weight: 800;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
 }
-.tab-btn.active .tab-icon {
+.detail-tabs :deep(.n-tabs-tab--active) .detail-tab-badge {
   background: #2563eb;
   color: #fff;
 }
-.tab-title {
+.detail-tab-text {
   font-size: 0.78rem;
   font-weight: 700;
   line-height: 1;
   color: #1e293b;
 }
-.tab-btn.active .tab-title {
+.detail-tabs :deep(.n-tabs-tab--active) .detail-tab-text {
   color: #1d4ed8;
-}
-.checkbox-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.8125rem;
-  color: #475569;
-  cursor: pointer;
-}
-.checkbox-label input {
-  cursor: pointer;
-}
-.checkbox-label-ghost {
-  padding: 0.55rem 0.8rem;
-  border: 1px solid #dbe3ee;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.82);
-}
-.checkbox-label-inline {
-  flex-shrink: 0;
-  align-self: center;
-  padding: 0.42rem 0.72rem;
-  border: 1px solid #dbe3ee;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.88);
-  white-space: nowrap;
-}
-.drawer-header-toggle {
-  max-width: min(34vw, 180px);
-  overflow: hidden;
 }
 .drawer-body {
   flex: 1;
@@ -1274,23 +1145,6 @@ watch(
   outline: none;
   border-color: #2563eb;
 }
-.btn-primary {
-  padding: 0.55rem 0.95rem;
-  border: none;
-  border-radius: 12px;
-  background: #2563eb;
-  color: #fff;
-  font-size: 0.8125rem;
-  font-weight: 600;
-  cursor: pointer;
-}
-.btn-primary:hover:not(:disabled) {
-  background: #1d4ed8;
-}
-.btn-primary:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
 .yaml-scroll {
   flex: 1;
   min-height: 0;
@@ -1303,23 +1157,7 @@ watch(
   min-height: 200px;
 }
 
-@media (max-width: 960px) {
-  .toolbar-head {
-    flex-direction: column;
-    align-items: stretch;
-  }
-  .toolbar-row {
-    flex-direction: column;
-  }
-  .tab-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 640px) {
-  .tab-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
   .toolbar-resource-meta {
     flex-direction: column;
     align-items: flex-start;

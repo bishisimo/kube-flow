@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import * as jsYaml from "js-yaml";
+import { NAlert, NButton, NCard, NInput, NSpin } from "naive-ui";
+import BaseModal from "./base/BaseModal.vue";
 import { extractErrorMessage } from "../utils/errorMessage";
 import { kubeGetResource, kubePatchContainerImages } from "../api/kube";
-import {
-  createResourceSnapshot,
-} from "../stores/resourceSnapshots";
+import { createResourceSnapshot } from "../stores/resourceSnapshots";
 import { ensureAutoSnapshotSettingLoaded } from "../stores/appSettings";
 
 export interface ResourceRef {
@@ -34,6 +34,10 @@ const resourceYaml = ref("");
 const containers = ref<
   { name: string; currentImage: string; imageName: string; imageTag: string }[]
 >([]);
+
+const modalTitle = computed(() =>
+  props.resource ? `修改镜像 · ${props.resource.kind} / ${props.resource.name}` : "修改镜像"
+);
 
 const snapshotResourceRef = computed(() =>
   props.envId && props.resource
@@ -72,7 +76,9 @@ function buildImageSnapshotYaml(
   return jsYaml.dump({ containers: containersYaml }, { lineWidth: -1 });
 }
 
-function summarizeImages(items: { name: string; currentImage: string; imageName: string; imageTag: string }[]): string {
+function summarizeImages(
+  items: { name: string; currentImage: string; imageName: string; imageTag: string }[]
+): string {
   if (!items.length) return "镜像快照";
   const preview = items
     .slice(0, 2)
@@ -188,265 +194,148 @@ watch(
 </script>
 
 <template>
-  <Teleport to="body">
-    <div v-if="visible" class="modal-overlay">
-      <div class="modal-content" role="dialog" aria-labelledby="change-image-title" @click.stop>
-        <header class="modal-header">
-          <h2 id="change-image-title" class="modal-title">
-            修改镜像{{ resource ? ` - ${resource.kind} / ${resource.name}` : "" }}
-          </h2>
-          <button type="button" class="modal-close" aria-label="关闭" @click="emit('close')">×</button>
-        </header>
-        <div v-if="loading" class="modal-loading">加载中…</div>
-        <div v-else-if="error" class="modal-error">{{ error }}</div>
-        <div v-else class="modal-body">
-          <div v-if="imagePatchError" class="modal-error-inline">{{ imagePatchError }}</div>
-          <div v-else-if="imagePatchInfo" class="modal-info">{{ imagePatchInfo }}</div>
-          <div class="modal-edit-area">
-            <div v-for="c in containers" :key="c.name" class="container-card">
-              <div class="container-name">{{ c.name }}</div>
-              <div class="container-current">
-                <span class="current-label">当前镜像</span>
-                <code class="current-value" :title="c.currentImage">{{ c.currentImage || "—" }}</code>
-              </div>
-              <div class="container-edit">
-                <div class="edit-row">
-                  <label class="edit-label">镜像</label>
-                  <input
-                    v-model="c.imageName"
-                    type="text"
-                    class="image-input"
-                    placeholder="nginx 或 registry.io/ns/nginx"
-                  />
-                </div>
-                <div class="edit-row">
-                  <label class="edit-label">Tag</label>
-                  <input
-                    v-model="c.imageTag"
-                    type="text"
-                    class="image-input image-tag-input"
-                    placeholder="1.21"
-                  />
-                </div>
-              </div>
+  <BaseModal :visible="visible" :title="modalTitle" width="720px" @close="emit('close')">
+    <NSpin v-if="loading" size="small" class="change-image-loading">
+      <template #description>
+        <span class="change-image-loading-text">加载容器信息…</span>
+      </template>
+    </NSpin>
+    <NAlert v-else-if="error" type="error" :show-icon="true" class="change-image-alert">
+      {{ error }}
+    </NAlert>
+    <template v-else>
+      <NAlert
+        v-if="imagePatchError"
+        type="error"
+        :show-icon="true"
+        class="change-image-alert"
+      >
+        {{ imagePatchError }}
+      </NAlert>
+      <NAlert
+        v-else-if="imagePatchInfo"
+        type="success"
+        :show-icon="true"
+        class="change-image-alert"
+      >
+        {{ imagePatchInfo }}
+      </NAlert>
+      <div class="container-list">
+        <NCard
+          v-for="c in containers"
+          :key="c.name"
+          size="small"
+          embedded
+          :bordered="true"
+          class="container-card"
+        >
+          <div class="container-head">
+            <span class="container-name">{{ c.name }}</span>
+            <code class="container-current" :title="c.currentImage">{{ c.currentImage || "—" }}</code>
+          </div>
+          <div class="edit-row">
+            <div class="edit-col edit-col-name">
+              <label class="edit-label">镜像</label>
+              <NInput
+                v-model:value="c.imageName"
+                placeholder="nginx 或 registry.io/ns/nginx"
+                size="small"
+              />
+            </div>
+            <div class="edit-col edit-col-tag">
+              <label class="edit-label">Tag</label>
+              <NInput v-model:value="c.imageTag" placeholder="1.21" size="small" />
             </div>
           </div>
-        </div>
-        <div class="modal-actions">
-          <button type="button" class="tab-btn" @click="emit('close')">取消</button>
-          <button
-            type="button"
-            class="btn-primary"
-            :disabled="loading || imagePatchSaving || !containers.length"
-            @click="applyPatch"
-          >
-            {{ imagePatchSaving ? "应用中…" : "应用" }}
-          </button>
-        </div>
+        </NCard>
       </div>
-    </div>
-  </Teleport>
+    </template>
+    <template #footer>
+      <NButton secondary :disabled="imagePatchSaving" @click="emit('close')">取消</NButton>
+      <NButton
+        type="primary"
+        :loading="imagePatchSaving"
+        :disabled="loading || !containers.length"
+        @click="applyPatch"
+      >
+        {{ imagePatchSaving ? "应用中…" : "应用" }}
+      </NButton>
+    </template>
+  </BaseModal>
 </template>
 
 <style scoped>
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.4);
-  z-index: 1100;
+.change-image-loading {
   display: flex;
-  align-items: center;
   justify-content: center;
-  padding: 1.5rem;
+  padding: 1.25rem 0;
 }
-.modal-content {
-  background: #fff;
-  border-radius: 10px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.2);
-  min-width: 560px;
-  max-width: min(90vw, 720px);
-  max-height: 85vh;
+.change-image-loading-text {
+  color: var(--kf-text-secondary, #64748b);
+  font-size: 0.85rem;
+}
+.change-image-alert {
+  margin-bottom: 0.75rem;
+}
+.container-list {
   display: flex;
   flex-direction: column;
+  gap: 0.6rem;
+  max-height: min(60vh, 520px);
+  overflow-y: auto;
+  padding-right: 2px;
 }
-.modal-header {
+.container-card :deep(.n-card__content) {
+  padding: 0.7rem 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+.container-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 1rem 1.25rem;
-  border-bottom: 1px solid #e2e8f0;
-  flex-shrink: 0;
-}
-.modal-title {
-  margin: 0;
-  font-size: 1rem;
-  font-weight: 600;
-  color: #1e293b;
-}
-.modal-close {
-  width: 2rem;
-  height: 2rem;
-  border: none;
-  background: none;
-  font-size: 1.25rem;
-  line-height: 1;
-  color: #64748b;
-  cursor: pointer;
-  border-radius: 6px;
-}
-.modal-close:hover {
-  background: #f1f5f9;
-  color: #334155;
-}
-.modal-loading,
-.modal-error {
-  padding: 1.25rem 1.5rem;
-  font-size: 0.875rem;
-}
-.modal-error {
-  color: #dc2626;
-  background: #fef2f2;
-}
-.modal-body {
-  padding: 1rem 1.25rem;
-  overflow: auto;
-  flex: 1;
-  min-height: 0;
-}
-.modal-edit-area {
-  min-width: 0;
-}
-.modal-error-inline,
-.modal-info {
-  margin-bottom: 0.9rem;
-  padding: 0.75rem 0.9rem;
-  border-radius: 10px;
-  font-size: 0.8125rem;
-}
-.modal-error-inline {
-  color: #dc2626;
-  background: #fef2f2;
-}
-.modal-info {
-  color: #0f766e;
-  background: #ecfeff;
-}
-.container-card {
-  padding: 1rem 1.25rem;
-  margin-bottom: 0.75rem;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-}
-.container-card:last-child {
-  margin-bottom: 0;
-}
-.container-name {
-  font-weight: 600;
-  font-size: 0.875rem;
-  color: #1e293b;
-  margin-bottom: 0.5rem;
-}
-.container-current {
-  margin-bottom: 0.75rem;
-}
-.current-label {
-  font-size: 0.75rem;
-  color: #64748b;
-  display: block;
-  margin-bottom: 0.25rem;
-}
-.current-value {
-  display: block;
-  font-size: 0.8125rem;
-  font-family: ui-monospace, "SF Mono", monospace;
-  color: #475569;
-  word-break: break-all;
-  padding: 0.5rem 0.6rem;
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 4px;
-}
-.container-edit {
-  display: flex;
-  gap: 1rem;
+  gap: 0.6rem;
   flex-wrap: wrap;
 }
-.edit-row {
+.container-name {
+  font-weight: 650;
+  font-size: 0.85rem;
+  color: var(--kf-text-primary, #0f172a);
+}
+.container-current {
   flex: 1;
-  min-width: 180px;
+  min-width: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.78rem;
+  color: var(--kf-text-secondary, #64748b);
+  background: var(--wb-surface-soft, rgba(241, 245, 249, 0.7));
+  border: 1px solid var(--wb-line, rgba(148, 163, 184, 0.22));
+  border-radius: 6px;
+  padding: 0.25rem 0.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.edit-row {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.edit-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+.edit-col-name {
+  flex: 1 1 220px;
+}
+.edit-col-tag {
+  flex: 0 0 160px;
 }
 .edit-label {
-  display: block;
-  font-size: 0.75rem;
-  color: #64748b;
-  margin-bottom: 0.25rem;
-}
-.image-input {
-  width: 100%;
-  padding: 0.5rem 0.6rem;
-  font-size: 0.8125rem;
-  font-family: ui-monospace, monospace;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  box-sizing: border-box;
-}
-.image-input:focus {
-  outline: none;
-  border-color: #2563eb;
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
-}
-.image-tag-input {
-  min-width: 100px;
-}
-.modal-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-  padding: 1rem 1.25rem;
-  border-top: 1px solid #e2e8f0;
-  background: #fff;
-  flex-shrink: 0;
-}
-.tab-btn {
-  padding: 0.5rem 1rem;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  background: #fff;
-  font-size: 0.8125rem;
-  cursor: pointer;
-  color: #475569;
-}
-.tab-btn:hover {
-  background: #f8fafc;
-}
-.btn-primary {
-  padding: 0.5rem 1rem;
-  border: none;
-  border-radius: 6px;
-  background: #2563eb;
-  font-size: 0.8125rem;
-  color: #fff;
-  cursor: pointer;
-}
-.btn-primary:hover:not(:disabled) {
-  background: #1d4ed8;
-}
-.btn-primary:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-@media (max-width: 960px) {
-  .modal-content {
-    min-width: 0;
-    width: min(96vw, 720px);
-  }
-  .modal-layout {
-    flex-direction: column;
-  }
-  .modal-edit-area {
-    padding-right: 0;
-  }
+  font-size: 0.72rem;
+  color: var(--kf-text-secondary, #64748b);
+  font-weight: 600;
 }
 </style>

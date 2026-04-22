@@ -8,7 +8,7 @@ use crate::kube::resource_graph::selector_to_string;
 use crate::kube::resource_get::get_resource_value;
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
 use k8s_openapi::api::core::v1::Pod;
-use kube::api::{Api, ListParams};
+use kube::api::Api;
 use kube::Client;
 use serde::Serialize;
 
@@ -147,36 +147,6 @@ pub async fn list_pods(
     let api: Api<Pod> = Api::namespaced(client.clone(), ns);
     let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
     Ok(list.items.into_iter().map(|p| map_pod(p, ns)).collect())
-}
-
-/// 列出使用指定 PVC 的 Pods。
-pub async fn list_pods_using_pvc(
-    client: &Client,
-    namespace: &str,
-    pvc_name: &str,
-) -> Result<Vec<PodItem>, ResourceError> {
-    let api: Api<Pod> = Api::namespaced(client.clone(), namespace);
-    let list = api.list(&ListParams::default()).await.map_err(ResourceError::Kube)?;
-    let items = list
-        .items
-        .into_iter()
-        .filter(|p| {
-            p.spec
-                .as_ref()
-                .and_then(|s| s.volumes.as_deref())
-                .map(|vols| {
-                    vols.iter().any(|v| {
-                        v.persistent_volume_claim
-                            .as_ref()
-                            .map(|pvc| pvc.claim_name == pvc_name)
-                            .unwrap_or(false)
-                    })
-                })
-                .unwrap_or(false)
-        })
-        .map(|p| map_pod(p, namespace))
-        .collect();
-    Ok(items)
 }
 
 /// 列出 namespace 内 Pod 对象（用于工作负载 Pod 态势聚合）。

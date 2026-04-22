@@ -2,7 +2,6 @@
 import { computed, h, Fragment } from "vue";
 import {
   NButton,
-  NCard,
   NDataTable,
   NEmpty,
   NSpace,
@@ -56,12 +55,15 @@ const props = defineProps<{
   clearAllFilters: () => void;
   selectAllNamespaces: () => void;
   openKindSelector: () => void;
+  /** 当前被右键 ActionMenu 选中的行 key，用于高亮。 */
+  activeRowKey?: string | null;
+  /** 二次确认删除已触发时，把 active 行再换成告警色。 */
+  deleteActionArmed?: boolean;
 }>();
 
 const firstDataColumnKey = computed(() => props.tableColumns[0]?.key ?? "");
 
 const checkedRowKeys = computed<DataTableRowKey[]>(() => Array.from(props.selectedRowKeys));
-const tableMaxHeight = "68vh";
 
 function statusTagType(tone: string): "success" | "warning" | "error" | "default" {
   if (tone === "ok") return "success";
@@ -189,25 +191,41 @@ function renderCell(col: TableColumn, row: Record<string, unknown>) {
     const raw = row[key as keyof typeof row];
     const empty = raw === "无";
     const text = String(raw ?? "无");
+    const count = Number(text);
+    const hasCount = Number.isFinite(count) && count > 0;
     return h(
       NButton,
       {
         size: "small",
-        secondary: true,
-        round: true,
+        quaternary: true,
+        class: "wb-taint-btn",
         onClick: (e: MouseEvent) => {
           e.stopPropagation();
           props.openNodeTaintsFromRow(row);
         },
       },
       {
-        default: () =>
-          empty
-            ? h("span", { class: ["wb-taint-val", "wb-taint-val-muted"] }, text)
-            : h("span", { class: "wb-taint-inner" }, [
-                h("span", { class: "wb-taint-label" }, "污点"),
-                h("span", { class: "wb-taint-val" }, text),
-              ]),
+        default: () => {
+          if (empty) {
+            return h(
+              NTag,
+              { size: "small", round: true, bordered: false, class: "wb-taint-tag wb-taint-tag-empty" },
+              { default: () => "无" },
+            );
+          }
+          if (hasCount) {
+            return h(
+              NTag,
+              { size: "small", round: true, bordered: false, type: "info", class: "wb-taint-tag wb-taint-tag-count" },
+              { default: () => text },
+            );
+          }
+          return h(
+            NTag,
+            { size: "small", round: true, bordered: false, type: "info", class: "wb-taint-tag" },
+            { default: () => text },
+          );
+        },
       },
     );
   }
@@ -269,15 +287,17 @@ const columns = computed<DataTableColumns<Record<string, unknown>>>(() => {
   const firstKey = firstDataColumnKey.value;
   for (const col of props.tableColumns) {
     const sortable = WORKBENCH_SORTABLE_KEYS.has(col.key);
+    const isFirst = col.key === firstKey;
     out.push({
       title: col.label,
       key: col.key,
-      minWidth: col.key === firstKey ? 140 : 88,
-      ellipsis: col.key === "name" || col.key === firstKey ? { tooltip: true } : false,
+      minWidth: isFirst ? 180 : 100,
+      resizable: !isFirst,
+      ellipsis: col.key === "name" || isFirst ? { tooltip: true } : false,
       sorter: sortable ? "default" : false,
       sortOrder:
         sortable && props.sortBy === col.key ? (props.sortOrder === "asc" ? "ascend" : "descend") : false,
-      className: col.key === firstKey ? "wb-col-emphasis" : undefined,
+      className: isFirst ? "wb-col-emphasis" : undefined,
       render(row) {
         return renderCell(col, row);
       },
@@ -285,6 +305,12 @@ const columns = computed<DataTableColumns<Record<string, unknown>>>(() => {
   }
   return out;
 });
+
+function rowClassName(row: Record<string, unknown>): string {
+  const key = props.getRowKey(row);
+  if (!key || !props.activeRowKey || key !== props.activeRowKey) return "";
+  return props.deleteActionArmed ? "wb-row-active wb-row-armed" : "wb-row-active";
+}
 
 function rowKey(row: Record<string, unknown>) {
   return props.getRowKey(row);
@@ -330,109 +356,78 @@ function onUpdateCheckedRowKeys(keys: DataTableRowKey[]) {
 </script>
 
 <template>
-  <div class="wb-table-root">
-    <NCard class="wb-list-card" :bordered="false" size="small" content-style="padding: 0">
-      <template #header>
-        <div class="wb-list-header">
-          <div class="wb-list-head-row">
-            <div class="wb-list-heading">
-              <span class="wb-list-title">资源列表</span>
-              <span class="wb-list-badge" :title="`${tableRows.length} 条`">{{ tableRows.length }}</span>
-            </div>
+  <section class="wb-list-card">
+    <header class="wb-list-header">
+      <span class="wb-list-title">资源列表</span>
+      <span class="wb-list-badge" :title="`${tableRows.length} 条`">{{ tableRows.length }}</span>
+    </header>
+    <div class="wb-table-scroll">
+      <NDataTable
+        class="wb-data-table"
+        size="small"
+        :columns="columns"
+        :data="tableRows"
+        :row-key="rowKey"
+        :row-props="rowProps"
+        :row-class-name="rowClassName"
+        :striped="false"
+        :single-line="false"
+        :bordered="true"
+        :bottom-bordered="true"
+        :remote="true"
+        :flex-height="true"
+        :pagination="false"
+        :loading="Boolean(listLoading) && tableRows.length > 0"
+        :checked-row-keys="batchDeleteMode ? checkedRowKeys : undefined"
+        @update:checked-row-keys="onUpdateCheckedRowKeys"
+        @update:sorter="handleSorterChange"
+      >
+        <template #empty>
+          <div v-if="listLoading" class="wb-empty-wrap">
+            <NEmpty description="正在加载资源…" size="medium" />
           </div>
-        </div>
-      </template>
-      <div class="wb-table-scroll">
-        <NDataTable
-          class="wb-data-table"
-          size="small"
-          :columns="columns"
-          :data="tableRows"
-          :row-key="rowKey"
-          :row-props="rowProps"
-          :striped="false"
-          :single-line="false"
-          :bordered="true"
-          :bottom-bordered="true"
-          :remote="true"
-          :max-height="tableMaxHeight"
-          :pagination="false"
-          :loading="false"
-          :checked-row-keys="batchDeleteMode ? checkedRowKeys : undefined"
-          @update:checked-row-keys="onUpdateCheckedRowKeys"
-          @update:sorter="handleSorterChange"
-        >
-          <template #empty>
-            <div v-if="listLoading" class="wb-empty-wrap">
-              <NEmpty description="正在加载资源…" size="medium" />
-            </div>
-            <div v-else class="wb-empty-wrap">
-              <NEmpty description="暂无资源" size="medium">
-                <template #extra>
-                  <div class="wb-empty-actions">
-                    <NButton size="small" secondary @click="clearAllFilters">清空筛选</NButton>
-                    <NButton
-                      v-if="!nsSelectionDisabled && selectedNamespace !== null"
-                      size="small"
-                      secondary
-                      @click="selectAllNamespaces"
-                    >
-                      切回默认命名空间
-                    </NButton>
-                    <NButton size="small" secondary @click="openKindSelector">切换资源类型</NButton>
-                  </div>
-                </template>
-              </NEmpty>
-              <p class="wb-empty-hint">可尝试调整命名空间、资源类型或筛选条件。</p>
-            </div>
-          </template>
-        </NDataTable>
-      </div>
-    </NCard>
-  </div>
+          <div v-else class="wb-empty-wrap">
+            <NEmpty description="暂无资源" size="medium">
+              <template #extra>
+                <div class="wb-empty-actions">
+                  <NButton size="small" secondary @click="clearAllFilters">清空筛选</NButton>
+                  <NButton
+                    v-if="!nsSelectionDisabled && selectedNamespace !== null"
+                    size="small"
+                    secondary
+                    @click="selectAllNamespaces"
+                  >
+                    切回默认命名空间
+                  </NButton>
+                  <NButton size="small" secondary @click="openKindSelector">切换资源类型</NButton>
+                </div>
+              </template>
+            </NEmpty>
+            <p class="wb-empty-hint">可尝试调整命名空间、资源类型或筛选条件。</p>
+          </div>
+        </template>
+      </NDataTable>
+    </div>
+  </section>
 </template>
 
 <style scoped>
-.wb-table-root {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  padding: 0.65rem 1rem 1rem;
-  background: var(--wb-canvas, #eef2f9);
-}
 .wb-list-card {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: transparent;
-  box-shadow: none;
-}
-.wb-list-card:deep(.n-card__content) {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-.wb-list-card:deep(.n-card-header) {
-  padding: 0.55rem 0.75rem 0.45rem;
-  border-bottom: 1px solid var(--kf-border, rgba(148, 163, 184, 0.22));
+  padding: 0.65rem 1rem 1rem;
+  background: var(--wb-canvas, #eef2f9);
 }
 .wb-list-header {
-  min-width: 0;
-}
-.wb-list-heading {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   flex-wrap: wrap;
-}
-.wb-list-head-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.6rem;
+  padding: 0.55rem 0.75rem 0.45rem;
+  border-bottom: 1px solid var(--kf-border, rgba(148, 163, 184, 0.22));
+  min-width: 0;
 }
 .wb-list-title {
   font-size: 1rem;
@@ -453,18 +448,17 @@ function onUpdateCheckedRowKeys(keys: DataTableRowKey[]) {
   background: var(--kf-primary-soft, #e8f0ff);
   border: 1px solid rgba(37, 99, 235, 0.2);
 }
-.wb-data-table {
-  --n-border-radius: 12px;
-  width: 100%;
-}
 .wb-table-scroll {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
 }
-.wb-table-scroll:deep(.n-data-table-base-table) {
-  min-width: 0;
+.wb-data-table {
+  --n-border-radius: 12px;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
 }
 .wb-data-table:deep(.n-data-table-wrapper) {
   border-radius: 0 0 12px 12px;
@@ -492,11 +486,24 @@ function onUpdateCheckedRowKeys(keys: DataTableRowKey[]) {
   font-weight: 600;
   color: var(--kf-text-primary, #0f172a);
 }
+.wb-data-table:deep(.n-data-table-tr.wb-row-active .n-data-table-td) {
+  background: linear-gradient(180deg, #eef4ff 0%, #e1ebff 100%);
+  box-shadow: inset 2px 0 0 var(--kf-primary, #2563eb);
+}
+.wb-data-table:deep(.n-data-table-tr.wb-row-armed .n-data-table-td) {
+  background: linear-gradient(180deg, #fff1f2 0%, #ffe4e6 100%);
+  box-shadow: inset 2px 0 0 #dc2626;
+}
 .wb-primary-btn {
   padding: 0;
+  border-radius: 8px;
 }
 .wb-primary-btn:deep(.n-button__content) {
   width: 100%;
+}
+.wb-primary-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
 }
 .wb-primary-cell-content {
   display: inline-flex;
@@ -521,23 +528,29 @@ function onUpdateCheckedRowKeys(keys: DataTableRowKey[]) {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.wb-taint-inner {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
+.wb-taint-btn {
+  --n-padding: 0 4px;
+  --n-height: 24px;
+  --n-border-radius: 999px;
 }
-.wb-taint-label {
-  font-size: 0.65rem;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  opacity: 0.85;
+.wb-taint-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
 }
-.wb-taint-val {
-  font-size: 0.78rem;
-  font-weight: 600;
+.wb-taint-tag {
+  --n-font-size: 12px;
+  --n-height: 22px;
+  --n-border-radius: 999px;
+  min-width: 28px;
+  justify-content: center;
 }
-.wb-taint-val-muted {
-  opacity: 0.75;
+.wb-taint-tag-count {
+  --n-color: #dbeafe;
+  --n-text-color: #1d4ed8;
+}
+.wb-taint-tag-empty {
+  --n-color: #e2e8f0;
+  --n-text-color: #64748b;
 }
 .wb-empty-wrap {
   padding: 1.25rem 0.75rem 1.5rem;
@@ -554,10 +567,8 @@ function onUpdateCheckedRowKeys(keys: DataTableRowKey[]) {
   gap: 0.45rem;
   justify-content: center;
 }
-@media (max-width: 980px) {
-  .wb-list-head-row {
-    flex-wrap: wrap;
-    align-items: flex-start;
-  }
+.wb-empty-actions :deep(.n-button) {
+  --n-height: 30px;
+  --n-border-radius: 9px;
 }
 </style>
