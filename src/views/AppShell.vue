@@ -5,6 +5,7 @@ import {
   ref,
   computed,
   onMounted,
+  onBeforeUnmount,
   watch,
   markRaw,
   type Component,
@@ -17,6 +18,31 @@ import { useShellStore } from "../stores/shell";
 import { useLogCenterStore } from "../stores/logCenter";
 import { useOrchestratorStore } from "../stores/orchestrator";
 import EnvManage from "./EnvManage.vue";
+import CommandPalette from "../components/CommandPalette.vue";
+import {
+  useCommandPalette,
+  installPaletteShortcut,
+  registerProvider,
+  registerTokenSpecs,
+  registerExecutors,
+  setPaletteContext,
+  createEnvSwitchProvider,
+  createEnvOpenProvider,
+  createEnvTokenActionsProvider,
+  createKindSwitchProvider,
+  createNamespaceSwitchProvider,
+  createShellSessionProvider,
+  createLogSessionProvider,
+  createTermTokenActionsProvider,
+  createLogTokenActionsProvider,
+  buildEnvTokenSpec,
+  buildTermTokenSpec,
+  buildLogTokenSpec,
+  buildWorkbenchTokenSpecs,
+  buildWorkbenchExecutors,
+  type CommandItem,
+  type WorkbenchBridge,
+} from "../features/commandPalette";
 
 /** 非首屏视图懒加载：减少启动 JS parse/exec，EnvManage 作为默认 tab 保持同步导入，避免启动瞬间的白屏。 */
 const Main = defineAsyncComponent(() => import("./Main.vue"));
@@ -41,7 +67,7 @@ const KEEP_ALIVE_VIEWS = ["EnvManage", "Main", "ResourceOrchestratorView", "PodS
 
 const currentTab = ref<TabId>("env");
 const currentView = computed(() => VIEW_MAP[currentTab.value]);
-const { environments, openedEnvs, loadEnvironments } = useEnvStore();
+const { environments, openedEnvs, currentId, loadEnvironments } = useEnvStore();
 const { switchToShellRequested } = useShellStore();
 const { switchToLogCenterRequested } = useLogCenterStore();
 const { switchToOrchestratorRequested } = useOrchestratorStore();
@@ -151,6 +177,142 @@ const menuOptions = computed<MenuOption[]>(() => [
 function onMenuUpdate(key: string) {
   setTab(key as TabId);
 }
+
+/* ---------------- 命令面板：静态 + 动态命令 ---------------- */
+
+const palette = useCommandPalette();
+let uninstallShortcut: (() => void) | null = null;
+const disposeProviders: Array<() => void> = [];
+
+const bridge: WorkbenchBridge = {
+  setTab: (tab) => setTab(tab as TabId),
+};
+
+const tabIconMap: Record<TabId, () => VNodeChild> = {
+  env: iconEnv,
+  main: iconMain,
+  shell: iconShell,
+  logCenter: iconLog,
+  orchestrator: iconOrchestrator,
+  settings: iconSettings,
+};
+const tabMeta: Array<{ id: TabId; label: string; keywords: string[] }> = [
+  { id: "env", label: "环境管理", keywords: ["env", "environment", "connection", "环境"] },
+  { id: "main", label: "工作台", keywords: ["workbench", "main", "工作台"] },
+  { id: "shell", label: "终端中心", keywords: ["shell", "terminal", "终端"] },
+  { id: "logCenter", label: "日志中心", keywords: ["log", "日志"] },
+  { id: "orchestrator", label: "编排中心", keywords: ["orchestrator", "manifest", "编排"] },
+  { id: "settings", label: "设置", keywords: ["settings", "preferences", "设置"] },
+];
+
+const tabCommandsProvider = computed<CommandItem[]>(() =>
+  tabMeta.map((m) => {
+    const disabledReason = tabDisabledReason(m.id);
+    return {
+      id: `tab:${m.id}`,
+      title: `前往 ${m.label}`,
+      subtitle: disabledReason ?? undefined,
+      hint: currentTab.value === m.id ? "当前" : undefined,
+      section: "导航",
+      category: "nav",
+      icon: tabIconMap[m.id],
+      keywords: m.keywords,
+      weight: disabledReason ? -8 : currentTab.value === m.id ? 0 : 6,
+      availableWhen: () => !disabledReason,
+      run: () => setTab(m.id),
+    } satisfies CommandItem;
+  }),
+);
+
+function tabDisabledReason(tab: TabId): string | null {
+  if (tab === "main" && !canAccessMain.value) return "请先打开至少一个环境";
+  if (tab === "shell" && !canAccessShell.value) return "请先添加环境";
+  if (tab === "orchestrator" && !canAccessOrchestrator.value) return "请先添加环境";
+  if (tab === "logCenter" && !canAccessLogCenter.value) return "请先添加环境";
+  return null;
+}
+
+const globalActionsProvider = computed<CommandItem[]>(() => {
+  const out: CommandItem[] = [];
+  const curId = currentId.value;
+  const curEnv = curId ? environments.value.find((e) => e.id === curId) ?? null : null;
+  out.push({
+    id: "action:open-terminal-current-env",
+    title: curEnv ? `打开 ${curEnv.display_name} 的主机终端` : "打开当前环境的主机终端",
+    section: "快速动作",
+    category: "action",
+    icon: "🖥️",
+    keywords: ["terminal", "host", "shell", "终端"],
+    availableWhen: () => canAccessShell.value && Boolean(curEnv),
+    weight: 4,
+    run: () => {
+      if (!curEnv) return;
+      useShellStore().pendingOpen.value = {
+        kind: "host",
+        envId: curEnv.id,
+        envName: curEnv.display_name,
+        hostLabel: `${curEnv.display_name} 主机`,
+      };
+      setTab("shell");
+    },
+  });
+  out.push({
+    id: "action:reload-envs",
+    title: "刷新环境列表",
+    section: "快速动作",
+    category: "action",
+    icon: "↻",
+    keywords: ["reload", "refresh", "刷新"],
+    run: () => {
+      void loadEnvironments();
+    },
+  });
+  return out;
+});
+
+function installProviders() {
+  const envsCommands = createEnvSwitchProvider(bridge);
+  const envOpenCommands = createEnvOpenProvider(bridge);
+  const envTokenActions = createEnvTokenActionsProvider(bridge);
+  const kindCommands = createKindSwitchProvider(bridge);
+  const nsCommands = createNamespaceSwitchProvider(bridge);
+  const shellSessionCommands = createShellSessionProvider(bridge);
+  const logSessionCommands = createLogSessionProvider(bridge);
+  const termTokenActions = createTermTokenActionsProvider(bridge);
+  const logTokenActions = createLogTokenActionsProvider(bridge);
+  disposeProviders.push(
+    registerProvider("appshell:tabs", () => tabCommandsProvider.value),
+    registerProvider("appshell:global-actions", () => globalActionsProvider.value),
+    registerProvider("appshell:envs", () => envsCommands.value),
+    registerProvider("appshell:envs-open", () => envOpenCommands.value),
+    registerProvider("appshell:envs-actions", () => envTokenActions.value),
+    registerProvider("appshell:kinds", () => kindCommands.value),
+    registerProvider("appshell:namespaces", () => nsCommands.value),
+    registerProvider("appshell:shell-sessions", () => shellSessionCommands.value),
+    registerProvider("appshell:shell-sessions-actions", () => termTokenActions.value),
+    registerProvider("appshell:log-sessions", () => logSessionCommands.value),
+    registerProvider("appshell:log-sessions-actions", () => logTokenActions.value),
+    registerTokenSpecs([
+      buildEnvTokenSpec(),
+      buildTermTokenSpec(),
+      buildLogTokenSpec(),
+      ...buildWorkbenchTokenSpecs(),
+    ]),
+    registerExecutors(buildWorkbenchExecutors()),
+  );
+}
+
+watch(currentTab, (t) => setPaletteContext(t), { immediate: true });
+
+onMounted(() => {
+  installProviders();
+  uninstallShortcut = installPaletteShortcut(palette.toggle);
+});
+
+onBeforeUnmount(() => {
+  uninstallShortcut?.();
+  for (const dispose of disposeProviders) dispose();
+});
 </script>
 
 <template>
@@ -178,6 +340,7 @@ function onMenuUpdate(key: string) {
         />
       </KeepAlive>
     </main>
+    <CommandPalette />
   </div>
 </template>
 

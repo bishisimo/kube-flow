@@ -51,6 +51,27 @@ const environments = ref<Environment[]>([]);
 const openedIds = ref<string[]>([]);
 const currentId = ref<string | null>(null);
 
+/**
+ * 工作台跨组件导航请求：由命令面板等外部入口写入，Main.vue 监听并调用 navigateTo。
+ * 若 envId 与当前不同，会先切换环境。写入后由消费方清空。
+ */
+export const workbenchPendingNav = ref<{
+  envId?: string;
+  kind?: string;
+  namespace?: string | null;
+  nameFilter?: string;
+} | null>(null);
+
+/**
+ * 各环境的命名空间列表快照：由工作台在拉取后同步写入，命令面板等外部消费方只读。
+ * 仅在工作台访问过该环境之后才有值；未访问过的环境此处为 undefined。
+ */
+export const namespacesByEnv = ref<Record<string, string[]>>({});
+
+export function setEnvNamespaces(envId: string, names: string[]) {
+  namespacesByEnv.value = { ...namespacesByEnv.value, [envId]: names };
+}
+
 export function useEnvStore() {
   const openedEnvs = computed(() =>
     openedIds.value

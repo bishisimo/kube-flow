@@ -5,7 +5,7 @@ import { NLayout, NLayoutSider } from "naive-ui";
 defineOptions({ name: "Main" });
 import { extractErrorMessage } from "../utils/errorMessage";
 import { createStorage } from "../utils/storage";
-import { useEnvStore } from "../stores/env";
+import { useEnvStore, workbenchPendingNav, setEnvNamespaces } from "../stores/env";
 import EnvBar from "../components/EnvBar.vue";
 import WorkbenchBreadcrumb from "../components/workbench/WorkbenchBreadcrumb.vue";
 import WorkbenchToolbar from "../components/workbench/WorkbenchToolbar.vue";
@@ -79,7 +79,7 @@ const RESOURCE_KINDS = RESOURCE_KINDS_FLAT;
 const VALID_KINDS = buildValidResourceKindSet(RESOURCE_KINDS);
 const API_KIND_TO_ID = buildApiKindToIdMap(RESOURCE_KINDS);
 
-const { openedEnvs, currentEnv, currentId, touchEnv, loadEnvironments, getEnvViewState, setEnvViewState } = useEnvStore();
+const { openedEnvs, currentEnv, currentId, setCurrent, touchEnv, loadEnvironments, getEnvViewState, setEnvViewState } = useEnvStore();
 const {
   favoriteNamespaces,
   recentNamespaces,
@@ -1254,6 +1254,49 @@ watch([selectedNamespace, selectedKind], () => {
   const id = currentId.value;
   if (id) saveEnvViewState(id);
 });
+
+/** 把当前环境的命名空间列表同步到全局共享 store，供命令面板等只读消费。 */
+watch(
+  [currentId, namespaceOptions],
+  ([id, ns]) => {
+    if (!id) return;
+    setEnvNamespaces(id, ns.map((n) => n.name));
+  },
+  { immediate: true },
+);
+
+/**
+ * 命令面板发起的工作台跳转：先切环境（若需），再在下一 tick 应用 kind/namespace。
+ * immediate 用于处理 Main 首次挂载时 pendingNav 已被写入的情况（命令面板在其它 tab 触发）。
+ */
+watch(
+  workbenchPendingNav,
+  (nav) => {
+    if (!nav) return;
+    const pending = nav;
+    workbenchPendingNav.value = null;
+    if (pending.envId && pending.envId !== currentId.value) {
+      setCurrent(pending.envId);
+    }
+    nextTick(() => {
+      const kindValid = pending.kind && VALID_KINDS.has(pending.kind);
+      const nf = pending.nameFilter;
+      if (kindValid) {
+        navigateTo({
+          kind: pending.kind as ResourceKind,
+          namespace: pending.namespace ?? undefined,
+          nameFilter: nf ?? "",
+          drillFrom: null,
+        });
+      } else if (pending.namespace !== undefined) {
+        navigateTo({ namespace: pending.namespace, nameFilter: nf ?? "", drillFrom: null });
+      } else if (nf !== undefined) {
+        navigateTo({ nameFilter: nf, drillFrom: null });
+      }
+    });
+  },
+  { immediate: true },
+);
 
 watch(
   () => ({
