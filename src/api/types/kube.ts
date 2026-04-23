@@ -307,6 +307,9 @@ export interface ResolvedAliasTarget {
   kind: string;
   plural: string;
   namespaced: boolean;
+  /** apiserver 短名；单字符搜索仅匹配此列表 */
+  short_names?: string[];
+  singular?: string | null;
 }
 
 export interface ResourceAliasRefreshResult {

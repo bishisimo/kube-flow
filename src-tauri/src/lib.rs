@@ -122,6 +122,7 @@ pub fn run() {
             commands::kube_commands::kube_remove_client,
             commands::kube_commands::kube_refresh_resource_aliases,
             commands::kube_commands::kube_resolve_resource_alias,
+            commands::kube_commands::kube_search_resource_kinds,
             commands::kube_commands::kube_start_watch,
             commands::kube_commands::kube_stop_watch,
             // 安全设置

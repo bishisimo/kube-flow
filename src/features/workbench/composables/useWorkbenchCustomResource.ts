@@ -1,7 +1,8 @@
 import { computed, onUnmounted, ref, type Ref } from "vue";
-import { kubeRefreshResourceAliases, kubeResolveResourceAlias, type ResolvedAliasTarget } from "../../../api/kube";
+import { kubeRefreshResourceAliases, kubeSearchResourceKinds, type ResolvedAliasTarget } from "../../../api/kube";
 import type { EnvConnectionState } from "../../../stores/connection";
 import { extractErrorMessage } from "../../../utils/errorMessage";
+import { isWorkbenchBuiltinTarget } from "../builtinGvk";
 
 type UseWorkbenchCustomResourceOptions = {
   currentId: Ref<string | null>;
@@ -65,7 +66,7 @@ export function useWorkbenchCustomResource(options: UseWorkbenchCustomResourceOp
     }
     customResourceResolving.value = true;
     try {
-      const hits = await kubeResolveResourceAlias(id, q, null);
+      const hits = (await kubeSearchResourceKinds(id, q, 10)).filter((h) => !isWorkbenchBuiltinTarget(h));
       customResourceHits.value = hits;
       if (hits.length === 0) {
         customResourceResolveMessage.value = "无匹配，请检查拼写或是否已安装对应 CRD";

@@ -35,6 +35,9 @@ import {
   useWorkbenchListUi,
   useWorkbenchNavigation,
   useWorkbenchDrillNavigation,
+  useWorkbenchFavoriteKinds,
+  extensionStableKey,
+  type FavoriteKindEntry,
 } from "../features/workbench";
 import ResourceDetailDrawer from "../components/ResourceDetailDrawer.vue";
 import ChangeImageModal from "../components/ChangeImageModal.vue";
@@ -90,6 +93,14 @@ const {
   hydrateFromStorage,
   loadRecentNamespacesForEnv,
 } = useWorkbenchRecents({ currentId, validKindIds: VALID_KINDS });
+const {
+  favoriteKindEntries,
+  hydrateFavoriteKinds,
+  isFavoriteBuiltin,
+  isFavoriteExtension,
+  toggleFavoriteBuiltin,
+  toggleFavoriteExtension,
+} = useWorkbenchFavoriteKinds({ validKindIds: VALID_KINDS });
 const {
   watchEnabled,
   activeWatchTokens,
@@ -210,6 +221,41 @@ function selectCustomKindOption(target: ResolvedAliasTarget) {
   }`;
   navigateTo({ customTarget: target, nameFilter: "", drillFrom: null, closeDrawer: false });
 }
+
+function onToggleFavoriteKindEntry(entry: FavoriteKindEntry) {
+  if (entry.kind === "builtin") toggleFavoriteBuiltin(entry.id);
+  else toggleFavoriteExtension(entry.target);
+}
+
+const favoriteKindToolbarRows = computed(() =>
+  favoriteKindEntries.value.map((e) => {
+    if (e.kind === "builtin") {
+      const meta = RESOURCE_KINDS.find((k) => k.id === e.id);
+      return {
+        key: `b:${e.id}`,
+        entry: e,
+        title: meta?.label ?? e.id,
+        subtitle: "内置",
+      };
+    }
+    const t = e.target;
+    return {
+      key: `e:${extensionStableKey(t)}`,
+      entry: e,
+      title: t.kind,
+      subtitle: `${t.api_version} · ${t.plural}`,
+    };
+  })
+);
+
+const extensionFavoriteKeySet = computed(
+  () =>
+    new Set(
+      favoriteKindEntries.value
+        .filter((e): e is Extract<FavoriteKindEntry, { kind: "extension" }> => e.kind === "extension")
+        .map((e) => extensionStableKey(e.target))
+    )
+);
 
 /** 仅清除钻取上下文并刷新（面包屑点击 namespace 时） */
 function clearDrillAndReload() {
@@ -537,9 +583,10 @@ const customKindCandidates = computed(() => {
   const dedup = new Map<string, ResolvedAliasTarget>();
   for (const hit of customResourceHits.value) {
     const key = `${hit.api_version}/${hit.kind}/${hit.plural}`;
+    if (extensionFavoriteKeySet.value.has(extensionStableKey(hit))) continue;
     if (!dedup.has(key)) dedup.set(key, hit);
   }
-  return Array.from(dedup.values()).slice(0, 8);
+  return Array.from(dedup.values());
 });
 const nsSelectionDisabled = computed(() => {
   const target = selectedCustomTarget.value;
@@ -1187,6 +1234,7 @@ let unlistenConnection: (() => void) | null = null;
 
 onMounted(async () => {
   hydrateFromStorage();
+  hydrateFavoriteKinds();
   void ensureAppSettingsLoaded();
   const id = currentId.value;
   if (id) restoreEnvViewState(id);
@@ -1279,8 +1327,17 @@ watch(
       setCurrent(pending.envId);
     }
     nextTick(() => {
-      const kindValid = pending.kind && VALID_KINDS.has(pending.kind);
       const nf = pending.nameFilter;
+      if (pending.customTarget) {
+        navigateTo({
+          customTarget: pending.customTarget,
+          namespace: pending.namespace ?? undefined,
+          nameFilter: nf ?? "",
+          drillFrom: null,
+        });
+        return;
+      }
+      const kindValid = pending.kind && VALID_KINDS.has(pending.kind);
       if (kindValid) {
         navigateTo({
           kind: pending.kind as ResourceKind,
@@ -1461,6 +1518,9 @@ const {
           :custom-resource-status-class="customResourceStatusClass"
           :recent-kind-items="recentKindItems"
           :filtered-kind-groups="filteredKindGroups"
+          :favorite-kind-rows="favoriteKindToolbarRows"
+          :is-favorite-builtin="isFavoriteBuiltin"
+          :is-favorite-extension="isFavoriteExtension"
           :selected-kind="selectedKind"
           :selected-custom-target="selectedCustomTarget"
           :custom-kind-candidates="customKindCandidates"
@@ -1479,6 +1539,7 @@ const {
           @toggle-favorite-namespace="toggleFavoriteNamespace"
           @select-kind="selectKindAndClearDrill"
           @select-custom-kind="selectCustomKindOption"
+          @toggle-favorite-kind="onToggleFavoriteKindEntry"
           @refresh="loadList"
           @enter-batch-delete="enterBatchDeleteMode"
           @exit-batch-delete="exitBatchDeleteMode"

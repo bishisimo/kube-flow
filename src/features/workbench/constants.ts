@@ -4,6 +4,7 @@ export const WORKBENCH_ENV_BAR_COLLAPSED_KEY = "kube-flow:env-bar-collapsed";
 export const WORKBENCH_NS_FAVORITES_KEY = "kube-flow:ns-favorites";
 export const WORKBENCH_NS_RECENT_KEY_PREFIX = "kube-flow:ns-recent:";
 export const WORKBENCH_RECENT_KINDS_KEY = "kube-flow:recent-kinds";
+export const WORKBENCH_FAVORITE_KINDS_KEY = "kube-flow:favorite-kinds";
 
 export const WORKBENCH_MAX_RECENT_KINDS = 6;
 /** 全命名空间列表占位，用于 watch key 等 */

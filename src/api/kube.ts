@@ -353,6 +353,15 @@ export function kubeResolveResourceAlias(
   });
 }
 
+/** 在已刷新的发现缓存中搜索资源类型（单字符仅 shortNames；≥2 字符匹配 kind 等），默认最多 10 条。 */
+export function kubeSearchResourceKinds(
+  envId: string,
+  query: string,
+  limit?: number
+): Promise<ResolvedAliasTarget[]> {
+  return invoke("kube_search_resource_kinds", { envId, query, limit: limit ?? null });
+}
+
 // ─── Dynamic / CRD resources ─────────────────────────────────────────────────
 
 export function kubeListCrdInstances(

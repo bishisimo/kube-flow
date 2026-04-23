@@ -65,6 +65,18 @@ pub async fn kube_resolve_resource_alias(
         .await
 }
 
+/// 在已刷新的发现缓存中按相关度搜索资源类型（单字符仅 shortNames；≥2 字符匹配 kind 等），最多返回 `limit` 条。
+#[tauri::command]
+pub async fn kube_search_resource_kinds(
+    alias_store: State<'_, Arc<ResourceAliasCacheStore>>,
+    env_id: String,
+    query: String,
+    limit: Option<usize>,
+) -> CommandResult<Vec<ResolvedAliasTarget>> {
+    let lim = limit.unwrap_or(10).clamp(1, 50);
+    alias_store.search(&env_id, &query, lim).await
+}
+
 #[tauri::command]
 pub fn kube_get_tunnel_local_port(
     store: State<'_, KubeClientStore>,

@@ -13,10 +13,10 @@
  * - valuing → 对应 TokenSpec.values() 返回的值候选
  *
  * 执行入口：
- * - commitDraft：Tab 触发，把 draft 固化为 chip
- * - execute：Enter 触发，先 commit 再请求 executor.match 的最佳方案
+ * - commitDraft：将当前 value 草稿匹配为 chip（由 executePlan 或空格提交调用）
+ * - executePlan：Enter/Tab 确认时，valuing 先落 chip 再匹配 executor；可执行则关闭并 run
  */
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import type {
   CommandItem,
   Draft,
@@ -36,6 +36,13 @@ import {
   useSpecsForContext,
   useSpecsForSymbol,
 } from "./tokenEngine";
+import { useEnvStore } from "../../stores/env";
+import { useConnectionStore } from "../../stores/connection";
+import {
+  clearWorkbenchKindPaletteSearch,
+  scheduleWorkbenchKindPaletteSearch,
+  workbenchKindPaletteExtensionHits,
+} from "../../stores/workbenchKindPalette";
 
 const isOpen = ref(false);
 const draft = ref("");
@@ -44,8 +51,34 @@ const activeIndex = ref(0);
 
 const { record: recordMru, scoreOf: mruScoreOf } = useCommandMru();
 const paletteContext = usePaletteContext();
+const { currentId } = useEnvStore();
+const connectionStore = useConnectionStore();
 
 const parsed = computed<Draft>(() => parseDraft(draft.value));
+
+watch(
+  () =>
+    [
+      isOpen.value,
+      parsed.value.mode,
+      parsed.value.symbol,
+      parsed.value.keyBuffer,
+      parsed.value.value ?? "",
+    ] as const,
+  ([open, mode, sym, keyBuf, val]) => {
+    if (!open || mode !== "valuing" || sym !== "@" || keyBuf !== "kind") {
+      clearWorkbenchKindPaletteSearch();
+      return;
+    }
+    const id = currentId.value;
+    const ok = Boolean(id && connectionStore.getState(id) === "connected");
+    scheduleWorkbenchKindPaletteSearch(id, ok, val);
+  }
+);
+
+watch(isOpen, (open) => {
+  if (!open) clearWorkbenchKindPaletteSearch();
+});
 
 /* ---------------- 候选集合 ---------------- */
 
@@ -137,6 +170,10 @@ const executorsForContext = useExecutorsForContext(paletteContext);
 const candidates = computed<Candidate[]>(() => {
   const p = parsed.value;
   const ctx = paletteContext.value;
+
+  if (p.mode === "valuing" && p.symbol === "@" && p.keyBuffer === "kind") {
+    void workbenchKindPaletteExtensionHits.value;
+  }
 
   if (p.mode === "free") {
     const text = p.rawText;

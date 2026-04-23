@@ -6,8 +6,7 @@
  *
  * 键盘：
  * - ArrowUp/Down / Home/End  候选导航
- * - Tab                      接受当前候选（选 key 后进入 value；选 value 后落成 chip）
- * - Enter                    若在 valuing 则先落 chip，再触发最佳 executor；否则执行命令项
+ * - Enter / Tab              同一套确认逻辑：选 spec 进入 value；选 value 或命令时尽量落 chip 并在可执行时执行后关闭
  * - Backspace (draft 为空)   弹回最后一个 chip 继续编辑
  * - Esc                      关闭
  */
@@ -57,10 +56,15 @@ const placeholder = computed(() => {
   return "输入命令，或用 @ / # / > 组合语法";
 });
 
+interface GroupedRow {
+  candidate: Candidate;
+  /** 在扁平 candidates 中的下标；分区仅用于展示，高亮必须以该下标为准，否则模糊排序打散分区后会出现多处同时选中 */
+  globalIndex: number;
+}
+
 interface Group {
   section: string;
-  items: Candidate[];
-  startIndex: number;
+  items: GroupedRow[];
 }
 
 const groupedCandidates = computed<Group[]>(() => {
@@ -71,11 +75,11 @@ const groupedCandidates = computed<Group[]>(() => {
     const section = sectionOf(c);
     let g = map.get(section);
     if (!g) {
-      g = { section, items: [], startIndex: running };
+      g = { section, items: [] };
       map.set(section, g);
       out.push(g);
     }
-    g.items.push(c);
+    g.items.push({ candidate: c, globalIndex: running });
     running += 1;
   }
   return out;
@@ -114,6 +118,21 @@ function scrollActiveIntoView() {
   });
 }
 
+/** Tab 与 Enter 共用，避免「一个只接受、一个还执行」两套心智。 */
+function confirmPalette(forcedIndex?: number) {
+  if (forcedIndex !== undefined) activeIndex.value = forcedIndex;
+  const p = parsed.value;
+  if (p.mode === "valuing") {
+    executePlan();
+    return;
+  }
+  if (tokens.value.length > 0) {
+    executePlan();
+    return;
+  }
+  acceptCandidate();
+}
+
 function onKeydown(e: KeyboardEvent) {
   if (e.isComposing) return;
   if (e.key === "ArrowDown") {
@@ -130,21 +149,9 @@ function onKeydown(e: KeyboardEvent) {
     e.preventDefault();
     activeIndex.value = Math.max(0, candidates.value.length - 1);
     scrollActiveIntoView();
-  } else if (e.key === "Tab") {
+  } else if (e.key === "Tab" || e.key === "Enter") {
     e.preventDefault();
-    acceptCandidate();
-  } else if (e.key === "Enter") {
-    e.preventDefault();
-    const p = parsed.value;
-    if (p.mode === "valuing") {
-      executePlan();
-      return;
-    }
-    if (tokens.value.length > 0) {
-      executePlan();
-      return;
-    }
-    acceptCandidate();
+    confirmPalette();
   } else if (e.key === "Escape") {
     e.preventDefault();
     close();
@@ -157,8 +164,7 @@ function onKeydown(e: KeyboardEvent) {
 }
 
 function onCandidateClick(index: number) {
-  activeIndex.value = index;
-  acceptCandidate(index);
+  confirmPalette(index);
   nextTick(() => inputRef.value?.focus());
 }
 
@@ -208,14 +214,6 @@ function iconOf(c: Candidate): string | (() => unknown) | undefined {
   if (c.kind === "command") return c.item.icon as string | (() => unknown) | undefined;
   if (c.kind === "spec") return c.spec.icon;
   return c.value.icon;
-}
-
-function globalIndex(groupIdx: number, itemIdx: number): number {
-  return groupedCandidates.value[groupIdx].startIndex + itemIdx;
-}
-
-function isActiveAt(groupIdx: number, itemIdx: number): boolean {
-  return globalIndex(groupIdx, itemIdx) === activeIndex.value;
 }
 
 function onInputFixup(e: Event) {
@@ -276,35 +274,35 @@ function commitOnSpace(e: KeyboardEvent) {
         <template v-if="groupedCandidates.length">
           <div
             v-for="(group, gIdx) in groupedCandidates"
-            :key="group.section"
+            :key="`${gIdx}-${group.section}`"
             class="cmdk-group"
           >
             <div class="cmdk-group-title">{{ group.section }}</div>
             <div
-              v-for="(c, iIdx) in group.items"
-              :key="`${group.section}-${iIdx}`"
+              v-for="row in group.items"
+              :key="row.globalIndex"
               class="cmdk-item"
               role="option"
-              :data-active="isActiveAt(gIdx, iIdx)"
-              :aria-selected="isActiveAt(gIdx, iIdx)"
-              @mousemove="activeIndex = globalIndex(gIdx, iIdx)"
-              @click="onCandidateClick(globalIndex(gIdx, iIdx))"
+              :data-active="row.globalIndex === activeIndex"
+              :aria-selected="row.globalIndex === activeIndex"
+              @mousemove="activeIndex = row.globalIndex"
+              @click="onCandidateClick(row.globalIndex)"
             >
               <span class="cmdk-item-icon" aria-hidden="true">
-                <template v-if="typeof iconOf(c) === 'string'">{{ iconOf(c) }}</template>
-                <component v-else-if="iconOf(c)" :is="iconOf(c)" />
+                <template v-if="typeof iconOf(row.candidate) === 'string'">{{ iconOf(row.candidate) }}</template>
+                <component v-else-if="iconOf(row.candidate)" :is="iconOf(row.candidate)" />
                 <template v-else>•</template>
               </span>
               <div class="cmdk-item-body">
                 <div class="cmdk-item-title">
-                  <template v-for="(seg, si) in renderSegments(c)" :key="si">
+                  <template v-for="(seg, si) in renderSegments(row.candidate)" :key="si">
                     <span v-if="seg.hit" class="cmdk-hit">{{ seg.text }}</span>
                     <span v-else>{{ seg.text }}</span>
                   </template>
                 </div>
-                <div v-if="subtitleOf(c)" class="cmdk-item-subtitle">{{ subtitleOf(c) }}</div>
+                <div v-if="subtitleOf(row.candidate)" class="cmdk-item-subtitle">{{ subtitleOf(row.candidate) }}</div>
               </div>
-              <span v-if="hintOf(c)" class="cmdk-item-hint">{{ hintOf(c) }}</span>
+              <span v-if="hintOf(row.candidate)" class="cmdk-item-hint">{{ hintOf(row.candidate) }}</span>
             </div>
           </div>
         </template>
@@ -329,8 +327,7 @@ function commitOnSpace(e: KeyboardEvent) {
 
       <div class="cmdk-footer">
         <span class="cmdk-hint-group"><kbd>↑↓</kbd><span>选择</span></span>
-        <span class="cmdk-hint-group"><kbd>Tab</kbd><span>接受</span></span>
-        <span class="cmdk-hint-group"><kbd>Enter</kbd><span>执行</span></span>
+        <span class="cmdk-hint-group"><kbd>Enter</kbd><span>/</span><kbd>Tab</kbd><span>确认</span></span>
         <span class="cmdk-hint-group"><kbd>@</kbd><kbd>#</kbd><kbd>&gt;</kbd><span>组合语法</span></span>
         <span class="cmdk-hint-spacer" />
         <span class="cmdk-hint-group cmdk-hint-muted">{{ candidates.length }} 条</span>

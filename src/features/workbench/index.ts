@@ -6,6 +6,7 @@ export * from "./constants";
 export * from "./contracts";
 export * from "./resourceDescriptors";
 export * from "./apiKindMap";
+export * from "./builtinGvk";
 export * from "./podDebugNamespaces";
 export * from "./composables";
 export { extractErrorMessage } from "../../utils/errorMessage";

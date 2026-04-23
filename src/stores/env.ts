@@ -3,6 +3,7 @@
  */
 import { ref, computed } from "vue";
 import type { Environment } from "../api/env";
+import type { ResolvedAliasTarget } from "../api/types/kube";
 import { envList, envTouch, envDelete } from "../api/env";
 import { kubeRemoveClient } from "../api/kube";
 import { createStorage, type Storage } from "../utils/storage";
@@ -60,6 +61,7 @@ export const workbenchPendingNav = ref<{
   kind?: string;
   namespace?: string | null;
   nameFilter?: string;
+  customTarget?: ResolvedAliasTarget | null;
 } | null>(null);
 
 /**

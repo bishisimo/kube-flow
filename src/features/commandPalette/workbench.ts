@@ -14,9 +14,20 @@ import { fuzzyMatch } from "./fuzzy";
 import type { Executor, ExecutorPlan, TokenSpec, TokenValueCandidate } from "./types";
 import { workbenchPendingNav, namespacesByEnv, useEnvStore } from "../../stores/env";
 import { RESOURCE_KINDS_FLAT, RESOURCE_GROUPS } from "../../constants/resourceKinds";
+import { buildValidResourceKindSet } from "../../features/workbench/apiKindMap";
+import { extensionStableKey } from "../../features/workbench/builtinGvk";
+import { readFavoriteKindEntries } from "../../features/workbench/composables/useWorkbenchFavoriteKinds";
+import { workbenchKindPaletteExtensionHits } from "../../stores/workbenchKindPalette";
+import type { ResolvedAliasTarget } from "../../api/types/kube";
 
 const KIND_GROUP_LABEL = new Map<string, string>();
 for (const g of RESOURCE_GROUPS) for (const k of g.kinds) KIND_GROUP_LABEL.set(k.id, g.label);
+
+const VALID_RESOURCE_KIND_IDS = buildValidResourceKindSet(RESOURCE_KINDS_FLAT);
+
+function encodeExtensionToken(t: ResolvedAliasTarget): string {
+  return `ext:${encodeURIComponent(JSON.stringify(t))}`;
+}
 
 function fuzzyFilter<T>(query: string, items: T[], getText: (t: T) => string, max = 60): T[] {
   const q = query.trim();
@@ -63,14 +74,67 @@ export function buildWorkbenchTokenSpecs(): TokenSpec[] {
     context: "main",
     weight: 9,
     values: (query) => {
-      const pool: TokenValueCandidate[] = RESOURCE_KINDS_FLAT.map((k) => ({
-        value: k.id,
-        title: k.label,
-        subtitle: KIND_GROUP_LABEL.get(k.id) ?? "",
-        hint: k.id,
-        icon: "📦",
-      }));
-      return fuzzyFilter(query, pool, (x) => `${x.title} ${x.value}`);
+      void workbenchKindPaletteExtensionHits.value;
+      const pool: TokenValueCandidate[] = [];
+      const favs = readFavoriteKindEntries(VALID_RESOURCE_KIND_IDS);
+      const favBuiltin = new Set(favs.filter((e) => e.kind === "builtin").map((e) => e.id));
+      const favExtKeys = new Set(
+        favs.filter((e) => e.kind === "extension").map((e) => extensionStableKey(e.target))
+      );
+      for (const e of favs) {
+        if (e.kind === "builtin") {
+          const k = RESOURCE_KINDS_FLAT.find((x) => x.id === e.id);
+          if (!k) continue;
+          pool.push({
+            value: k.id,
+            title: k.label,
+            subtitle: `${KIND_GROUP_LABEL.get(k.id) ?? ""} · 收藏`.trim(),
+            hint: k.id,
+            icon: "★",
+            section: "收藏",
+            keywords: [k.id, k.label],
+          });
+        } else {
+          const t = e.target;
+          pool.push({
+            value: encodeExtensionToken(t),
+            title: t.kind,
+            subtitle: `${t.api_version} · ${t.plural} · 收藏`,
+            icon: "★",
+            section: "收藏",
+            keywords: [t.kind, t.plural, ...(t.short_names ?? [])],
+          });
+        }
+      }
+      for (const k of RESOURCE_KINDS_FLAT) {
+        if (favBuiltin.has(k.id)) continue;
+        pool.push({
+          value: k.id,
+          title: k.label,
+          subtitle: KIND_GROUP_LABEL.get(k.id) ?? "",
+          hint: k.id,
+          icon: "📦",
+          section: "内置",
+          keywords: [k.id, k.label],
+        });
+      }
+      for (const t of workbenchKindPaletteExtensionHits.value) {
+        if (favExtKeys.has(extensionStableKey(t))) continue;
+        pool.push({
+          value: encodeExtensionToken(t),
+          title: t.kind,
+          subtitle: `${t.api_version} · ${t.plural}`,
+          icon: "📦",
+          section: "扩展",
+          keywords: [t.kind, t.plural, t.group, ...(t.short_names ?? [])],
+        });
+      }
+      return fuzzyFilter(
+        query,
+        pool,
+        (x) => `${x.title} ${x.subtitle ?? ""} ${x.value} ${x.keywords?.join(" ") ?? ""}`,
+        120
+      );
     },
   };
 
@@ -107,6 +171,7 @@ export function buildWorkbenchTokenSpecs(): TokenSpec[] {
 interface WorkbenchPlanParts {
   ns?: string | null;
   kind?: string;
+  customTarget?: ResolvedAliasTarget;
   name?: string;
 }
 
@@ -116,7 +181,15 @@ function readParts(tokens: ReadonlyArray<{ symbol: string; key: string; value: s
     if (t.symbol === "@" && t.key === "ns") {
       parts.ns = t.value === "all" ? null : t.value;
     } else if (t.symbol === "@" && t.key === "kind") {
-      parts.kind = t.value;
+      if (t.value.startsWith("ext:")) {
+        try {
+          parts.customTarget = JSON.parse(decodeURIComponent(t.value.slice(4))) as ResolvedAliasTarget;
+        } catch {
+          parts.kind = t.value;
+        }
+      } else {
+        parts.kind = t.value;
+      }
     } else if (t.symbol === "#" && t.key === "name") {
       parts.name = t.value;
     }
@@ -126,7 +199,8 @@ function readParts(tokens: ReadonlyArray<{ symbol: string; key: string; value: s
 
 function describe(parts: WorkbenchPlanParts): string {
   const bits: string[] = [];
-  if (parts.kind) bits.push(`列 ${parts.kind}`);
+  if (parts.customTarget) bits.push(`列 ${parts.customTarget.kind}（CRD）`);
+  else if (parts.kind) bits.push(`列 ${parts.kind}`);
   if (parts.ns !== undefined) bits.push(parts.ns ? `在 ${parts.ns}` : "全部命名空间");
   if (parts.name) bits.push(`名字含 "${parts.name}"`);
   return bits.length ? bits.join(" · ") : "切到工作台";
@@ -141,7 +215,8 @@ export function buildWorkbenchExecutors(): Executor[] {
     priority: 100,
     match: (ctx) => {
       const parts = readParts(ctx.tokens);
-      const hasAny = parts.ns !== undefined || parts.kind || parts.name !== undefined;
+      const hasAny =
+        parts.ns !== undefined || parts.kind || parts.customTarget || parts.name !== undefined;
       if (!hasAny) return null;
       const envId = currentId.value ?? undefined;
       const plan: ExecutorPlan = {
@@ -154,9 +229,11 @@ export function buildWorkbenchExecutors(): Executor[] {
             kind?: string;
             namespace?: string | null;
             nameFilter?: string;
+            customTarget?: ResolvedAliasTarget | null;
           } = {};
           if (envId) pending.envId = envId;
-          if (parts.kind) pending.kind = parts.kind;
+          if (parts.customTarget) pending.customTarget = parts.customTarget;
+          else if (parts.kind) pending.kind = parts.kind;
           if (parts.ns !== undefined) pending.namespace = parts.ns;
           if (parts.name !== undefined) pending.nameFilter = parts.name;
           workbenchPendingNav.value = pending;

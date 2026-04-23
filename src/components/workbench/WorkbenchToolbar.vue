@@ -4,6 +4,7 @@ import { NButton, NInput, NPopover, NSelect, NSpace, NTag } from "naive-ui";
 import { kfSpace } from "../../kf";
 import type { ResourceKind } from "../../constants/resourceKinds";
 import type { NamespaceItem, ResolvedAliasTarget } from "../../api/kube";
+import type { FavoriteKindEntry } from "../../features/workbench";
 import { resourceSupportsWatch } from "../../resources/resourceRegistry";
 
 /** 环境连接状态 → NTag 语义类型：connected/error 归绿，connecting 归蓝，disconnected 归红 */
@@ -16,6 +17,12 @@ function envStateTagType(state: string): "success" | "info" | "error" | "default
 
 type KindGroup = { id: string; label: string; kinds: { id: ResourceKind; label: string }[] };
 type FilterChip = { id: string; label: string; value: string };
+type FavoriteKindRow = {
+  key: string;
+  entry: FavoriteKindEntry;
+  title: string;
+  subtitle: string;
+};
 
 const props = defineProps<{
   currentEnv: { display_name: string; source?: string } | null;
@@ -37,6 +44,9 @@ const props = defineProps<{
   customResourceStatusClass: string;
   recentKindItems: { id: ResourceKind; label: string }[];
   filteredKindGroups: KindGroup[];
+  favoriteKindRows: FavoriteKindRow[];
+  isFavoriteBuiltin: (id: ResourceKind) => boolean;
+  isFavoriteExtension: (t: ResolvedAliasTarget) => boolean;
   selectedKind: ResourceKind;
   selectedCustomTarget: ResolvedAliasTarget | null;
   customKindCandidates: ResolvedAliasTarget[];
@@ -58,6 +68,7 @@ const emit = defineEmits<{
   "toggle-favorite-namespace": [name: string];
   "select-kind": [kind: ResourceKind];
   "select-custom-kind": [target: ResolvedAliasTarget];
+  "toggle-favorite-kind": [entry: FavoriteKindEntry];
   refresh: [];
   "enter-batch-delete": [];
   "exit-batch-delete": [];
@@ -287,19 +298,69 @@ defineExpose({
           <div ref="kindMenuRef" class="combobox-menu">
             <div class="combobox-panel-head">
               <div class="combobox-panel-title">选择资源类型</div>
-              <div class="combobox-panel-subtitle">内置资源按分组浏览；CRD 在下方专区搜索后选择</div>
+              <div class="combobox-panel-subtitle">
+                无输入时仅列出内置类型；单字可匹配扩展资源短名；两字起可搜 Kind。扩展结果最多 10 条。点击 ★ 收藏。
+              </div>
             </div>
             <div class="combobox-search">
               <NInput
                 v-model:value="kindFilter"
                 size="small"
                 clearable
-                placeholder="筛选内置类型，或在 CRD 专区匹配 Kind / plural / 短名…"
+                placeholder="筛选内置；搜索扩展资源（短名 / Kind / plural）…"
               />
             </div>
             <div v-if="kindFilter.trim() && customResourceHintLine" class="kind-custom-hint-wrap">
               <span :class="customResourceStatusClass">{{ customResourceHintLine }}</span>
             </div>
+            <template v-if="favoriteKindRows.length > 0">
+              <div class="combobox-group-label">收藏</div>
+              <NButton
+                v-for="row in favoriteKindRows"
+                :key="row.key"
+                text
+                class="combobox-item combobox-item-with-action"
+                :class="{
+                  active:
+                    row.entry.kind === 'builtin'
+                      ? !selectedCustomTarget && selectedKind === row.entry.id
+                      : selectedCustomTarget?.api_version === row.entry.target.api_version &&
+                        selectedCustomTarget?.kind === row.entry.target.kind &&
+                        selectedCustomTarget?.plural === row.entry.target.plural,
+                }"
+                @click="
+                  row.entry.kind === 'builtin'
+                    ? emit('select-kind', row.entry.id)
+                    : emit('select-custom-kind', row.entry.target)
+                "
+              >
+                <span class="combobox-item-main">
+                  <span class="combobox-item-title">{{ row.title }}</span>
+                  <span class="combobox-item-subtitle">{{ row.subtitle }}</span>
+                </span>
+                <span class="combobox-item-trailing combobox-item-trailing-kind">
+                  <span class="combobox-item-check">
+                    {{
+                      row.entry.kind === "builtin"
+                        ? !selectedCustomTarget && selectedKind === row.entry.id
+                          ? "✓"
+                          : ""
+                        : selectedCustomTarget?.api_version === row.entry.target.api_version &&
+                            selectedCustomTarget?.kind === row.entry.target.kind &&
+                            selectedCustomTarget?.plural === row.entry.target.plural
+                          ? "✓"
+                          : ""
+                    }}
+                  </span>
+                  <span
+                    class="kind-star active"
+                    title="取消收藏"
+                    @click.stop="emit('toggle-favorite-kind', row.entry)"
+                    >★</span
+                  >
+                </span>
+              </NButton>
+            </template>
             <template v-if="recentKindItems.length > 0 && !kindFilter.trim()">
               <div class="combobox-group-label">最近使用</div>
               <div class="recent-kind-panel">
@@ -324,26 +385,35 @@ defineExpose({
                 v-for="k in group.kinds"
                 :key="k.id"
                 text
-                class="combobox-item"
+                class="combobox-item combobox-item-with-action"
                 :class="{ active: !selectedCustomTarget && selectedKind === k.id }"
                 @click="emit('select-kind', k.id)"
               >
                 <span class="combobox-item-main">
                   <span class="combobox-item-title">{{ k.label }}</span>
                 </span>
-                <span class="combobox-item-check">{{ !selectedCustomTarget && selectedKind === k.id ? "✓" : "" }}</span>
+                <span class="combobox-item-trailing combobox-item-trailing-kind">
+                  <span class="combobox-item-check">{{ !selectedCustomTarget && selectedKind === k.id ? "✓" : "" }}</span>
+                  <span
+                    class="kind-star"
+                    :class="{ active: isFavoriteBuiltin(k.id) }"
+                    :title="isFavoriteBuiltin(k.id) ? '取消收藏' : '加入收藏'"
+                    @click.stop="emit('toggle-favorite-kind', { kind: 'builtin', id: k.id })"
+                    >★</span
+                  >
+                </span>
               </NButton>
             </template>
-            <div class="combobox-group-label">CRD（自定义资源）</div>
+            <div class="combobox-group-label">扩展资源（CRD）</div>
             <div v-if="!kindFilter.trim()" class="kind-crd-empty-hint">
-              在上方输入框搜索后，此处列出与集群发现匹配的 CRD 类型；选中后表格展示该资源的实例列表。
+              输入至少一个字符搜索扩展资源；已收藏的扩展类型在上方「收藏」中可直接点开。
             </div>
             <template v-if="kindFilter.trim() && customKindCandidates.length > 0">
               <NButton
                 v-for="target in customKindCandidates"
                 :key="`${target.api_version}/${target.kind}/${target.plural}`"
                 text
-                class="combobox-item"
+                class="combobox-item combobox-item-with-action"
                 :class="{
                   active:
                     selectedCustomTarget?.api_version === target.api_version &&
@@ -358,14 +428,23 @@ defineExpose({
                     {{ target.api_version }} · {{ target.plural }} · {{ target.namespaced ? "Namespaced" : "Cluster" }}
                   </span>
                 </span>
-                <span class="combobox-item-check">
-                  {{
-                    selectedCustomTarget?.api_version === target.api_version &&
-                    selectedCustomTarget?.kind === target.kind &&
-                    selectedCustomTarget?.plural === target.plural
-                      ? "✓"
-                      : ""
-                  }}
+                <span class="combobox-item-trailing combobox-item-trailing-kind">
+                  <span class="combobox-item-check">
+                    {{
+                      selectedCustomTarget?.api_version === target.api_version &&
+                      selectedCustomTarget?.kind === target.kind &&
+                      selectedCustomTarget?.plural === target.plural
+                        ? "✓"
+                        : ""
+                    }}
+                  </span>
+                  <span
+                    class="kind-star"
+                    :class="{ active: isFavoriteExtension(target) }"
+                    :title="isFavoriteExtension(target) ? '取消收藏' : '加入收藏'"
+                    @click.stop="emit('toggle-favorite-kind', { kind: 'extension', target })"
+                    >★</span
+                  >
                 </span>
               </NButton>
             </template>
@@ -773,6 +852,28 @@ defineExpose({
   align-items: center;
   justify-content: space-between;
 }
+/* NButton 将插槽包在 .n-button__content 内，需让该行占满宽度，文字与右侧 ★ 才不会挤在一起 */
+.combobox-item.combobox-item-with-action :deep(.n-button__content) {
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  gap: 0.5rem;
+  flex-wrap: nowrap;
+}
+.combobox-item-trailing-kind {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 0.25rem;
+}
+.combobox-item-trailing-kind .combobox-item-check {
+  width: 1rem;
+  min-width: 1rem;
+  text-align: center;
+}
 .combobox-item-main {
   display: flex;
   flex-direction: column;
@@ -812,6 +913,20 @@ defineExpose({
   color: #f59e0b;
 }
 .ns-star:hover {
+  background: var(--kf-bg-elevated);
+}
+.kind-star {
+  font-size: 0.875rem;
+  line-height: 1;
+  color: var(--kf-text-muted);
+  padding: 0.1rem 0.2rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.kind-star.active {
+  color: #f59e0b;
+}
+.kind-star:hover {
   background: var(--kf-bg-elevated);
 }
 .combobox-item:hover {
