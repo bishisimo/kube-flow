@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { NButton, NEmpty, NScrollbar, NSelect, NSpace, NTag } from "naive-ui";
+import { kfSpace } from "../kf";
 
 defineOptions({ name: "PodShellView" });
 import { useShellStore } from "../stores/shell";
@@ -62,6 +64,15 @@ const groupedSessions = computed(() => {
 
 const hostEntryOptions = computed(() =>
   [...environments.value].sort((a, b) => a.display_name.localeCompare(b.display_name))
+);
+const hostEntrySelectOptions = computed(() =>
+  hostEntryOptions.value.map((e) => ({ label: e.display_name, value: e.id }))
+);
+const podSelectOptions = computed(() =>
+  podOptions.value.map((p) => ({ label: p.name, value: p.name }))
+);
+const containerSelectOptions = computed(() =>
+  containerOptions.value.map((c) => ({ label: c, value: c }))
 );
 
 const currentSessionSubtitle = computed(() => {
@@ -714,62 +725,75 @@ onUnmounted(() => {
 <template>
   <div class="terminal-center">
     <aside class="session-rail" :class="{ collapsed: sessionRailCollapsed }">
-      <button type="button" class="rail-toggle" @click="sessionRailCollapsed = !sessionRailCollapsed">
+      <NButton quaternary class="rail-toggle" @click="sessionRailCollapsed = !sessionRailCollapsed">
         <span>{{ sessionRailCollapsed ? "»" : "«" }}</span>
         <span v-if="!sessionRailCollapsed">会话</span>
-      </button>
+      </NButton>
       <div v-if="!sessionRailCollapsed" class="session-rail-body">
         <div class="quick-open-card">
           <div class="quick-open-title">打开指定环境终端</div>
           <div class="quick-open-desc">终端中心不依赖已打开环境，直接选择目标环境即可进入主机终端。</div>
-          <div class="quick-open-actions">
-            <select v-model="hostEntryEnvId" class="quick-open-select">
-              <option value="" disabled>选择环境</option>
-              <option v-for="env in hostEntryOptions" :key="env.id" :value="env.id">
-                {{ env.display_name }}
-              </option>
-            </select>
-            <button type="button" class="quick-open-btn" :disabled="!hostEntryEnvId" @click="openHostShellForEnv(hostEntryEnvId)">
-              打开终端
-            </button>
-          </div>
+          <NSpace v-bind="kfSpace.quickOpen" class="quick-open-actions">
+            <NSelect
+              v-model:value="hostEntryEnvId"
+              :options="hostEntrySelectOptions"
+              placeholder="选择环境"
+              filterable
+              class="quick-open-select-naive"
+            />
+            <NButton
+              type="primary"
+              class="quick-open-btn-naive"
+              :disabled="!hostEntryEnvId"
+              @click="openHostShellForEnv(hostEntryEnvId)"
+            >打开终端</NButton>
+          </NSpace>
         </div>
 
-        <div v-if="groupedSessions.length" class="session-groups">
-          <section v-for="group in groupedSessions" :key="group.envId" class="session-group">
-            <div class="session-group-title">{{ group.envName }}</div>
-            <div
-              v-for="session in group.items"
-              :key="session.id"
-              class="session-item"
-              :class="{ active: currentSessionId === session.id }"
-            >
-              <button type="button" class="session-item-main-button" @click="setCurrent(session.id)">
-                <span class="session-item-badge" :class="session.kind">{{ sessionBadge(session) }}</span>
-                <span class="session-item-main">
-                  <span class="session-item-name" :title="sessionLabel(session)">{{ sessionLabel(session) }}</span>
-                  <span class="session-item-meta">
-                    {{
-                      session.status === "reconnecting"
-                        ? "重连中"
-                        : session.status === "connecting"
-                          ? "连接中"
-                          : session.status === "connected"
-                            ? "已连接"
-                            : session.status === "error"
-                              ? "错误"
-                              : "已断开"
-                    }}
+        <NScrollbar v-if="groupedSessions.length" class="session-scroll" trigger="hover">
+          <div class="session-groups">
+            <section v-for="group in groupedSessions" :key="group.envId" class="session-group">
+              <div class="session-group-title">{{ group.envName }}</div>
+              <div
+                v-for="session in group.items"
+                :key="session.id"
+                class="session-item"
+                :class="{ active: currentSessionId === session.id }"
+              >
+                <NButton quaternary class="session-item-main-button" @click="setCurrent(session.id)">
+                  <NTag
+                    size="small"
+                    round
+                    :bordered="false"
+                    :class="session.kind === 'host' ? 'badge-host' : 'badge-podsh'"
+                  >{{ sessionBadge(session) }}</NTag>
+                  <span class="session-item-main">
+                    <span class="session-item-name" :title="sessionLabel(session)">{{ sessionLabel(session) }}</span>
+                    <span class="session-item-meta">
+                      {{
+                        session.status === "reconnecting"
+                          ? "重连中"
+                          : session.status === "connecting"
+                            ? "连接中"
+                            : session.status === "connected"
+                              ? "已连接"
+                              : session.status === "error"
+                                ? "错误"
+                                : "已断开"
+                      }}
+                    </span>
                   </span>
-                </span>
-              </button>
-              <button type="button" class="session-item-close" @click.stop="closeSession(session.id)">×</button>
-            </div>
-          </section>
-        </div>
-        <div v-else class="session-empty">
-          还没有会话。你可以从工作台打开 Pod，也可以直接在这里打开指定环境终端。
-        </div>
+                </NButton>
+                <NButton text class="session-item-close" @click.stop="closeSession(session.id)">×</NButton>
+              </div>
+            </section>
+          </div>
+        </NScrollbar>
+        <NEmpty
+          v-else
+          class="session-empty"
+          description="还没有会话。你可以从工作台打开 Pod，也可以直接在这里打开指定环境终端。"
+        />
       </div>
     </aside>
 
@@ -785,46 +809,47 @@ onUnmounted(() => {
         class="terminal-stage"
       >
         <div class="terminal-context-bar">
-          <div class="context-pill" :class="currentSession.kind">
-            {{ currentSession.kind === "host" ? "主机 Shell" : "Pod Shell" }}
-          </div>
-          <div v-if="currentSessionContextName" class="context-name-pill" :class="currentSession.kind">
-            {{ currentSessionContextName }}
-          </div>
-          <div v-if="currentSession.kind === 'pod' && currentSession.workloadKind && podOptions.length > 1" class="switcher-row">
-            <label class="switcher-label">Pod</label>
-            <select
-              :value="currentSession.podName"
-              class="switcher-select"
-              :disabled="switcherLoading || currentSession.status === 'connecting' || currentSession.status === 'reconnecting'"
-              @change="switchPod(($event.target as HTMLSelectElement).value)"
-            >
-              <option v-for="pod in podOptions" :key="pod.name" :value="pod.name">
-                {{ pod.name }}
-              </option>
-            </select>
-          </div>
-          <div v-if="currentSession.kind === 'pod' && containerOptions.length > 1" class="switcher-row">
-            <label class="switcher-label">容器</label>
-            <select
-              :value="currentSession.container"
-              class="switcher-select"
-              :disabled="currentSession.status === 'connecting' || currentSession.status === 'reconnecting'"
-              @change="switchContainer(($event.target as HTMLSelectElement).value)"
-            >
-              <option v-for="container in containerOptions" :key="container" :value="container">
-                {{ container }}
-              </option>
-            </select>
-          </div>
-          <div class="context-bar-spacer"></div>
-          <button
-            type="button"
-            class="context-action"
-            @click="reconnectSessionNow(currentSession.id)"
-          >
-            重新连接
-          </button>
+          <NSpace v-bind="kfSpace.contextBar" class="terminal-context-row">
+            <NSpace v-bind="kfSpace.terminalContextMain" class="terminal-context-main">
+              <NTag
+                size="small"
+                round
+                :bordered="false"
+                :class="currentSession.kind === 'host' ? 'ctx-pill-host' : 'ctx-pill-podsh'"
+              >{{ currentSession.kind === "host" ? "主机 Shell" : "Pod Shell" }}</NTag>
+              <NTag
+                v-if="currentSessionContextName"
+                size="small"
+                round
+                :bordered="false"
+                class="context-name-naive"
+                :class="currentSession.kind"
+              >{{ currentSessionContextName }}</NTag>
+              <div v-if="currentSession.kind === 'pod' && currentSession.workloadKind && podOptions.length > 1" class="switcher-row">
+                <span class="switcher-label">Pod</span>
+                <NSelect
+                  :value="currentSession.podName"
+                  :options="podSelectOptions"
+                  :disabled="switcherLoading || currentSession.status === 'connecting' || currentSession.status === 'reconnecting'"
+                  size="small"
+                  class="switcher-naive"
+                  @update:value="(v) => v && switchPod(String(v))"
+                />
+              </div>
+              <div v-if="currentSession.kind === 'pod' && containerOptions.length > 1" class="switcher-row">
+                <span class="switcher-label">容器</span>
+                <NSelect
+                  :value="currentSession.container"
+                  :options="containerSelectOptions"
+                  :disabled="currentSession.status === 'connecting' || currentSession.status === 'reconnecting'"
+                  size="small"
+                  class="switcher-naive"
+                  @update:value="(v) => v && switchContainer(String(v))"
+                />
+              </div>
+            </NSpace>
+            <NButton size="small" @click="reconnectSessionNow(currentSession.id)">重新连接</NButton>
+          </NSpace>
         </div>
 
         <div v-if="hasMountedTerminalSession" class="terminal-stack">
@@ -853,10 +878,10 @@ onUnmounted(() => {
       >
         <div class="empty-title">当前会话暂不可用</div>
         <div class="empty-desc">{{ currentSession.error }}</div>
-        <div class="empty-actions">
-          <button type="button" class="header-action" @click="reconnectSessionNow(currentSession.id)">立即重连</button>
-          <button type="button" class="header-action secondary" @click="closeSession(currentSession.id)">关闭会话</button>
-        </div>
+        <NSpace v-bind="kfSpace.centeredActions" class="empty-actions">
+          <NButton type="primary" @click="reconnectSessionNow(currentSession.id)">立即重连</NButton>
+          <NButton secondary @click="closeSession(currentSession.id)">关闭会话</NButton>
+        </NSpace>
       </section>
 
       <section v-else class="terminal-empty">
@@ -866,9 +891,9 @@ onUnmounted(() => {
           <p>从工作台、资源详情，或者直接在这里选择环境打开终端，会话都会统一收纳在这里。</p>
         </div>
         <div class="empty-grid">
-          <button
+          <NButton
             v-if="hostEntryEnvId"
-            type="button"
+            quaternary
             class="empty-card"
             @click="openHostShellForEnv(hostEntryEnvId)"
           >
@@ -876,7 +901,7 @@ onUnmounted(() => {
             <span class="empty-card-desc">
               {{ hostEntryOptions.find((env) => env.id === hostEntryEnvId)?.display_name || "选择环境" }}
             </span>
-          </button>
+          </NButton>
           <div class="empty-card info">
             <span class="empty-card-title">从工作台进入 Pod</span>
             <span class="empty-card-desc">右键 Pod / Deployment / StatefulSet / DaemonSet 即可打开。</span>
@@ -894,8 +919,8 @@ onUnmounted(() => {
   min-height: 0;
   overflow: hidden;
   background:
-    radial-gradient(circle at top left, rgba(37, 99, 235, 0.12), transparent 28%),
-    linear-gradient(180deg, #f8fbff 0%, #eef4fb 100%);
+    radial-gradient(circle at top left, color-mix(in srgb, var(--kf-primary) 12%, transparent), transparent 28%),
+    linear-gradient(180deg, var(--wb-panel-soft) 0%, var(--kf-bg-elevated) 100%);
 }
 
 .session-rail {
@@ -904,8 +929,8 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  border-right: 1px solid rgba(148, 163, 184, 0.22);
-  background: rgba(255, 255, 255, 0.92);
+  border-right: 1px solid var(--kf-border);
+  background: var(--kf-surface);
   backdrop-filter: blur(18px);
 }
 
@@ -919,9 +944,9 @@ onUnmounted(() => {
   gap: 0.65rem;
   padding: 0.85rem 1rem;
   border: none;
-  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
+  border-bottom: 1px solid var(--kf-border);
   background: transparent;
-  color: #1e293b;
+  color: var(--kf-text-primary);
   font-size: 0.875rem;
   font-weight: 700;
   cursor: pointer;
@@ -930,16 +955,80 @@ onUnmounted(() => {
 .session-rail-body {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   padding: 1rem;
+}
+.session-scroll {
+  flex: 1;
+  min-height: 0;
+  margin-top: 1rem;
+}
+.quick-open-select-naive {
+  flex: 1;
+  min-width: 0;
+}
+.session-item-main-button {
+  flex: 1;
+  min-width: 0;
+  height: auto !important;
+}
+.session-item-main-button :deep(.n-button__content) {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  width: 100%;
+  min-width: 0;
+  justify-content: flex-start;
+}
+.badge-host {
+  min-width: 44px;
+  text-align: center;
+  background: color-mix(in srgb, var(--kf-warning) 16%, transparent) !important;
+  color: var(--kf-warning) !important;
+}
+.badge-podsh {
+  min-width: 44px;
+  text-align: center;
+  background: color-mix(in srgb, var(--kf-success) 16%, transparent) !important;
+  color: var(--kf-success) !important;
+}
+.ctx-pill-host {
+  background: color-mix(in srgb, var(--kf-warning) 20%, transparent) !important;
+  color: var(--kf-embed-t-warn-glow) !important;
+  font-weight: 700;
+}
+.ctx-pill-podsh {
+  background: color-mix(in srgb, var(--kf-success) 20%, transparent) !important;
+  color: var(--kf-embed-t-ok-glow) !important;
+  font-weight: 700;
+}
+.context-name-naive.host {
+  border: 1px solid color-mix(in srgb, var(--kf-warning) 30%, var(--kf-embed-t-canvas)) !important;
+  background: color-mix(in srgb, var(--kf-warning) 14%, var(--kf-embed-t-canvas)) !important;
+  color: var(--kf-embed-t-warn-ink) !important;
+}
+.context-name-naive.pod {
+  border: 1px solid color-mix(in srgb, var(--kf-success) 30%, var(--kf-embed-t-canvas)) !important;
+  background: color-mix(in srgb, var(--kf-success) 14%, var(--kf-embed-t-canvas)) !important;
+  color: var(--kf-embed-t-ok-ink) !important;
+}
+.switcher-naive {
+  min-width: 120px;
+  max-width: min(42vw, 280px);
+}
+.empty-card.n-button {
+  height: auto;
+  align-items: flex-start;
 }
 
 .quick-open-card {
   padding: 1rem;
   border-radius: 18px;
-  background: linear-gradient(135deg, #0f172a 0%, #1d4ed8 100%);
-  color: #eff6ff;
-  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.18);
+  background: linear-gradient(135deg, var(--kf-embed-t-canvas) 0%, var(--wb-chip-text) 100%);
+  color: var(--kf-embed-t-foreground);
+  box-shadow: var(--kf-shadow-md);
 }
 
 .quick-open-title {
@@ -951,13 +1040,16 @@ onUnmounted(() => {
   margin-top: 0.35rem;
   font-size: 0.8125rem;
   line-height: 1.5;
-  color: rgba(219, 234, 254, 0.88);
+  color: color-mix(in srgb, var(--kf-embed-t-blue-ink) 88%, transparent);
 }
 
 .quick-open-actions {
   margin-top: 0.85rem;
-  display: flex;
-  gap: 0.5rem;
+  width: 100%;
+}
+.quick-open-actions :deep(.n-space-item:first-child) {
+  flex: 1;
+  min-width: 0;
 }
 
 .quick-open-select,
@@ -965,14 +1057,14 @@ onUnmounted(() => {
   min-width: 0;
   padding: 0.55rem 0.7rem;
   border-radius: 12px;
-  border: 1px solid rgba(148, 163, 184, 0.32);
+  border: 1px solid var(--kf-border-strong);
   font-size: 0.8125rem;
 }
 
 .quick-open-select {
   flex: 1;
-  background: rgba(255, 255, 255, 0.96);
-  color: #0f172a;
+  background: color-mix(in srgb, var(--kf-mix-surface) 96%, transparent);
+  color: var(--kf-text-primary);
 }
 
 .quick-open-btn,
@@ -980,8 +1072,8 @@ onUnmounted(() => {
   padding: 0.6rem 0.9rem;
   border: none;
   border-radius: 12px;
-  background: #0f172a;
-  color: #fff;
+  background: var(--kf-embed-t-canvas);
+  color: var(--kf-embed-t-foreground);
   font-size: 0.8125rem;
   font-weight: 600;
   cursor: pointer;
@@ -994,8 +1086,8 @@ onUnmounted(() => {
 }
 
 .header-action.secondary {
-  background: rgba(15, 23, 42, 0.08);
-  color: #334155;
+  background: color-mix(in srgb, var(--kf-text-primary) 6%, var(--kf-mix-surface));
+  color: var(--kf-text-secondary);
 }
 
 .session-groups {
@@ -1009,7 +1101,7 @@ onUnmounted(() => {
   margin-bottom: 0.4rem;
   font-size: 0.75rem;
   font-weight: 700;
-  color: #64748b;
+  color: var(--kf-text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
@@ -1020,9 +1112,9 @@ onUnmounted(() => {
   align-items: center;
   gap: 0.7rem;
   padding: 0.8rem 0.85rem;
-  border: 1px solid rgba(226, 232, 240, 0.95);
+  border: 1px solid var(--kf-border);
   border-radius: 16px;
-  background: #fff;
+  background: var(--kf-surface-strong);
   text-align: left;
 }
 
@@ -1032,26 +1124,13 @@ onUnmounted(() => {
 
 .session-item:hover {
   transform: translateY(-1px);
-  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
+  box-shadow: var(--kf-shadow-sm);
 }
 
 .session-item.active {
-  border-color: rgba(37, 99, 235, 0.35);
-  box-shadow: 0 14px 30px rgba(37, 99, 235, 0.12);
-  background: linear-gradient(135deg, #ffffff 0%, #eff6ff 100%);
-}
-
-.session-item-main-button {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 0.7rem;
-  padding: 0;
-  border: none;
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
+  border-color: color-mix(in srgb, var(--kf-primary) 40%, var(--kf-border));
+  box-shadow: 0 14px 30px color-mix(in srgb, var(--kf-primary) 12%, transparent);
+  background: linear-gradient(135deg, var(--kf-surface-strong) 0%, var(--kf-primary-soft) 100%);
 }
 
 .session-item-badge {
@@ -1065,13 +1144,13 @@ onUnmounted(() => {
 }
 
 .session-item-badge.host {
-  background: rgba(245, 158, 11, 0.14);
-  color: #b45309;
+  background: color-mix(in srgb, var(--kf-warning) 16%, transparent);
+  color: var(--kf-warning);
 }
 
 .session-item-badge.pod {
-  background: rgba(34, 197, 94, 0.14);
-  color: #15803d;
+  background: color-mix(in srgb, var(--kf-success) 16%, transparent);
+  color: var(--kf-success);
 }
 
 .session-item-main {
@@ -1083,7 +1162,7 @@ onUnmounted(() => {
   display: block;
   font-size: 0.84rem;
   font-weight: 600;
-  color: #0f172a;
+  color: var(--kf-text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1093,27 +1172,27 @@ onUnmounted(() => {
   display: block;
   margin-top: 0.18rem;
   font-size: 0.75rem;
-  color: #64748b;
+  color: var(--kf-text-secondary);
 }
 
 .session-item-close {
   border: none;
   background: transparent;
-  color: #94a3b8;
+  color: var(--kf-text-muted);
   font-size: 1rem;
   cursor: pointer;
 }
 
 .session-item-close:hover {
-  color: #dc2626;
+  color: var(--kf-danger);
 }
 
 .session-empty {
   margin-top: 1rem;
   padding: 1rem;
   border-radius: 16px;
-  background: rgba(248, 250, 252, 0.92);
-  color: #64748b;
+  background: var(--kf-bg-soft);
+  color: var(--kf-text-secondary);
   font-size: 0.8125rem;
   line-height: 1.6;
 }
@@ -1133,8 +1212,8 @@ onUnmounted(() => {
   justify-content: space-between;
   gap: 1rem;
   padding: 1.1rem 1.25rem 1rem;
-  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
-  background: rgba(255, 255, 255, 0.75);
+  border-bottom: 1px solid var(--kf-border);
+  background: color-mix(in srgb, var(--kf-surface-strong) 75%, transparent);
   backdrop-filter: blur(14px);
 }
 
@@ -1142,13 +1221,13 @@ onUnmounted(() => {
   margin: 0.25rem 0 0;
   font-size: 1.4rem;
   line-height: 1.15;
-  color: #0f172a;
+  color: var(--kf-text-primary);
 }
 
 .terminal-subtitle {
   margin: 0.3rem 0 0;
   font-size: 0.88rem;
-  color: #64748b;
+  color: var(--kf-text-secondary);
 }
 
 .terminal-header-actions {
@@ -1167,16 +1246,15 @@ onUnmounted(() => {
 }
 
 .terminal-context-bar {
-  display: flex;
-  align-items: center;
-  gap: 0.8rem;
   padding: 0.75rem 0.9rem;
   border-radius: 18px 18px 0 0;
-  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+  background: linear-gradient(135deg, var(--kf-embed-t-canvas) 0%, var(--kf-embed-t-slate) 100%);
 }
-
-.context-bar-spacer {
-  flex: 1;
+.terminal-context-row {
+  width: 100%;
+  min-width: 0;
+}
+.terminal-context-main {
   min-width: 0;
 }
 
@@ -1188,41 +1266,41 @@ onUnmounted(() => {
 }
 
 .context-pill.host {
-  background: rgba(245, 158, 11, 0.18);
-  color: #fde68a;
+  background: color-mix(in srgb, var(--kf-warning) 20%, transparent);
+  color: var(--kf-embed-t-warn-glow);
 }
 
 .context-pill.pod {
-  background: rgba(34, 197, 94, 0.18);
-  color: #bbf7d0;
+  background: color-mix(in srgb, var(--kf-success) 20%, transparent);
+  color: var(--kf-embed-t-ok-glow);
 }
 
 .context-name-pill {
   max-width: min(42vw, 420px);
   padding: 0.42rem 0.8rem;
   border-radius: 14px;
-  border: 1px solid rgba(148, 163, 184, 0.22);
-  background: rgba(255, 255, 255, 0.08);
-  color: #f8fafc;
+  border: 1px solid var(--kf-border);
+  background: color-mix(in srgb, var(--kf-mix-surface) 8%, var(--kf-embed-t-canvas));
+  color: var(--kf-embed-t-foreground);
   font-size: 0.8rem;
   font-weight: 600;
   line-height: 1.2;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--kf-mix-surface) 5%, var(--kf-embed-t-canvas));
 }
 
 .context-name-pill.host {
-  border-color: rgba(245, 158, 11, 0.24);
-  background: rgba(245, 158, 11, 0.12);
-  color: #fef3c7;
+  border-color: color-mix(in srgb, var(--kf-warning) 30%, var(--kf-embed-t-canvas));
+  background: color-mix(in srgb, var(--kf-warning) 14%, var(--kf-embed-t-canvas));
+  color: var(--kf-embed-t-warn-ink);
 }
 
 .context-name-pill.pod {
-  border-color: rgba(34, 197, 94, 0.24);
-  background: rgba(34, 197, 94, 0.12);
-  color: #dcfce7;
+  border-color: color-mix(in srgb, var(--kf-success) 30%, var(--kf-embed-t-canvas));
+  background: color-mix(in srgb, var(--kf-success) 14%, var(--kf-embed-t-canvas));
+  color: var(--kf-embed-t-ok-ink);
 }
 
 .switcher-row {
@@ -1233,39 +1311,47 @@ onUnmounted(() => {
 
 .switcher-label {
   font-size: 0.75rem;
-  color: #cbd5e1;
+  color: var(--kf-embed-t-foreground-subtle);
 }
 
 .switcher-select {
-  background: rgba(15, 23, 42, 0.72);
-  color: #f8fafc;
-  border-color: rgba(148, 163, 184, 0.32);
+  background: color-mix(in srgb, var(--kf-embed-t-canvas) 72%, var(--kf-embed-t-slate));
+  color: var(--kf-embed-t-foreground);
+  border-color: var(--kf-border-strong);
 }
 
 .context-action {
   flex-shrink: 0;
   padding: 0.5rem 0.85rem;
-  border: 1px solid rgba(96, 165, 250, 0.42);
+  border: 1px solid color-mix(in srgb, var(--wb-chip-text) 45%, var(--kf-embed-t-canvas));
   border-radius: 12px;
-  background: linear-gradient(135deg, rgba(37, 99, 235, 0.28), rgba(59, 130, 246, 0.18));
-  color: #dbeafe;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--kf-primary) 30%, var(--kf-embed-t-canvas)),
+    color-mix(in srgb, var(--kf-primary) 20%, var(--kf-embed-t-canvas))
+  );
+  color: var(--kf-embed-t-blue-ink);
   font-size: 0.8rem;
   font-weight: 600;
   cursor: pointer;
-  box-shadow: inset 0 1px 0 rgba(191, 219, 254, 0.12);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--kf-embed-t-blue-ink) 12%, transparent);
   transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.15s;
 }
 
 .context-action:hover {
-  background: linear-gradient(135deg, rgba(59, 130, 246, 0.4), rgba(37, 99, 235, 0.3));
-  border-color: rgba(147, 197, 253, 0.58);
-  color: #fff;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--kf-primary) 42%, var(--kf-embed-t-canvas)),
+    color-mix(in srgb, var(--kf-primary) 32%, var(--kf-embed-t-canvas))
+  );
+  border-color: color-mix(in srgb, var(--wb-chip-text) 60%, var(--kf-embed-t-canvas));
+  color: var(--kf-embed-t-foreground);
   transform: translateY(-1px);
 }
 
 .terminal-stage :deep(.pod-shell-terminal) {
   border-radius: 0 0 20px 20px;
-  background: #0f172a;
+  background: var(--kf-embed-t-canvas);
 }
 
 .terminal-stack {
@@ -1287,14 +1373,14 @@ onUnmounted(() => {
   justify-content: center;
   gap: 0.65rem;
   padding: 2rem;
-  color: #475569;
+  color: var(--kf-text-secondary);
 }
 
 .terminal-loading {
   margin: 0 1.1rem 1.1rem;
   border-radius: 0 0 20px 20px;
-  background: #0f172a;
-  color: #cbd5e1;
+  background: var(--kf-embed-t-canvas);
+  color: var(--kf-embed-t-foreground-subtle);
 }
 
 .terminal-loading-hint,
@@ -1305,12 +1391,11 @@ onUnmounted(() => {
 }
 
 .terminal-empty.error {
-  color: #b91c1c;
+  color: var(--kf-danger);
 }
 
 .empty-actions {
-  display: flex;
-  gap: 0.6rem;
+  width: 100%;
 }
 
 .empty-hero {
@@ -1320,7 +1405,7 @@ onUnmounted(() => {
 .empty-kicker {
   font-size: 0.72rem;
   font-weight: 700;
-  color: #2563eb;
+  color: var(--kf-primary);
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
@@ -1328,12 +1413,12 @@ onUnmounted(() => {
 .empty-hero h3 {
   margin: 0.35rem 0 0;
   font-size: 1.55rem;
-  color: #0f172a;
+  color: var(--kf-text-primary);
 }
 
 .empty-hero p {
   margin: 0.45rem 0 0;
-  color: #64748b;
+  color: var(--kf-text-secondary);
 }
 
 .empty-grid {
@@ -1349,33 +1434,33 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 0.3rem;
   padding: 1rem 1.05rem;
-  border: 1px solid rgba(191, 219, 254, 0.9);
+  border: 1px solid color-mix(in srgb, var(--kf-primary) 22%, var(--kf-border));
   border-radius: 18px;
-  background: linear-gradient(135deg, #ffffff 0%, #eff6ff 100%);
+  background: linear-gradient(135deg, var(--kf-surface-strong) 0%, var(--kf-primary-soft) 100%);
   text-align: left;
   cursor: pointer;
 }
 
 .empty-card.secondary {
-  border-color: rgba(226, 232, 240, 0.95);
-  background: #fff;
+  border-color: var(--kf-border);
+  background: var(--kf-surface-strong);
 }
 
 .empty-card.info {
   cursor: default;
-  border-color: rgba(226, 232, 240, 0.95);
-  background: rgba(255, 255, 255, 0.92);
+  border-color: var(--kf-border);
+  background: var(--kf-surface);
 }
 
 .empty-card-title {
   font-size: 0.9rem;
   font-weight: 700;
-  color: #0f172a;
+  color: var(--kf-text-primary);
 }
 
 .empty-card-desc {
   font-size: 0.8125rem;
-  color: #64748b;
+  color: var(--kf-text-secondary);
   line-height: 1.55;
 }
 
@@ -1388,23 +1473,19 @@ onUnmounted(() => {
   .session-rail.collapsed {
     width: 100%;
     border-right: none;
-    border-bottom: 1px solid rgba(148, 163, 184, 0.22);
+    border-bottom: 1px solid var(--kf-border);
   }
 
   .terminal-header {
     flex-direction: column;
   }
 
-  .terminal-context-bar {
-    flex-wrap: wrap;
+  .terminal-context-row {
+    align-items: flex-start;
   }
 
   .context-name-pill {
     max-width: 100%;
-  }
-
-  .context-bar-spacer {
-    display: none;
   }
 }
 </style>

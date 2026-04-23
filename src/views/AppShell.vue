@@ -11,7 +11,8 @@ import {
   type Component,
   type VNodeChild,
 } from "vue";
-import { NIcon, NMenu } from "naive-ui";
+import { NIcon, NMenu, NSpace } from "naive-ui";
+import { kfSpace } from "../kf";
 import type { MenuOption } from "naive-ui";
 import { useEnvStore } from "../stores/env";
 import { useShellStore } from "../stores/shell";
@@ -318,18 +319,20 @@ onBeforeUnmount(() => {
 <template>
   <div class="app-shell">
     <header class="app-shell-topbar">
-      <div class="app-shell-brand">
-        <span class="app-shell-brand-dot" aria-hidden="true" />
-        <span class="app-shell-brand-name">Kube-Flow</span>
-      </div>
-      <NMenu
-        mode="horizontal"
-        responsive
-        :value="currentTab"
-        :options="menuOptions"
-        class="app-shell-nav"
-        @update:value="onMenuUpdate"
-      />
+      <NSpace v-bind="kfSpace.shellTopbar" class="app-shell-topbar-row">
+        <div class="app-shell-brand">
+          <span class="app-shell-brand-dot" aria-hidden="true" />
+          <span class="app-shell-brand-name">Kube-Flow</span>
+        </div>
+        <NMenu
+          mode="horizontal"
+          responsive
+          :value="currentTab"
+          :options="menuOptions"
+          class="app-shell-nav"
+          @update:value="onMenuUpdate"
+        />
+      </NSpace>
     </header>
     <main class="app-shell-content">
       <KeepAlive :include="KEEP_ALIVE_VIEWS">
@@ -353,13 +356,18 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 .app-shell-topbar {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
   padding: 0 0.75rem 0 1rem;
-  background: #ffffff;
+  background: var(--kf-surface-strong, #ffffff);
   border-bottom: 1px solid var(--kf-border, #e2e8f0);
   flex-shrink: 0;
+}
+.app-shell-topbar-row {
+  width: 100%;
+  min-width: 0;
+}
+.app-shell-topbar-row :deep(.n-space-item:last-child) {
+  flex: 1;
+  min-width: 0;
 }
 .app-shell-brand {
   display: inline-flex;
@@ -384,12 +392,28 @@ onBeforeUnmount(() => {
   flex: 1;
   min-width: 0;
   background: transparent;
+  --n-item-text-color: var(--kf-text-primary, #0f172a);
+  --n-item-text-color-hover: var(--kf-text-primary, #0f172a);
+  --n-item-text-color-active: var(--kf-primary, #2563eb);
+  --n-item-text-color-child-active: var(--kf-primary, #2563eb);
 }
 .app-shell-nav :deep(.n-menu-item-content) {
   padding: 0 0.9rem;
+  color: var(--kf-text-primary, #0f172a) !important;
+}
+.app-shell-nav :deep(.n-menu-item-content:hover) {
+  color: var(--kf-text-primary, #0f172a) !important;
+}
+.app-shell-nav :deep(.n-menu-item--selected .n-menu-item-content) {
+  color: var(--kf-primary, #2563eb) !important;
+}
+.app-shell-nav :deep(.n-menu-item--disabled .n-menu-item-content) {
+  color: var(--kf-text-muted, #94a3b8) !important;
+  opacity: 0.55;
 }
 .app-shell-nav :deep(.n-menu-item-content .n-icon) {
   margin-right: 0.4rem;
+  color: inherit;
 }
 .app-shell-content {
   flex: 1;

@@ -20,7 +20,7 @@
   min-width: 0;
   min-height: 0;
   overflow: visible;
-  background: linear-gradient(180deg, var(--wb-canvas, #edf2f9) 0%, #f4f7fc 55%, #f8fafd 100%);
+  background: var(--wb-canvas);
 }
 
 

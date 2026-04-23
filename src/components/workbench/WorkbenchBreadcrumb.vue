@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { NBreadcrumb, NBreadcrumbItem, NTag } from "naive-ui";
+import { NBreadcrumb, NBreadcrumbItem, NSpace, NTag } from "naive-ui";
+import { kfSpace } from "../../kf";
 import type { ResourceKind } from "../../constants/resourceKinds";
 
 const props = defineProps<{
@@ -27,8 +28,10 @@ const drillKindMatches = computed(() => {
 
 <template>
   <nav class="breadcrumb-bar" aria-label="导航">
-    <NTag size="small" round :bordered="false" class="breadcrumb-kicker">当前位置</NTag>
-    <NBreadcrumb separator="›" class="breadcrumb-trail">
+    <NSpace v-bind="kfSpace.breadcrumb" class="breadcrumb-row">
+      <NTag size="small" round :bordered="false" class="breadcrumb-kicker">当前位置</NTag>
+      <div class="breadcrumb-trail-wrap">
+        <NBreadcrumb separator="›" class="breadcrumb-trail">
       <template v-if="drillFrom">
         <NBreadcrumbItem clickable @click="emit('drill-namespace')">
           {{ drillFrom.namespace || "全部" }}
@@ -53,21 +56,32 @@ const drillKindMatches = computed(() => {
           <NTag type="primary" size="small" :bordered="false" round>{{ workbenchKindLabel }}</NTag>
         </NBreadcrumbItem>
       </template>
-    </NBreadcrumb>
+        </NBreadcrumb>
+      </div>
+    </NSpace>
   </nav>
 </template>
 
 <style scoped>
 .breadcrumb-bar {
-  display: flex;
-  align-items: center;
-  gap: 0.55rem;
   padding: 0.6rem 1rem;
   font-size: 0.8rem;
   color: var(--wb-text-secondary, #66768f);
   background: linear-gradient(180deg, var(--wb-panel-soft, #f8fbff), var(--wb-panel-elevated, #ffffff));
   border-bottom: 1px solid var(--wb-line, rgba(148, 163, 184, 0.22));
   flex-shrink: 0;
+  min-width: 0;
+}
+.breadcrumb-row {
+  width: 100%;
+  min-width: 0;
+}
+.breadcrumb-trail-wrap {
+  min-width: 0;
+  width: 100%;
+}
+.breadcrumb-row :deep(.n-space-item:last-child) {
+  flex: 1;
   min-width: 0;
 }
 .breadcrumb-kicker {
@@ -85,10 +99,6 @@ const drillKindMatches = computed(() => {
 }
 .breadcrumb-trail::-webkit-scrollbar {
   display: none;
-}
-.breadcrumb-trail :deep(.n-breadcrumb-item__separator) {
-  color: #94a3b8;
-  margin: 0 0.32rem;
 }
 .breadcrumb-trail :deep(.n-breadcrumb > ul) {
   flex-wrap: nowrap;

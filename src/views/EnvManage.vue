@@ -4,7 +4,8 @@
  * 各对话框的表单逻辑下沉到对应子组件，保持视图层只做组合。
  */
 import { ref } from "vue";
-import { NButton, NEmpty, NSpin } from "naive-ui";
+import { NButton, NEmpty, NSpace, NSpin } from "naive-ui";
+import { kfSpace } from "../kf";
 import type { Environment } from "../api/env";
 import { useEnvManage } from "../features/env/useEnvManage";
 import EnvCard from "../components/env/EnvCard.vue";
@@ -78,8 +79,10 @@ async function onContextSwitch(env: Environment, ctx: string) {
 <template>
   <div class="env-manage">
     <header class="header">
-      <h1>环境管理</h1>
-      <NButton type="primary" @click="openCreate">+ 新建环境</NButton>
+      <NSpace v-bind="kfSpace.pageTitle" class="header-row">
+        <h1 class="header-title">环境管理</h1>
+        <NButton type="primary" @click="openCreate">+ 新建环境</NButton>
+      </NSpace>
     </header>
 
     <EnvFilterBar
@@ -91,10 +94,10 @@ async function onContextSwitch(env: Environment, ctx: string) {
     />
 
     <div class="body">
-      <div v-if="listLoading" class="state-loading">
+      <NSpace v-if="listLoading" v-bind="kfSpace.centered" class="state-loading">
         <NSpin size="small" />
         <span>加载中…</span>
-      </div>
+      </NSpace>
 
       <div v-else-if="filteredEnvironments.length" class="card-grid">
         <EnvCard
@@ -124,10 +127,10 @@ async function onContextSwitch(env: Environment, ctx: string) {
                 : "点击「新建环境」添加本地 kubeconfig 或 SSH 隧道连接。"
             }}
           </p>
-          <div class="empty-actions">
+          <NSpace v-bind="kfSpace.centeredActions" class="empty-actions">
             <NButton v-if="selectedFilterTags.size" @click="clearFilter">清除筛选</NButton>
             <NButton type="primary" @click="openCreate">新建环境</NButton>
-          </div>
+          </NSpace>
         </template>
       </NEmpty>
     </div>
@@ -155,22 +158,26 @@ async function onContextSwitch(env: Environment, ctx: string) {
   flex: 1;
   min-height: 0;
   padding: 1.5rem 2rem;
-  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+  background: linear-gradient(180deg, var(--kf-bg-soft) 0%, var(--kf-bg-elevated) 100%);
 }
 .header {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
   margin-bottom: 1.5rem;
-  flex-wrap: wrap;
   flex-shrink: 0;
 }
-.header h1 {
+.header-row {
+  width: 100%;
+}
+.header-title {
   font-size: 1.375rem;
   font-weight: 600;
   margin: 0;
-  flex: 1;
   letter-spacing: -0.02em;
+  min-width: 0;
+  flex: 1;
+}
+.header-row :deep(.n-space-item:first-child) {
+  flex: 1;
+  min-width: 12rem;
 }
 .body {
   flex: 1;
@@ -179,12 +186,9 @@ async function onContextSwitch(env: Environment, ctx: string) {
   overflow-x: hidden;
 }
 .state-loading {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
+  width: 100%;
   padding: 3rem 0;
-  color: #64748b;
+  color: var(--kf-text-secondary);
   font-size: 0.875rem;
 }
 .state-empty {
@@ -194,13 +198,11 @@ async function onContextSwitch(env: Environment, ctx: string) {
   margin: 0 0 0.85rem;
   text-align: center;
   max-width: 320px;
-  color: #64748b;
+  color: var(--kf-text-secondary);
   line-height: 1.5;
 }
 .empty-actions {
-  display: flex;
-  gap: 0.5rem;
-  justify-content: center;
+  width: 100%;
 }
 .card-grid {
   display: grid;

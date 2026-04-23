@@ -12,7 +12,7 @@
  * - Esc                      关闭
  */
 import { computed, nextTick, ref, watch } from "vue";
-import { NModal } from "naive-ui";
+import { NButton, NModal } from "naive-ui";
 import type { Token } from "../features/commandPalette";
 import {
   useCommandPalette,
@@ -255,12 +255,7 @@ function commitOnSpace(e: KeyboardEvent) {
             <span class="cmdk-chip-key">{{ t.symbol }}{{ t.key }}</span>
             <span class="cmdk-chip-eq">=</span>
             <span class="cmdk-chip-val">{{ t.value }}</span>
-            <button
-              type="button"
-              class="cmdk-chip-x"
-              aria-label="移除"
-              @click.stop="onChipRemove(t)"
-            >×</button>
+            <NButton text class="cmdk-chip-x" size="tiny" aria-label="移除" @click.stop="onChipRemove(t)">×</NButton>
           </span>
           <input
             ref="inputRef"

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { NAlert, NButton, NSkeleton, NSpin } from "naive-ui";
+import { NAlert, NButton, NSkeleton, NSpace, NSpin } from "naive-ui";
+import { kfSpace } from "../../kf";
 import type { ConnectionProgressPayload } from "../../stores/connection";
 
 defineProps<{
@@ -23,42 +24,42 @@ const emit = defineEmits<{
 <template>
   <section class="resource-frame">
     <NAlert v-if="currentId && envState === 'disconnected'" type="warning" class="state-alert" :show-icon="true">
-      <div class="alert-row">
+      <NSpace v-bind="kfSpace.alertRow" class="alert-row">
         <div>
           <div class="disconnect-text">连接已断开</div>
           <div class="disconnect-detail">{{ envError }}</div>
         </div>
         <NButton type="warning" secondary size="small" @click="emit('reconnect')">重连</NButton>
-      </div>
+      </NSpace>
     </NAlert>
     <div v-else-if="currentId && envState === 'connecting'" class="connection-stepper">
-      <div class="stepper-title">
+      <NSpace v-bind="kfSpace.inlineStatus" class="stepper-title">
         <NSpin size="small" />
         <span>连接中：{{ progress?.stage_label || "正在获取资源" }}</span>
-      </div>
+      </NSpace>
       <div v-if="progress?.detail || listLoading" class="stepper-detail">
         {{ progress?.detail || "请稍候，正在同步当前视图数据…" }}
       </div>
     </div>
     <NAlert v-else-if="listError" type="error" class="state-alert" :show-icon="true">
-      <div class="alert-row">
+      <NSpace v-bind="kfSpace.alertRow" class="alert-row">
         <span class="error-message">{{ listError }}</span>
-        <div class="alert-actions">
+        <NSpace v-bind="kfSpace.inlineStatus" class="alert-actions">
           <NButton v-if="currentId && reconnectOnListError" type="error" secondary size="small" @click="emit('reconnect')">
             重连
           </NButton>
           <NButton size="small" quaternary @click="emit('dismissError')">关闭</NButton>
-        </div>
-      </div>
+        </NSpace>
+      </NSpace>
     </NAlert>
     <div v-else-if="listLoading" class="loading-state">
       <div class="loading-state-head">
-        <div class="loading-state-title">
+        <NSpace v-bind="kfSpace.inlineStatus" class="loading-state-title">
           <NSpin size="small" stroke="#2563eb" :stroke-width="18" />
           <span>
             {{ envSwitching ? `正在切换到 ${envSwitchingName || "目标环境"}` : "加载中…" }}
           </span>
-        </div>
+        </NSpace>
         <div class="loading-state-detail">
           {{ envSwitching ? "旧环境数据已清空，正在拉取新环境资源。" : "正在同步当前环境下的资源列表。" }}
         </div>
@@ -97,15 +98,10 @@ const emit = defineEmits<{
   border: 1px solid var(--wb-line, rgba(148, 163, 184, 0.22));
 }
 .alert-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.9rem;
+  width: 100%;
 }
 .alert-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
+  flex-shrink: 0;
 }
 .error-message {
   min-width: 0;
@@ -127,9 +123,6 @@ const emit = defineEmits<{
   font-size: 0.875rem;
 }
 .stepper-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
   font-weight: 500;
 }
 .stepper-detail {
@@ -156,9 +149,6 @@ const emit = defineEmits<{
   border-bottom: 1px dashed var(--wb-line, rgba(148, 163, 184, 0.22));
 }
 .loading-state-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
   font-size: 0.9rem;
   font-weight: 650;
   color: var(--kf-text-primary, #0f172a);

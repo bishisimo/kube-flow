@@ -21,7 +21,7 @@ fn extract_rolebinding_edges(node_ref: &ResourceRef, value: &serde_json::Value) 
                 from: node_ref.clone(),
                 to: ResourceRef::new(rkind, target_ns, rname),
                 relation_type: RelationType::RoleRef,
-                label_selector: None,
+                label_selector: None, to_display: None,
             });
         }
     }
@@ -37,7 +37,7 @@ fn extract_rolebinding_edges(node_ref: &ResourceRef, value: &serde_json::Value) 
                 from: node_ref.clone(),
                 to: ResourceRef::new("ServiceAccount", sns, sname),
                 relation_type: RelationType::RoleRef,
-                label_selector: None,
+                label_selector: None, to_display: None,
             });
         }
     }

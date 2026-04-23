@@ -13,6 +13,7 @@ use super::extractors::{
     service_reverse::ServiceReverseExtractor,
     service_selector::ServiceSelectorExtractor,
     workload_mounts::WorkloadMountsExtractor,
+    workload_service_link::WorkloadServiceLinkExtractor,
 };
 
 /// 构建默认 Extractor 注册表，包含所有内置关联规则。
@@ -21,6 +22,7 @@ pub fn build_default_registry() -> Vec<Box<dyn RelationExtractor>> {
         Box::new(WorkloadMountsExtractor),
         Box::new(OwnerRefExtractor),
         Box::new(WorkloadSelectorExtractor),
+        Box::new(WorkloadServiceLinkExtractor),
         Box::new(ServiceSelectorExtractor),
         Box::new(ServiceAccountExtractor),
         Box::new(PvcBindingsExtractor),

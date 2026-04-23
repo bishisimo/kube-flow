@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { onMounted } from "vue";
 import { useRouter } from "vue-router";
-import { NButton, NCard, NEmpty, NList, NListItem, NScrollbar, NTag } from "naive-ui";
+import { NButton, NCard, NEmpty, NList, NListItem, NScrollbar, NSpace, NTag } from "naive-ui";
+import { kfSpace } from "../kf";
 import { useEnvStore } from "../stores/env";
 import { effectiveContext, type Environment } from "../api/env";
 
@@ -57,10 +58,10 @@ function useEnv(id: string) {
                 {{ sourceLabel(env) }}
               </NTag>
             </template>
-            <div class="env-row">
+            <NSpace v-bind="kfSpace.homeEnvRow" class="env-row">
               <span class="env-name">{{ env.display_name }}</span>
               <span class="env-meta">{{ currentLabel(env) }}</span>
-            </div>
+            </NSpace>
             <template #suffix>
               <NButton size="small" type="primary" ghost @click="useEnv(env.id)">使用</NButton>
             </template>
@@ -102,10 +103,8 @@ function useEnv(id: string) {
   border-radius: 12px;
 }
 .env-row {
-  display: flex;
-  align-items: baseline;
-  gap: 0.85rem;
   min-width: 0;
+  flex: 1;
 }
 .env-name {
   font-weight: 600;

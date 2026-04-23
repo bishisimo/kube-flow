@@ -264,6 +264,8 @@ export interface ResourceRef {
   kind: string;
   namespace?: string | null;
   name: string;
+  /** 图内对「无 API 具名、仅按 label 聚合」目标的键，与集群对象名无关 */
+  set_id?: string | null;
 }
 
 export interface ResourceGraphNode {
@@ -271,6 +273,8 @@ export interface ResourceGraphNode {
   depth: number;
   is_concrete: boolean;
   label_selector?: string | null;
+  /** 人可读摘要（如 Pod 数），不当作资源名 */
+  display_label?: string | null;
 }
 
 export interface ResourceGraphEdge {
@@ -278,6 +282,7 @@ export interface ResourceGraphEdge {
   to: ResourceRef;
   relation_type: string;
   label_selector?: string | null;
+  to_display?: string | null;
 }
 
 export interface ResourceGraph {

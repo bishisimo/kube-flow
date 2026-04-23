@@ -1,0 +1,19 @@
+/**
+ * 日志与 Workbench 工具条内 NSelect 的宽度与等宽变体。
+ * 高度、圆角、小字号由 App.vue 的 Naive GlobalThemeOverrides（含 InternalSelection heightSmall）统一提供。
+ */
+.kf-select-toolbar.n-select {
+  min-width: 120px;
+}
+
+.kf-select-toolbar--wide.n-select {
+  min-width: 180px;
+}
+
+.kf-select-toolbar--compact.n-select {
+  min-width: 116px;
+}
+
+.kf-select-toolbar--mono.n-select .n-base-selection {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}

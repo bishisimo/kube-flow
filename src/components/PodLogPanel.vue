@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, computed, onUnmounted, onMounted } from "vue";
+import { NButton, NCheckbox, NInput, NSelect } from "naive-ui";
 import { listen } from "@tauri-apps/api/event";
 import { extractErrorMessage } from "../utils/errorMessage";
 import { AnsiUp } from "ansi_up";
@@ -98,11 +99,38 @@ const TAIL_OPTIONS = [
   { value: 5000, label: "最近 5000 行" },
 ];
 
-const SINCE_OPTIONS = [
-  { value: null as number | null, label: "全部" },
+
+/** 供 NSelect 使用：用字符串 all 表示「全部」，与 sinceSeconds 的 null 互转。 */
+const sinceSelectValue = computed({
+  get(): "all" | number {
+    const s = sinceSeconds.value;
+    if (s === null) return "all";
+    if (s === 3600 || s === 21600 || s === 86400) return s;
+    return "all";
+  },
+  set(v: "all" | number) {
+    sinceSeconds.value = v === "all" ? null : v;
+  },
+});
+
+const sinceOptionsForSelect = [
+  { value: "all" as const, label: "全部" },
   { value: 3600, label: "最近 1 小时" },
   { value: 21600, label: "最近 6 小时" },
   { value: 86400, label: "最近 24 小时" },
+];
+
+const containerNOptions = computed(() => {
+  const list = effectiveContainers.value.map((c) => ({ label: c, value: c as string }));
+  if (!list.length) {
+    return [{ label: "（无）", value: "", disabled: true }];
+  }
+  return [{ label: "— 选择容器 —", value: "" }, ...list];
+});
+
+const logBgNOptions: { label: string; value: LogBgTheme }[] = [
+  { label: "白色", value: "light" },
+  { label: "黑色", value: "dark" },
 ];
 
 const CONTEXT_OPTIONS = [
@@ -528,156 +556,166 @@ setupStreamListeners();
     <div v-if="showContainerInToolbar" class="target-bar">
       <div class="toolbar-row">
         <label class="field-label">容器</label>
-        <select
+        <NSelect
           :value="effectiveContainer"
-          class="select"
+          class="select kf-select-toolbar"
+          size="small"
+          :options="containerNOptions"
           :disabled="containersLoading || effectiveContainers.length === 0"
-          @change="setEffectiveContainer(($event.target as HTMLSelectElement).value)"
-        >
-          <option value="">-- 选择容器 --</option>
-          <option v-for="c in effectiveContainers" :key="c" :value="c">{{ c }}</option>
-        </select>
+          @update:value="(v) => setEffectiveContainer(typeof v === 'string' ? v : String(v ?? ''))"
+        />
       </div>
     </div>
     <div class="log-toolbar">
       <div class="quick-filter-group">
-        <button
-          type="button"
+        <NButton
+          size="small"
+          :secondary="selectedLevels.size !== 0"
+          :type="selectedLevels.size === 0 ? 'primary' : 'default'"
           class="quick-filter-btn"
-          :class="{ active: selectedLevels.size === 0 }"
           @click="clearLevels"
         >
           全部
-        </button>
-        <button
-          type="button"
+        </NButton>
+        <NButton
+          size="small"
+          :secondary="!selectedLevels.has('error')"
+          :type="selectedLevels.has('error') ? 'error' : 'default'"
           class="quick-filter-btn error"
-          :class="{ active: selectedLevels.has('error') }"
           @click="toggleLevel('error')"
         >
           错误
-        </button>
-        <button
-          type="button"
+        </NButton>
+        <NButton
+          size="small"
+          :secondary="!selectedLevels.has('warn')"
+          :type="selectedLevels.has('warn') ? 'warning' : 'default'"
           class="quick-filter-btn warn"
-          :class="{ active: selectedLevels.has('warn') }"
           @click="toggleLevel('warn')"
         >
           警告
-        </button>
-        <button
-          type="button"
+        </NButton>
+        <NButton
+          size="small"
+          :secondary="!selectedLevels.has('info')"
+          :type="selectedLevels.has('info') ? 'info' : 'default'"
           class="quick-filter-btn info"
-          :class="{ active: selectedLevels.has('info') }"
           @click="toggleLevel('info')"
         >
           信息
-        </button>
-        <button
-          type="button"
+        </NButton>
+        <NButton
+          size="small"
+          :secondary="!selectedLevels.has('debug')"
+          :type="selectedLevels.has('debug') ? 'primary' : 'default'"
           class="quick-filter-btn debug"
-          :class="{ active: selectedLevels.has('debug') }"
           @click="toggleLevel('debug')"
         >
           调试
-        </button>
+        </NButton>
       </div>
       <div class="toolbar-row">
         <label class="field-label">行数</label>
-        <select v-model="tailLines" class="select" :disabled="follow">
-          <option v-for="o in TAIL_OPTIONS" :key="String(o.value)" :value="o.value">
-            {{ o.label }}
-          </option>
-        </select>
+        <NSelect
+          v-model:value="tailLines"
+          class="select kf-select-toolbar"
+          size="small"
+          :options="TAIL_OPTIONS"
+          :disabled="follow"
+        />
       </div>
       <div class="toolbar-row">
         <label class="field-label">时间范围</label>
-        <select v-model="sinceSeconds" class="select" :disabled="follow">
-          <option v-for="o in SINCE_OPTIONS" :key="o.value ?? 'all'" :value="o.value">
-            {{ o.label }}
-          </option>
-        </select>
+        <NSelect
+          v-model:value="sinceSelectValue"
+          class="select kf-select-toolbar"
+          size="small"
+          :options="sinceOptionsForSelect"
+          :disabled="follow"
+        />
       </div>
-      <label class="checkbox-label">
-        <input v-model="timestamps" type="checkbox" :disabled="follow" />
-        <span>时间戳</span>
-      </label>
-      <label class="checkbox-label">
-        <input v-model="previousLogs" type="checkbox" />
-        <span>重启前日志</span>
-      </label>
-      <label class="checkbox-label follow-toggle">
-        <input v-model="follow" type="checkbox" :disabled="!effectiveContainer || loading" />
-        <span>Follow</span>
-      </label>
+      <div class="checkbox-label">
+        <NCheckbox v-model:checked="timestamps" :disabled="follow">时间戳</NCheckbox>
+      </div>
+      <div class="checkbox-label">
+        <NCheckbox v-model:checked="previousLogs">重启前日志</NCheckbox>
+      </div>
+      <div class="checkbox-label follow-toggle">
+        <NCheckbox v-model:checked="follow" :disabled="!effectiveContainer || loading">Follow</NCheckbox>
+      </div>
       <div class="toolbar-row">
         <label class="field-label">底色</label>
-        <select v-model="logBgTheme" class="select">
-          <option value="light">白色</option>
-          <option value="dark">黑色</option>
-        </select>
+        <NSelect
+          v-model:value="logBgTheme"
+          class="select kf-select-toolbar"
+          size="small"
+          :options="logBgNOptions"
+        />
       </div>
-      <button
-        type="button"
+      <NButton
         class="btn-refresh"
+        type="primary"
+        size="small"
         :disabled="loading || !effectiveContainer || follow"
+        :loading="loading"
         @click="loadLogs"
       >
-        {{ loading ? "加载中…" : "刷新" }}
-      </button>
+        刷新
+      </NButton>
     </div>
     <div v-if="hasAnySearchControls" class="search-toolbar">
       <div class="search-filters">
-        <input
-          v-model="searchQuery"
-          type="text"
+        <NInput
+          v-model:value="searchQuery"
           class="search-input"
+          size="small"
           placeholder="包含关键词…"
           :title="matchCount ? `${matchCount} 处匹配` : ''"
         />
-        <input
-          v-model="excludeQuery"
-          type="text"
+        <NInput
+          v-model:value="excludeQuery"
           class="search-input exclude"
+          size="small"
           placeholder="排除关键词…"
         />
       </div>
       <div class="search-tools">
-        <label class="checkbox-label compact">
-          <input v-model="onlyMatches" type="checkbox" />
-          <span>仅匹配</span>
-        </label>
+        <div class="checkbox-label compact">
+          <NCheckbox v-model:checked="onlyMatches">仅匹配</NCheckbox>
+        </div>
         <div class="toolbar-row">
           <label class="field-label">上下文</label>
-          <select v-model="contextLines" class="select compact-select" :disabled="onlyMatches">
-            <option v-for="o in CONTEXT_OPTIONS" :key="o.value" :value="o.value">
-              {{ o.label }}
-            </option>
-          </select>
+          <NSelect
+            v-model:value="contextLines"
+            class="select kf-select-toolbar kf-select-toolbar--compact"
+            size="small"
+            :options="CONTEXT_OPTIONS"
+            :disabled="onlyMatches"
+          />
         </div>
       </div>
       <div class="search-nav">
-        <button
-          type="button"
+        <NButton
+          text
           class="btn-nav"
           :disabled="matchCount === 0"
           title="上一个"
           @click="goToMatch(-1)"
         >
           ↑
-        </button>
+        </NButton>
         <span v-if="searchQuery.trim()" class="match-info">
           {{ currentMatchIndex + 1 }}/{{ matchCount }}
         </span>
-        <button
-          type="button"
+        <NButton
+          text
           class="btn-nav"
           :disabled="matchCount === 0"
           title="下一个"
           @click="goToMatch(1)"
         >
           ↓
-        </button>
+        </NButton>
       </div>
     </div>
     <div v-if="totalLineCount > 0 || loading" class="filter-summary">
@@ -744,7 +782,7 @@ setupStreamListeners();
   align-items: center;
   gap: 0.5rem;
   padding: 0.5rem 0 0.5rem 1rem;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid var(--kf-border);
   flex-shrink: 0;
 }
 .log-toolbar {
@@ -753,7 +791,7 @@ setupStreamListeners();
   align-items: center;
   gap: 0.75rem 1rem;
   padding: 0.5rem 0 0.5rem 1rem;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid var(--kf-border);
   flex-shrink: 0;
 }
 .quick-filter-group {
@@ -764,18 +802,18 @@ setupStreamListeners();
 }
 .quick-filter-btn {
   padding: 0.32rem 0.7rem;
-  border: 1px solid #dbe3ee;
+  border: 1px solid var(--kf-border);
   border-radius: 999px;
-  background: #fff;
-  color: #475569;
+  background: var(--kf-surface-strong);
+  color: var(--kf-text-secondary);
   font-size: 0.78rem;
   font-weight: 600;
   cursor: pointer;
 }
 .quick-filter-btn.active {
-  border-color: #2563eb;
-  background: rgba(37, 99, 235, 0.08);
-  color: #1d4ed8;
+  border-color: var(--kf-primary);
+  background: var(--kf-primary-soft);
+  color: var(--kf-primary);
 }
 .quick-filter-btn.error.active {
   border-color: #ef4444;
@@ -804,11 +842,11 @@ setupStreamListeners();
 }
 .field-label {
   font-size: 0.8125rem;
-  color: #64748b;
+  color: var(--kf-text-secondary);
 }
 .select {
   padding: 0.25rem 0.5rem;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--kf-border);
   border-radius: 4px;
   font-size: 0.8125rem;
   min-width: 120px;
@@ -818,26 +856,26 @@ setupStreamListeners();
   align-items: center;
   gap: 0.35rem;
   font-size: 0.8125rem;
-  color: #64748b;
+  color: var(--kf-text-secondary);
   cursor: pointer;
 }
 .btn-refresh {
   padding: 0.35rem 0.75rem;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--kf-border);
   border-radius: 6px;
-  background: #fff;
+  background: var(--kf-surface-strong);
   font-size: 0.8125rem;
   cursor: pointer;
 }
 .btn-refresh:hover:not(:disabled) {
-  background: #f8fafc;
+  background: var(--kf-bg-soft);
 }
 .btn-refresh:disabled {
   opacity: 0.7;
   cursor: not-allowed;
 }
 .follow-toggle span {
-  color: #2563eb;
+  color: var(--kf-primary);
 }
 .search-toolbar {
   display: flex;
@@ -845,7 +883,7 @@ setupStreamListeners();
   justify-content: space-between;
   gap: 0.75rem;
   padding: 0.35rem 0 0.35rem 1rem;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid var(--kf-border);
   flex-shrink: 0;
   flex-wrap: wrap;
 }
@@ -869,7 +907,7 @@ setupStreamListeners();
 }
 .search-input {
   padding: 0.25rem 0.5rem;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--kf-border);
   border-radius: 4px;
   font-size: 0.8125rem;
   min-width: 200px;
@@ -883,19 +921,16 @@ setupStreamListeners();
 .compact {
   font-size: 0.78rem;
 }
-.compact-select {
-  min-width: 116px;
-}
 .btn-nav {
   padding: 0.2rem 0.4rem;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--kf-border);
   border-radius: 4px;
-  background: #fff;
+  background: var(--kf-surface-strong);
   font-size: 0.75rem;
   cursor: pointer;
 }
 .btn-nav:hover:not(:disabled) {
-  background: #f8fafc;
+  background: var(--kf-bg-soft);
 }
 .btn-nav:disabled {
   opacity: 0.5;
@@ -903,7 +938,7 @@ setupStreamListeners();
 }
 .match-info {
   font-size: 0.75rem;
-  color: #64748b;
+  color: var(--kf-text-secondary);
   min-width: 3rem;
 }
 .filter-summary {
@@ -911,15 +946,15 @@ setupStreamListeners();
   align-items: center;
   gap: 1rem;
   padding: 0.3rem 0 0.3rem 1rem;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid var(--kf-border);
   font-size: 0.75rem;
-  color: #64748b;
+  color: var(--kf-text-secondary);
   flex-shrink: 0;
   flex-wrap: wrap;
 }
 .error-banner {
   padding: 0.5rem 0;
-  color: #dc2626;
+  color: var(--kf-danger);
   font-size: 0.8125rem;
   flex-shrink: 0;
 }

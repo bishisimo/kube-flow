@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, computed } from "vue";
+import { NEmpty, NSelect, NSpin } from "naive-ui";
 import PodLogPanel from "./PodLogPanel.vue";
 import { extractErrorMessage } from "../utils/errorMessage";
 import {
@@ -110,6 +111,30 @@ watch(selectedPod, () => {
     selectedContainer.value = "";
   }
 }, { immediate: true });
+
+const podNOptions = computed(() => {
+  if (pods.value.length === 0) {
+    return [{ label: "（无）", value: "", disabled: true }];
+  }
+  return [
+    { label: "-- 选择 Pod --", value: "" },
+    ...pods.value.map((p) => ({
+      value: p.name,
+      label: p.phase ? `${p.name} (${p.phase})` : p.name,
+    })),
+  ];
+});
+
+const containerNOptions = computed(() => {
+  const list = containers.value.map((c) => ({ label: c, value: c }));
+  if (!list.length) {
+    if (containersLoading.value) {
+      return [{ label: "加载中…", value: "", disabled: true }];
+    }
+    return [{ label: "（无）", value: "", disabled: true }];
+  }
+  return [{ label: "-- 选择容器 --", value: "" }, ...list];
+});
 </script>
 
 <template>
@@ -117,39 +142,31 @@ watch(selectedPod, () => {
     <div class="target-bar">
       <div class="toolbar-row">
         <label class="field-label">{{ workloadKindLabel }} Pod</label>
-        <select
-          v-model="selectedPod"
-          class="pod-select"
+        <NSelect
+          v-model:value="selectedPod"
+          class="select kf-select-toolbar kf-select-toolbar--wide kf-select-toolbar--mono"
+          size="small"
+          :options="podNOptions"
           :disabled="podsLoading || pods.length === 0"
-        >
-          <option value="">-- 选择 Pod --</option>
-          <option
-            v-for="p in pods"
-            :key="p.name"
-            :value="p.name"
-          >
-            {{ p.name }}{{ p.phase ? ` (${p.phase})` : "" }}
-          </option>
-        </select>
+        />
       </div>
       <div class="toolbar-row">
         <label class="field-label">容器</label>
-        <select
-          v-model="selectedContainer"
-          class="pod-select"
+        <NSelect
+          v-model:value="selectedContainer"
+          class="select kf-select-toolbar kf-select-toolbar--wide kf-select-toolbar--mono"
+          size="small"
+          :options="containerNOptions"
           :disabled="containersLoading || containers.length === 0"
-        >
-          <option value="">-- 选择容器 --</option>
-          <option v-for="c in containers" :key="c" :value="c">{{ c }}</option>
-        </select>
+        />
       </div>
     </div>
     <div v-if="podsError" class="error-banner">{{ podsError }}</div>
-    <div v-else-if="podsLoading && pods.length === 0" class="loading-hint">
-      加载 Pod 列表…
+    <div v-else-if="podsLoading && pods.length === 0" class="workload-state workload-state--center">
+      <NSpin size="medium" description="加载 Pod 列表…" />
     </div>
-    <div v-else-if="pods.length === 0" class="empty-hint">
-      暂无 Pod
+    <div v-else-if="pods.length === 0" class="workload-state workload-state--center">
+      <NEmpty description="暂无 Pod" size="small" />
     </div>
     <div v-else-if="selectedPod" class="log-panel-wrap">
       <PodLogPanel
@@ -180,7 +197,7 @@ watch(selectedPod, () => {
   flex-wrap: wrap;
   gap: 0.5rem 1rem;
   padding: 0.5rem 0 0.5rem 1rem;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid var(--kf-border);
   flex-shrink: 0;
 }
 .toolbar-row {
@@ -190,30 +207,26 @@ watch(selectedPod, () => {
 }
 .field-label {
   font-size: 0.8125rem;
-  color: #64748b;
-}
-.pod-select {
-  padding: 0.25rem 0.5rem;
-  border: 1px solid #e2e8f0;
-  border-radius: 4px;
-  font-size: 0.8125rem;
-  min-width: 180px;
-  font-family: ui-monospace, monospace;
+  color: var(--kf-text-secondary);
 }
 .error-banner {
   padding: 0.75rem;
-  color: #dc2626;
+  color: var(--kf-danger);
   font-size: 0.8125rem;
-  background: #fef2f2;
+  background: var(--kf-danger-soft);
   border-radius: 6px;
   margin: 0.5rem 0;
 }
-.loading-hint,
-.empty-hint {
-  padding: 2rem;
-  text-align: center;
+.workload-state {
+  padding: 1.5rem 1rem;
   font-size: 0.875rem;
-  color: #94a3b8;
+  color: var(--kf-text-secondary);
+}
+.workload-state--center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 120px;
 }
 .log-panel-wrap {
   flex: 1;

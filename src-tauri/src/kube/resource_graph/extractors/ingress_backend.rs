@@ -34,7 +34,7 @@ impl RelationExtractor for IngressBackendExtractor {
                 from: node_ref.clone(),
                 to: ResourceRef::new("Service", ns.clone(), svc_name),
                 relation_type: RelationType::IngressBackend,
-                label_selector: None,
+                label_selector: None, to_display: None,
             });
         }
 
@@ -48,7 +48,7 @@ impl RelationExtractor for IngressBackendExtractor {
                                 from: node_ref.clone(),
                                 to: ResourceRef::new("Service", ns.clone(), svc_name),
                                 relation_type: RelationType::IngressBackend,
-                                label_selector: None,
+                                label_selector: None, to_display: None,
                             });
                         }
                     }

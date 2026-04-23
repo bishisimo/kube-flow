@@ -123,10 +123,11 @@ const containerSelectOptions = () => props.containerOptions.map((name) => ({ lab
             <small>至少保留一个，推荐先勾选 `网络`</small>
           </div>
           <div class="pod-debug-option-grid">
-            <button
+            <NButton
               v-for="item in WORKBENCH_POD_DEBUG_NAMESPACE_OPTIONS"
               :key="item.value"
-              type="button"
+              quaternary
+              block
               class="pod-debug-option"
               :class="{ active: namespaces.includes(item.value) }"
               @click="toggleNamespace(item.value)"
@@ -139,7 +140,7 @@ const containerSelectOptions = () => props.containerOptions.map((name) => ({ lab
                 <span class="pod-debug-option-check">{{ namespaces.includes(item.value) ? "✓" : "" }}</span>
               </div>
               <div class="pod-debug-option-desc">{{ item.description }}</div>
-            </button>
+            </NButton>
           </div>
         </div>
         <p class="pod-debug-summary">

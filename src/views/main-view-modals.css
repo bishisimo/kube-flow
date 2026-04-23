@@ -223,6 +223,20 @@
   cursor: pointer;
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
+.pod-debug-option.n-button {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: unset;
+  --n-height: auto;
+}
+.pod-debug-option.n-button .n-button__content {
+  display: block;
+  width: 100%;
+  text-align: left;
+  white-space: normal;
+  line-height: 1.45;
+}
 .pod-debug-option:hover {
   border-color: #93c5fd;
   box-shadow: 0 10px 22px rgba(59, 130, 246, 0.08);

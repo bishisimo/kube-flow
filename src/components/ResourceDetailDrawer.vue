@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, h, watch } from "vue";
+import { ref, computed, watch } from "vue";
 import * as jsYaml from "js-yaml";
-import { NButton, NCheckbox, NDrawer, NDrawerContent, NTab, NTabs } from "naive-ui";
+import { NButton, NCheckbox, NDrawer, NDrawerContent, NInput, NSelect, NSpace, NTab, NTabs } from "naive-ui";
+import { kfSpace } from "../kf";
 import { extractErrorMessage } from "../utils/errorMessage";
 import { stripManagedFields } from "../utils/yaml";
 import { marked } from "marked";
@@ -83,15 +84,6 @@ function onTabChange(v: string | number) {
   if ((VALID_DETAIL_TABS as readonly string[]).includes(v)) {
     activeTab.value = v as DetailTab;
   }
-}
-
-/** 给 NTab 的 tab prop 用：渲染"字母徽章 + 中文标题"双段式视觉。 */
-function renderTabLabel(badge: string, text: string) {
-  return () =>
-    h("span", { class: "detail-tab-label" }, [
-      h("span", { class: "detail-tab-badge", "aria-hidden": "true" }, badge),
-      h("span", { class: "detail-tab-text" }, text),
-    ]);
 }
 
 const rawYaml = ref("");
@@ -531,7 +523,7 @@ watch(
       body-content-style="display: flex; flex-direction: column; height: 100%; min-height: 0;"
     >
       <template #header>
-        <div class="detail-drawer-header">
+        <NSpace v-bind="kfSpace.drawerTitle" class="detail-drawer-header">
           <span class="detail-drawer-title">
             {{ resource ? `${resource.kind} / ${resource.name}` : "资源详情" }}
           </span>
@@ -543,12 +535,12 @@ watch(
           >
             managedFields
           </NCheckbox>
-        </div>
+        </NSpace>
       </template>
       <div v-if="props.resource" class="drawer-toolbar">
           <NTabs
             :value="activeTab"
-            type="line"
+            type="segment"
             size="small"
             animated
             class="detail-tabs"
@@ -565,10 +557,10 @@ watch(
                 {{ editSaving ? "保存中…" : "应用" }}
               </NButton>
             </template>
-            <NTab name="yaml" :tab="renderTabLabel('Y', 'YAML')" />
-            <NTab name="edit" :tab="renderTabLabel('E', '编辑')" />
-            <NTab name="describe" :tab="renderTabLabel('D', '详情')" />
-            <NTab v-if="resource?.kind === 'Node'" name="taints" :tab="renderTabLabel('T', '污点')" />
+            <NTab name="yaml" tab="YAML" />
+            <NTab name="edit" tab="编辑" />
+            <NTab name="describe" tab="详情" />
+            <NTab v-if="resource?.kind === 'Node'" name="taints" tab="污点" />
             <NTab
               v-if="
                 resource &&
@@ -578,19 +570,19 @@ watch(
                   resource.kind === 'DaemonSet')
               "
               name="logs"
-              :tab="renderTabLabel('L', '日志')"
+              tab="日志"
             />
             <NTab
               v-if="resource && (resource.kind === 'ConfigMap' || resource.kind === 'Secret')"
               name="editConfig"
-              :tab="renderTabLabel('C', '配置')"
+              tab="配置"
             />
             <NTab
               v-if="resource && !resource.dynamic"
               name="topology"
-              :tab="renderTabLabel('R', '关联')"
+              tab="关联"
             />
-            <NTab name="snapshots" :tab="renderTabLabel('S', '快照')" />
+            <NTab name="snapshots" tab="快照" />
           </NTabs>
         </div>
         <div class="drawer-body">
@@ -610,35 +602,40 @@ watch(
               <div v-for="(taint, index) in nodeTaints" :key="index" class="taint-card">
                 <div class="taint-card-head">
                   <div class="taint-card-index">污点 {{ index + 1 }}</div>
-                  <button type="button" class="btn-close taint-remove-btn" aria-label="删除污点" @click="removeNodeTaint(index)">×</button>
+                  <NButton text type="error" class="taint-remove-btn" aria-label="删除污点" @click="removeNodeTaint(index)">×</NButton>
                 </div>
                 <label class="taint-field">
                   <span class="taint-field-label">Key</span>
-                  <input v-model="taint.key" type="text" class="taint-input" placeholder="例如 dedicated" />
+                  <NInput v-model:value="taint.key" class="taint-input" placeholder="例如 dedicated" />
                 </label>
                 <label class="taint-field">
                   <span class="taint-field-label">Value</span>
-                  <input v-model="taint.value" type="text" class="taint-input" placeholder="例如 infra（可选）" />
+                  <NInput v-model:value="taint.value" class="taint-input" placeholder="例如 infra（可选）" />
                 </label>
                 <label class="taint-field">
                   <span class="taint-field-label">Effect</span>
                   <div class="taint-effect-row">
-                    <select v-model="taint.effect" class="taint-input taint-select">
-                      <option value="" disabled>选择生效方式</option>
-                      <option value="NoSchedule">NoSchedule</option>
-                      <option value="PreferNoSchedule">PreferNoSchedule</option>
-                      <option value="NoExecute">NoExecute</option>
-                    </select>
+                    <NSelect
+                      v-model:value="taint.effect"
+                      class="taint-input taint-select-naive"
+                      placeholder="选择生效方式"
+                      :options="[
+                        { label: '未设置', value: '' },
+                        { label: 'NoSchedule', value: 'NoSchedule' },
+                        { label: 'PreferNoSchedule', value: 'PreferNoSchedule' },
+                        { label: 'NoExecute', value: 'NoExecute' },
+                      ]"
+                    />
                     <span class="taint-effect-pill" :class="`effect-${taint.effect || 'empty'}`">
                       {{ taintEffectLabel(taint.effect) }}
                     </span>
                   </div>
                 </label>
               </div>
-              <button type="button" class="taint-add-card" :disabled="editSaving" @click="addNodeTaint">
+              <NButton quaternary block class="taint-add-card" :disabled="editSaving" @click="addNodeTaint">
                 <span class="taint-add-card-plus">+</span>
                 <span class="taint-add-card-text">新增污点</span>
-              </button>
+              </NButton>
             </div>
             <div v-if="taintsValidationError" class="edit-error taints-validation">{{ taintsValidationError }}</div>
           </div>
@@ -746,14 +743,17 @@ watch(
 
 <style scoped>
 .detail-drawer-header {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
   min-width: 0;
   width: 100%;
+  box-sizing: border-box;
   padding-right: 2.5rem;
 }
+.detail-drawer-header :deep(.n-space-item:first-child) {
+  flex: 1;
+  min-width: 0;
+}
 .detail-drawer-title {
+  display: block;
   font-size: 0.9375rem;
   font-weight: 600;
   color: #1e293b;
@@ -761,74 +761,83 @@ watch(
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  flex: 1;
 }
 .detail-drawer-header-toggle {
   flex-shrink: 0;
   padding: 0.18rem 0.5rem;
   border: 1px solid var(--wb-line, #dbe3ee);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.88);
+  background: color-mix(in srgb, var(--kf-surface-strong) 90%, transparent);
   max-width: min(32vw, 180px);
   overflow: hidden;
 }
 .drawer-toolbar {
   padding: 0.75rem 1rem 0.9rem;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid var(--kf-border);
   background:
     radial-gradient(circle at top left, rgba(59, 130, 246, 0.12), transparent 28%),
-    linear-gradient(180deg, #f8fbff 0%, #f8fafc 100%);
+    linear-gradient(180deg, var(--wb-panel-soft) 0%, var(--kf-bg-soft) 100%);
   flex-shrink: 0;
 }
-.detail-tabs :deep(.n-tabs-nav) {
-  align-items: center;
+/** Segment 式 Tab：轨道 + 滑块；滑块为 primary-soft 底，与未选区形成明确色块对比。 */
+.detail-tabs {
+  --n-tab-font-size: 0.78rem;
+  --n-color-segment: color-mix(in srgb, var(--wb-panel-soft, #eef2f7) 92%, var(--kf-border) 6%);
+  --n-tab-color-segment: var(
+    --kf-primary-soft,
+    color-mix(in srgb, var(--kf-primary, #2563eb) 12%, #fff)
+  );
+  --n-tab-text-color: var(--kf-text-secondary, #64748b);
+  --n-tab-text-color-active: var(--kf-primary, #2563eb);
+  --n-tab-text-color-hover: var(--wb-text-primary, #334155);
 }
-.detail-tabs :deep(.n-tabs-nav__suffix) {
+.detail-tabs:deep(.n-tabs-nav) {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  gap: 0;
+  box-sizing: border-box;
+}
+.detail-tabs:deep(.n-tabs-nav__prefix) {
+  padding-right: 0.5rem;
+  flex: 0 0 auto;
+}
+.detail-tabs:deep(.n-tabs-nav__suffix) {
   padding-left: 0.75rem;
+  flex: 0 0 auto;
 }
-.detail-tabs :deep(.n-tabs-tab) {
-  padding: 0.36rem 0.7rem;
-  border-radius: 999px;
-  transition: background 0.16s ease, color 0.16s ease;
+/** 让分段条在左右缀饰之间占满剩余空间，避免窄抽屉里挤压后缀按钮。 */
+.detail-tabs:deep(.n-tabs-nav) > *:not(.n-tabs-nav__prefix):not(.n-tabs-nav__suffix) {
+  flex: 1 1 0;
+  min-width: 0;
 }
-.detail-tabs :deep(.n-tabs-tab:hover) {
-  background: rgba(191, 219, 254, 0.35);
+.detail-tabs:deep(.n-tabs-rail) {
+  width: 100%;
+  min-width: 0;
+  min-height: 2rem;
+  box-sizing: border-box;
+  border: 1px solid color-mix(in srgb, var(--kf-border) 65%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 40%, transparent);
 }
-.detail-tabs :deep(.n-tabs-tab--active) {
-  background: linear-gradient(180deg, rgba(219, 234, 254, 0.88) 0%, rgba(239, 246, 255, 1) 100%);
+.detail-tabs:deep(.n-tabs-capsule) {
+  box-shadow:
+    0 1px 3px color-mix(in srgb, #0f172a 10%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--kf-primary) 26%, var(--kf-border) 35%);
 }
-.detail-tab-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  white-space: nowrap;
+.detail-tabs:deep(.n-tabs-tab) {
+  padding: 0.28rem 0.5rem;
+  line-height: 1.3;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  transition: color 0.15s ease;
 }
-.detail-tab-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1.3rem;
-  height: 1.3rem;
-  border-radius: 999px;
-  background: #eff6ff;
-  color: #2563eb;
-  font-size: 0.66rem;
-  font-weight: 800;
-  letter-spacing: 0.02em;
-  flex-shrink: 0;
-}
-.detail-tabs :deep(.n-tabs-tab--active) .detail-tab-badge {
-  background: #2563eb;
-  color: #fff;
-}
-.detail-tab-text {
-  font-size: 0.78rem;
+.detail-tabs:deep(.n-tabs-tab--active) {
   font-weight: 700;
-  line-height: 1;
-  color: #1e293b;
+  color: var(--kf-primary, #2563eb);
 }
-.detail-tabs :deep(.n-tabs-tab--active) .detail-tab-text {
-  color: #1d4ed8;
+.detail-tabs:deep(.n-tabs-tab:not(.n-tabs-tab--active):hover) {
+  color: var(--kf-text-primary, #0f172a);
 }
 .drawer-body {
   flex: 1;
@@ -845,7 +854,7 @@ watch(
   font-size: 0.875rem;
 }
 .error-state {
-  color: #dc2626;
+  color: var(--kf-danger);
 }
 .describe-panel {
   flex: 1;
@@ -863,13 +872,13 @@ watch(
 .describe-markdown {
   font-size: 0.8125rem;
   line-height: 1.6;
-  color: #334155;
+  color: var(--wb-text-primary);
 }
 .describe-markdown :deep(h2) {
   margin: 1rem 0 0.5rem;
   font-size: 0.9375rem;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--wb-text-primary);
 }
 .describe-markdown :deep(h2:first-child) {
   margin-top: 0;
@@ -884,23 +893,23 @@ watch(
 .describe-markdown :deep(td) {
   padding: 0.4rem 0.6rem;
   text-align: left;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--kf-border);
 }
 .describe-markdown :deep(th) {
-  background: #f8fafc;
+  background: var(--kf-bg-soft);
   font-weight: 600;
-  color: #475569;
+  color: var(--kf-text-secondary);
 }
 .describe-markdown :deep(tr:hover td) {
-  background: #f8fafc;
+  background: var(--kf-bg-soft);
 }
 .describe-markdown :deep(pre) {
   margin: 0.5rem 0 1rem;
   padding: 0.75rem;
   font-family: ui-monospace, "SF Mono", Monaco, Consolas, monospace;
   font-size: 0.75rem;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
+  background: var(--kf-bg-soft);
+  border: 1px solid var(--kf-border);
   border-radius: 4px;
   overflow-x: auto;
 }
@@ -915,7 +924,7 @@ watch(
   margin: 0;
   padding: 1rem;
   font-size: 0.8125rem;
-  color: #64748b;
+  color: var(--kf-text-secondary);
 }
 .topology-panel-wrap {
   flex: 1;
@@ -936,7 +945,7 @@ watch(
   max-width: none;
   height: 100%;
   border-left: none;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--kf-border);
   border-radius: 16px;
 }
 .logs-panel {
@@ -953,15 +962,15 @@ watch(
   padding: 1rem;
   display: grid;
   gap: 0.75rem;
-  background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
+  background: linear-gradient(180deg, var(--kf-bg-soft) 0%, var(--kf-surface-strong) 100%);
 }
 .taints-empty {
   padding: 0.9rem 1rem;
-  border: 1px dashed #cbd5e1;
+  border: 1px dashed var(--kf-border);
   border-radius: 14px;
-  background: #fff;
+  background: var(--kf-surface-strong);
   font-size: 0.8rem;
-  color: #64748b;
+  color: var(--kf-text-secondary);
 }
 .taints-list {
   display: flex;
@@ -973,11 +982,11 @@ watch(
   flex-direction: column;
   gap: 0.8rem;
   padding: 1rem;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--kf-border);
   border-radius: 18px;
   background:
     radial-gradient(circle at top right, rgba(37, 99, 235, 0.08), transparent 28%),
-    #fff;
+    var(--kf-surface-strong);
   box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
 }
 .taint-card-head {
@@ -1084,26 +1093,26 @@ watch(
   font-size: 0.8rem;
   font-weight: 700;
 }
-.taint-input {
+.taint-field .taint-input {
   width: 100%;
   min-width: 0;
-  height: 2.2rem;
-  border: 1px solid #dbe3ee;
-  border-radius: 10px;
-  padding: 0 0.7rem;
-  font-size: 0.82rem;
-  color: #0f172a;
-  background: #f8fafc;
 }
-.taint-select {
+.taint-select-naive {
   flex: 1 1 280px;
   max-width: 100%;
+  min-width: 0;
 }
-.taint-input:focus {
-  outline: none;
-  border-color: #2563eb;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
-  background: #fff;
+.taint-add-card.n-button {
+  height: auto !important;
+  min-height: unset !important;
+  --n-height: auto !important;
+}
+.taint-add-card :deep(.n-button__content) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  width: 100%;
 }
 .taints-validation {
   margin: 0;

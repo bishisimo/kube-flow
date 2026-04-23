@@ -1,5 +1,16 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import {
+  NButton,
+  NCheckbox,
+  NInput,
+  NRadio,
+  NRadioGroup,
+  NSelect,
+  NSpace,
+} from "naive-ui";
+import { kfSpace } from "../kf";
+import BaseModal from "../components/base/BaseModal.vue";
 
 defineOptions({ name: "ResourceOrchestratorView" });
 import * as jsYaml from "js-yaml";
@@ -126,6 +137,10 @@ const manifestsByEnv = computed(() =>
   manifests.value.filter((m) => m.env_id === selectedEnvId.value)
 );
 
+const envSelectOptions = computed(() =>
+  environments.value.map((e) => ({ label: e.display_name, value: e.id }))
+);
+
 const components = computed(() => {
   const names = new Set<string>();
   for (const m of manifestsByEnv.value) names.add(m.component);
@@ -202,6 +217,9 @@ const manifestsInActiveGroup = computed(() => {
 });
 const componentOptionsForAssign = computed(() =>
   components.value.filter((name) => name !== selectedManifest.value?.component)
+);
+const componentAssignSelectOptions = computed(() =>
+  componentOptionsForAssign.value.map((name) => ({ label: name, value: name }))
 );
 const manifestDraftCount = computed(() =>
   manifestsInActiveGroup.value.filter((m) => manifestDraftCache.value[m.id] && manifestDraftCache.value[m.id] !== m.yaml).length
@@ -855,7 +873,7 @@ function onViewHistory(item: ManifestHistoryItem) {
 <template>
   <div class="orchestrator-layout">
     <header class="toolbar">
-      <div class="toolbar-start">
+      <NSpace v-bind="kfSpace.orchestratorToolbar" class="toolbar-row">
         <div class="toolbar-brand">
           <span class="title">编排中心</span>
           <span v-if="activeView === 'resources'" class="toolbar-subtitle">
@@ -866,34 +884,29 @@ function onViewHistory(item: ManifestHistoryItem) {
             }}
           </span>
         </div>
-        <div class="view-switch">
-          <button
-            type="button"
-            class="switch-btn"
-            :class="{ active: activeView === 'resources' }"
+        <NSpace v-bind="kfSpace.viewSwitch" class="view-switch">
+          <NButton
+            size="small"
+            :type="activeView === 'resources' ? 'primary' : 'default'"
+            :secondary="activeView !== 'resources'"
             @click="activeView = 'resources'"
-          >
-            资源
-          </button>
-          <button
-            type="button"
-            class="switch-btn"
-            :class="{ active: activeView === 'packages' }"
+          >资源</NButton>
+          <NButton
+            size="small"
+            :type="activeView === 'packages' ? 'primary' : 'default'"
+            :secondary="activeView !== 'packages'"
             @click="activeView = 'packages'"
-          >
-            应用包
-          </button>
-        </div>
-        <button
+          >应用包</NButton>
+        </NSpace>
+        <NButton
           v-if="activeView === 'resources'"
-          type="button"
-          class="btn btn-create"
+          type="primary"
+          size="small"
+          class="btn-create-naive"
           :disabled="!selectedEnvId"
           @click="openCreateYamlDialog"
-        >
-          新建资源
-        </button>
-      </div>
+        >新建资源</NButton>
+      </NSpace>
     </header>
 
     <div v-if="activeView === 'resources'" class="body">
@@ -902,12 +915,13 @@ function onViewHistory(item: ManifestHistoryItem) {
           <div class="env-select-card env-select-card-sidebar">
             <span class="env-select-label">当前环境</span>
             <label class="env-select-main">
-              <select v-model="selectedEnvId" class="select env-select">
-                <option value="" disabled>选择环境</option>
-                <option v-for="env in environments" :key="env.id" :value="env.id">
-                  {{ env.display_name }}
-                </option>
-              </select>
+              <NSelect
+                v-model:value="selectedEnvId"
+                :options="envSelectOptions"
+                placeholder="选择环境"
+                filterable
+                class="env-select-naive"
+              />
               <span class="env-select-hint">已选择的环境即当前操作环境</span>
             </label>
           </div>
@@ -917,90 +931,98 @@ function onViewHistory(item: ManifestHistoryItem) {
               <span>资源视图</span>
               <small v-if="manifestDraftCount > 0">未保存草稿 {{ manifestDraftCount }}</small>
             </div>
-            <div class="group-view-switch">
-              <button
-                type="button"
-                class="group-view-btn"
-                :class="{ active: resourceGroupView === 'component' }"
+            <NSpace v-bind="kfSpace.groupViewSwitch" class="group-view-switch">
+              <NButton
+                size="tiny"
+                :type="resourceGroupView === 'component' ? 'primary' : 'default'"
+                :secondary="resourceGroupView !== 'component'"
                 @click="resourceGroupView = 'component'"
-              >
-                组件
-              </button>
-              <button
-                type="button"
-                class="group-view-btn"
-                :class="{ active: resourceGroupView === 'file' }"
+              >组件</NButton>
+              <NButton
+                size="tiny"
+                :type="resourceGroupView === 'file' ? 'primary' : 'default'"
+                :secondary="resourceGroupView !== 'file'"
                 @click="resourceGroupView = 'file'"
-              >
-                文件
-              </button>
-              <button
-                type="button"
-                class="group-view-btn"
-                :class="{ active: resourceGroupView === 'batch' }"
+              >文件</NButton>
+              <NButton
+                size="tiny"
+                :type="resourceGroupView === 'batch' ? 'primary' : 'default'"
+                :secondary="resourceGroupView !== 'batch'"
                 @click="resourceGroupView = 'batch'"
-              >
-                批次
-              </button>
-            </div>
-            <input
-              v-model="componentFilterKeyword"
-              type="text"
+              >批次</NButton>
+            </NSpace>
+            <NInput
+              v-model:value="componentFilterKeyword"
+              size="small"
+              clearable
               class="component-search"
               :placeholder="resourceGroupView === 'component' ? '搜索组件名称' : resourceGroupView === 'file' ? '搜索文件名' : '搜索批次名称'"
             />
             <div class="component-list">
-              <button
+              <div
                 v-if="resourceGroupView === 'component'"
                 v-for="item in filteredComponentItems"
                 :key="item.name"
-                type="button"
                 class="component-item"
                 :class="{ active: selectedComponent === item.name }"
-                @click="onSelectComponent(item.name)"
               >
-                <span class="component-item-name">{{ item.name }}</span>
-                <div class="component-item-actions">
-                  <small>{{ item.count }}</small>
-                  <button
-                    type="button"
-                    class="card-delete-btn"
-                    title="删除应用组件"
-                    aria-label="删除应用组件"
-                    @click.stop="openDeleteComponentDialog(item.name, item.count)"
-                  >
-                    ❌
-                  </button>
-                </div>
-              </button>
-              <button
+                <NButton
+                  quaternary
+                  class="component-item-main-button"
+                  @click="onSelectComponent(item.name)"
+                >
+                  <span class="component-item-name">{{ item.name }}</span>
+                  <div class="component-item-actions">
+                    <small>{{ item.count }}</small>
+                  </div>
+                </NButton>
+                <NButton
+                  text
+                  type="error"
+                  class="component-item-close"
+                  title="删除应用组件"
+                  aria-label="删除应用组件"
+                  @click="openDeleteComponentDialog(item.name, item.count)"
+                >
+                  ×
+                </NButton>
+              </div>
+              <div
                 v-else-if="resourceGroupView === 'file'"
                 v-for="item in filteredSourceFileItems"
                 :key="item.name"
-                type="button"
                 class="component-item"
                 :class="{ active: selectedSourceFile === item.name }"
-                @click="onSelectSourceFile(item.name)"
               >
-                <span class="component-item-name">{{ item.name }}</span>
-                <div class="component-item-actions">
-                  <small>{{ item.count }}</small>
-                </div>
-              </button>
-              <button
+                <NButton
+                  quaternary
+                  class="component-item-main-button component-item-main-button--solo"
+                  @click="onSelectSourceFile(item.name)"
+                >
+                  <span class="component-item-name">{{ item.name }}</span>
+                  <div class="component-item-actions">
+                    <small>{{ item.count }}</small>
+                  </div>
+                </NButton>
+              </div>
+              <div
                 v-else
                 v-for="item in filteredBatchItems"
                 :key="item.id"
-                type="button"
                 class="component-item"
                 :class="{ active: selectedBatchId === item.id }"
-                @click="onSelectBatch(item.id)"
               >
-                <span class="component-item-name">{{ item.name }}</span>
-                <div class="component-item-actions">
-                  <small>{{ item.count }}</small>
-                </div>
-              </button>
+                <NButton
+                  quaternary
+                  class="component-item-main-button component-item-main-button--solo"
+                  @click="onSelectBatch(item.id)"
+                >
+                  <span class="component-item-name">{{ item.name }}</span>
+                  <div class="component-item-actions">
+                    <small>{{ item.count }}</small>
+                  </div>
+                </NButton>
+              </div>
               <div
                 v-if="
                   (resourceGroupView === 'component' && !filteredComponentItems.length) ||
@@ -1023,30 +1045,36 @@ function onViewHistory(item: ManifestHistoryItem) {
               :key="m.id"
               class="item"
               :class="{ active: selectedManifestId === m.id }"
-              @click="onSelectManifest(m.id)"
             >
-              <div class="item-title">
-                <span class="item-kind">{{ m.resource_kind }}</span>
-                <button
-                  type="button"
-                  class="card-delete-btn"
-                  title="删除资源"
-                  aria-label="删除资源"
-                  @click.stop="openDeleteResourceDialog(m)"
-                >
-                  ❌
-                </button>
-              </div>
-              <div class="item-name-row">
-                <strong class="item-name">{{ m.resource_name }}</strong>
-                <strong v-if="hasManifestDraft(m.id)" class="draft-tag">草稿</strong>
-              </div>
-              <div class="item-sub">
-                <span>命名空间：{{ m.resource_namespace || "default" }}</span>
-              </div>
-              <div v-if="m.source_file_name" class="item-meta">
-                <span>{{ m.source_file_name }}#{{ m.source_doc_index ?? 1 }}</span>
-              </div>
+              <NButton
+                quaternary
+                class="resource-item-main"
+                @click="onSelectManifest(m.id)"
+              >
+                <div class="item-title">
+                  <span class="item-kind">{{ m.resource_kind }}</span>
+                </div>
+                <div class="item-name-row">
+                  <strong class="item-name">{{ m.resource_name }}</strong>
+                  <strong v-if="hasManifestDraft(m.id)" class="draft-tag">草稿</strong>
+                </div>
+                <div class="item-sub">
+                  <span>命名空间：{{ m.resource_namespace || "default" }}</span>
+                </div>
+                <div v-if="m.source_file_name" class="item-meta">
+                  <span>{{ m.source_file_name }}#{{ m.source_doc_index ?? 1 }}</span>
+                </div>
+              </NButton>
+              <NButton
+                text
+                type="error"
+                class="resource-item-close"
+                title="删除资源"
+                aria-label="删除资源"
+                @click="openDeleteResourceDialog(m)"
+              >
+                ×
+              </NButton>
             </div>
             <div v-if="!manifestsInActiveGroup.length" class="empty">
               {{ resourceGroupView === "component" ? "当前组件暂无资源" : resourceGroupView === "file" ? "当前文件暂无资源" : "当前批次暂无资源" }}
@@ -1072,89 +1100,90 @@ function onViewHistory(item: ManifestHistoryItem) {
               <strong class="meta-component-name">{{ importComponent || selectedComponent || "default" }}</strong>
             </div>
           </div>
-          <div class="meta-actions">
-            <button type="button" class="btn btn-import" :disabled="importLoading" @click="triggerImportFileSelect">
+          <NSpace v-bind="kfSpace.metaActions" class="meta-actions">
+            <NButton type="primary" size="small" :loading="importLoading" @click="triggerImportFileSelect">
               {{ importLoading ? "导入中…" : "导入文件" }}
-            </button>
-            <button
-              type="button"
-              class="btn"
+            </NButton>
+            <NButton
+              size="small"
               :disabled="importLoading"
               @click="importTextDraft = ''; importPreviewItems = []; importSummaryMessage = null"
-            >
-              清空
-            </button>
-            <button type="button" class="btn" :disabled="importLoading" @click="closeCreateYamlDialog">关闭</button>
-          </div>
+            >清空</NButton>
+            <NButton size="small" :disabled="importLoading" @click="closeCreateYamlDialog">关闭</NButton>
+          </NSpace>
         </div>
         <div v-else-if="selectedManifest" class="meta-row">
           <div class="meta-component-editor">
             <div class="meta-field">
               <span>当前所属组件</span>
               <strong class="meta-component-name">{{ selectedManifest.component }}</strong>
-              <button
-                type="button"
+              <NButton
+                text
+                type="primary"
+                size="tiny"
                 class="component-change-trigger"
                 aria-label="变更组件归属"
                 title="变更组件归属"
                 @click="openComponentAssignDialog"
-              >
-                更换
-              </button>
+              >更换</NButton>
             </div>
           </div>
-          <div class="meta-actions">
-            <button
-              type="button"
-              class="btn btn-diff"
+          <NSpace v-bind="kfSpace.metaActions" class="meta-actions">
+            <NButton
+              size="small"
+              secondary
               :disabled="!selectedManifestId || diffLoading || createYamlActive"
+              :loading="diffLoading"
               @click="loadDiff"
-            >
-              {{ diffLoading ? "生成中…" : "查看差异" }}
-            </button>
-            <button
-              type="button"
-              class="btn btn-save"
+            >{{ diffLoading ? "生成中…" : "查看差异" }}</NButton>
+            <NButton
+              size="small"
+              type="primary"
               :disabled="!selectedManifestId || createYamlActive"
               @click="onSaveYaml"
-            >
-              保存
-            </button>
-            <button
-              type="button"
-              class="btn btn-copy"
+            >保存</NButton>
+            <NButton
+              size="small"
               :disabled="!canOpenCopyDialog || createYamlActive"
               @click="copyDialogVisible = true"
-            >
-              复制到其他环境
-            </button>
+            >复制到其他环境</NButton>
             <span class="btn-apply-sep" aria-hidden="true" />
-            <button
-              type="button"
-              class="btn btn-primary"
+            <NButton
+              size="small"
+              type="primary"
               :disabled="!canOpenApplyDialog || applying || createYamlActive"
+              :loading="applying"
               @click="openApplyDialog"
-            >
-              {{ applying ? "应用中…" : "应用到当前环境" }}
-            </button>
+            >{{ applying ? "应用中…" : "应用到当前环境" }}</NButton>
             <span class="hint">资源：{{ selectedManifest.resource_kind }}/{{ selectedManifest.resource_name }}</span>
             <span v-if="selectedManifest.source_file_name" class="hint">
               来源：{{ selectedManifest.source_file_name }}#{{ selectedManifest.source_doc_index ?? 1 }}
             </span>
-          </div>
+          </NSpace>
         </div>
         <template v-if="createYamlActive">
           <div class="create-toolbar">
             <label class="field-label create-field">
               <span>保存到组件</span>
-              <input v-model="importComponent" type="text" class="assign-input import-input" placeholder="输入组件名称" />
+              <NInput
+                v-model:value="importComponent"
+                type="text"
+                size="small"
+                class="import-component-naive"
+                placeholder="输入组件名称"
+              />
             </label>
-            <label class="field-check">
-              <input v-model="importOverwrite" type="checkbox" :disabled="importLoading" />
+            <NCheckbox v-model:checked="importOverwrite" :disabled="importLoading" class="create-overwrite-naive">
               遇到同名资源时覆盖已有编排资产
-            </label>
+            </NCheckbox>
             <div class="create-toolbar-actions">
-              <button type="button" class="btn btn-primary" :disabled="!canConfirmImport" @click="onConfirmImport">
+              <NButton
+                type="primary"
+                size="small"
+                :disabled="!canConfirmImport"
+                :loading="importLoading"
+                @click="onConfirmImport"
+              >
                 {{
                   importLoading
                     ? "保存中…"
@@ -1162,7 +1191,7 @@ function onViewHistory(item: ManifestHistoryItem) {
                       ? "保存资源"
                       : `保存 ${importValidItems.length} 个资源`
                 }}
-              </button>
+              </NButton>
             </div>
           </div>
           <CodeEditor
@@ -1199,17 +1228,14 @@ function onViewHistory(item: ManifestHistoryItem) {
           <div class="editor-empty-desc">
             可以从左侧选择一个已有资源继续编辑，或者直接新建一份 YAML 草稿。
           </div>
-          <div class="editor-empty-actions">
-            <button type="button" class="btn btn-primary" @click="openCreateYamlDialog">新建资源</button>
-            <button
+          <NSpace v-bind="kfSpace.editorEmptyActions" class="editor-empty-actions">
+            <NButton type="primary" @click="openCreateYamlDialog">新建资源</NButton>
+            <NButton
               v-if="manifestsInActiveGroup.length"
-              type="button"
-              class="btn"
+              secondary
               @click="onSelectManifest(manifestsInActiveGroup[0].id)"
-            >
-              打开第一个资源
-            </button>
-          </div>
+            >打开第一个资源</NButton>
+          </NSpace>
         </div>
       </section>
 
@@ -1253,17 +1279,20 @@ function onViewHistory(item: ManifestHistoryItem) {
           <div class="history-title">历史快照</div>
           <div v-if="!selectedManifest" class="empty">先选择一个资源，或新建 YAML 后再查看这里的内容。</div>
           <div v-else-if="selectedHistory.length === 0" class="empty">暂无历史</div>
-          <button
-            v-for="h in selectedHistory"
-            :key="h.id"
-            type="button"
-            class="history-item"
-            :class="`history-${h.action}`"
-            @click="onViewHistory(h)"
-          >
-            <span>{{ h.action }}</span>
-            <span>{{ new Date(h.at).toLocaleString() }}</span>
-          </button>
+          <div v-else class="history-list">
+            <NButton
+              v-for="h in selectedHistory"
+              :key="h.id"
+              quaternary
+              block
+              class="history-item"
+              :class="`history-${h.action}`"
+              @click="onViewHistory(h)"
+            >
+              <span>{{ ACTION_LABELS[h.action] ?? h.action }}</span>
+              <span>{{ new Date(h.at).toLocaleString() }}</span>
+            </NButton>
+          </div>
         </template>
       </aside>
     </div>
@@ -1286,100 +1315,121 @@ function onViewHistory(item: ManifestHistoryItem) {
       @close="diffVisible = false; diffRows = []; diffNotFound = false"
     />
 
-    <Teleport to="body">
-      <div v-if="applyDialogVisible" class="apply-modal-overlay" @click.self="closeApplyDialog">
-        <section class="apply-modal" role="dialog" aria-label="选择应用范围">
-          <header class="apply-head">
-            <h3>选择应用范围</h3>
-          </header>
-          <div class="apply-body">
-            <button
-              type="button"
-              class="apply-option"
-              :disabled="!canApplyCurrent || applying"
-              @click="onApplyCurrentFromDialog"
-            >
-              <span class="apply-option-title">应用当前</span>
-              <span class="apply-option-desc">仅应用当前选中的资源 YAML</span>
-            </button>
-            <button
-              type="button"
-              class="apply-option"
-              :disabled="!canApplyComponent || applying"
-              @click="onApplyComponentFromDialog"
-            >
-              <span class="apply-option-title">应用组件</span>
-              <span class="apply-option-desc">按顺序应用当前组件下全部资源</span>
-            </button>
-          </div>
-          <footer class="apply-foot">
-            <button type="button" class="btn" @click="closeApplyDialog">取消</button>
-          </footer>
-        </section>
+    <BaseModal
+      :visible="applyDialogVisible"
+      title="选择应用范围"
+      width="520px"
+      @close="closeApplyDialog"
+    >
+      <div class="apply-body">
+        <NButton
+          block
+          class="apply-option"
+          :disabled="!canApplyCurrent || applying"
+          @click="onApplyCurrentFromDialog"
+        >
+          <span class="apply-option-title">应用当前</span>
+          <span class="apply-option-desc">仅应用当前选中的资源 YAML</span>
+        </NButton>
+        <NButton
+          block
+          class="apply-option"
+          :disabled="!canApplyComponent || applying"
+          @click="onApplyComponentFromDialog"
+        >
+          <span class="apply-option-title">应用组件</span>
+          <span class="apply-option-desc">按顺序应用当前组件下全部资源</span>
+        </NButton>
       </div>
-    </Teleport>
-    <Teleport to="body">
-      <div v-if="componentApplyDialogVisible" class="apply-modal-overlay" @click.self="closeComponentApplyDialog">
-        <section class="apply-modal apply-flow-modal" role="dialog" aria-label="应用组件流程">
-          <header class="apply-head">
-            <h3>应用组件</h3>
-            <div class="apply-flow-subtitle">
-              环境：{{ environments.find((env) => env.id === selectedEnvId)?.display_name || "-" }} · 组件：{{ selectedComponent || "-" }}
-            </div>
-          </header>
-          <div class="apply-body apply-flow-body">
-            <div class="apply-flow-summary">
-              <span class="risk-pill notice">总数 {{ componentApplySummary.total }}</span>
-              <span class="risk-pill notice">未开始 {{ componentApplySummary.pending }}</span>
-              <span class="risk-pill notice" v-if="componentApplySummary.running">进行中 {{ componentApplySummary.running }}</span>
-              <span class="risk-pill" :class="componentApplySummary.failed ? 'warning' : 'notice'">成功 {{ componentApplySummary.success }}</span>
-              <span class="risk-pill error" v-if="componentApplySummary.failed">失败 {{ componentApplySummary.failed }}</span>
-            </div>
-            <div class="copy-tip">
-              {{ componentApplyPhase === "idle" ? "系统会按资源依赖顺序逐条应用当前组件。" : componentApplyPhase === "applying" ? "正在按顺序应用资源，请留意每条状态变化。" : "本次组件应用已经完成，可在下方查看成功与失败详情。" }}
-            </div>
-            <div class="apply-flow-list">
-              <div
-                v-for="item in componentApplyItems"
-                :key="item.manifestId"
-                class="apply-flow-item"
-                :class="`status-${item.status}`"
-              >
-                <div class="apply-flow-item-head">
-                  <span class="apply-flow-kind">{{ item.kind }}</span>
-                  <span class="apply-flow-status">{{ item.status === "pending" ? "未开始" : item.status === "running" ? "应用中" : item.status === "success" ? "成功" : "失败" }}</span>
-                </div>
-                <div class="apply-flow-name">{{ item.name }}</div>
-                <div class="apply-flow-meta">
-                  <span>命名空间：{{ item.namespace || "default" }}</span>
-                  <span v-if="item.fileName">来源文件：{{ item.fileName }}</span>
-                </div>
-                <div v-if="item.error" class="apply-flow-error">{{ item.error }}</div>
-              </div>
-            </div>
-          </div>
-          <footer class="apply-foot">
-            <button type="button" class="btn" :disabled="componentApplyPhase === 'applying'" @click="closeComponentApplyDialog">
-              {{ componentApplyPhase === "completed" ? "关闭" : "取消" }}
-            </button>
-            <button
-              type="button"
-              class="btn btn-primary"
-              :disabled="componentApplyPhase === 'applying' || !componentApplyItems.length"
-              @click="startComponentApplyFromDialog"
-            >
-              {{
-                componentApplyPhase === "idle"
-                  ? "开始应用"
-                  : componentApplySummary.failed
-                    ? "重新应用"
-                    : "再次应用"
-              }}
-            </button>
-          </footer>
-        </section>
+      <template #footer>
+        <NButton secondary @click="closeApplyDialog">取消</NButton>
+      </template>
+    </BaseModal>
+    <BaseModal
+      :visible="componentApplyDialogVisible"
+      title="应用组件"
+      width="760px"
+      @close="closeComponentApplyDialog"
+    >
+      <div class="apply-flow-subtitle">
+        环境：{{ environments.find((env) => env.id === selectedEnvId)?.display_name || "-" }} ·
+        组件：{{ selectedComponent || "-" }}
       </div>
-    </Teleport>
+      <div class="apply-body apply-flow-body">
+        <div class="apply-flow-summary">
+          <span class="risk-pill notice">总数 {{ componentApplySummary.total }}</span>
+          <span class="risk-pill notice">未开始 {{ componentApplySummary.pending }}</span>
+          <span v-if="componentApplySummary.running" class="risk-pill notice"
+            >进行中 {{ componentApplySummary.running }}</span
+          >
+          <span class="risk-pill" :class="componentApplySummary.failed ? 'warning' : 'notice'"
+            >成功 {{ componentApplySummary.success }}</span
+          >
+          <span v-if="componentApplySummary.failed" class="risk-pill error"
+            >失败 {{ componentApplySummary.failed }}</span
+          >
+        </div>
+        <div class="copy-tip">
+          {{
+            componentApplyPhase === "idle"
+              ? "系统会按资源依赖顺序逐条应用当前组件。"
+              : componentApplyPhase === "applying"
+                ? "正在按顺序应用资源，请留意每条状态变化。"
+                : "本次组件应用已经完成，可在下方查看成功与失败详情。"
+          }}
+        </div>
+        <div class="apply-flow-list">
+          <div
+            v-for="item in componentApplyItems"
+            :key="item.manifestId"
+            class="apply-flow-item"
+            :class="`status-${item.status}`"
+          >
+            <div class="apply-flow-item-head">
+              <span class="apply-flow-kind">{{ item.kind }}</span>
+              <span class="apply-flow-status">{{
+                item.status === "pending"
+                  ? "未开始"
+                  : item.status === "running"
+                    ? "应用中"
+                    : item.status === "success"
+                      ? "成功"
+                      : "失败"
+              }}</span>
+            </div>
+            <div class="apply-flow-name">{{ item.name }}</div>
+            <div class="apply-flow-meta">
+              <span>命名空间：{{ item.namespace || "default" }}</span>
+              <span v-if="item.fileName">来源文件：{{ item.fileName }}</span>
+            </div>
+            <div v-if="item.error" class="apply-flow-error">{{ item.error }}</div>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <NButton
+          secondary
+          :disabled="componentApplyPhase === 'applying'"
+          @click="closeComponentApplyDialog"
+        >
+          {{ componentApplyPhase === "completed" ? "关闭" : "取消" }}
+        </NButton>
+        <NButton
+          type="primary"
+          :disabled="componentApplyPhase === 'applying' || !componentApplyItems.length"
+          :loading="applying"
+          @click="startComponentApplyFromDialog"
+        >
+          {{
+            componentApplyPhase === "idle"
+              ? "开始应用"
+              : componentApplySummary.failed
+                ? "重新应用"
+                : "再次应用"
+          }}
+        </NButton>
+      </template>
+    </BaseModal>
     <OrchestratorCopyDialog
       :visible="copyDialogVisible"
       :selected-env-id="selectedEnvId"
@@ -1389,76 +1439,74 @@ function onViewHistory(item: ManifestHistoryItem) {
       @op-message="opMessage = $event"
       @op-error="opError = $event"
     />
-    <Teleport to="body">
-      <div v-if="componentAssignDialogVisible" class="apply-modal-overlay" @click.self="closeComponentAssignDialog">
-        <section class="apply-modal" role="dialog" aria-label="变更组件归属">
-          <header class="apply-head">
-            <h3>变更组件归属</h3>
-          </header>
-          <div class="apply-body">
-            <div class="copy-tip">
-              当前资源：<strong>{{ selectedManifest?.resource_kind }}/{{ selectedManifest?.resource_name }}</strong>
-            </div>
-            <label class="assign-mode">
-              <input
-                v-model="componentAssignMode"
-                type="radio"
-                value="existing"
-                :disabled="componentOptionsForAssign.length === 0"
-              />
-              加入已有组件
-            </label>
-            <label class="assign-mode">
-              <input v-model="componentAssignMode" type="radio" value="new" />
-              新建组件
-            </label>
-            <select v-if="componentAssignMode === 'existing'" v-model="componentAssignExisting" class="select assign-select">
-              <option value="" disabled>选择目标组件</option>
-              <option v-for="name in componentOptionsForAssign" :key="name" :value="name">{{ name }}</option>
-            </select>
-            <input
-              v-else
-              v-model="componentAssignNew"
-              type="text"
-              class="assign-input"
-              placeholder="输入新组件名称"
-            />
-          </div>
-          <footer class="apply-foot">
-            <button type="button" class="btn" @click="closeComponentAssignDialog">取消</button>
-            <button
-              type="button"
-              class="btn btn-primary"
-              :disabled="componentAssignMode === 'existing' ? !componentAssignExisting : !componentAssignNew.trim()"
-              @click="applyManifestComponentAssignment"
-            >
-              确认变更
-            </button>
-          </footer>
-        </section>
+    <BaseModal
+      :visible="componentAssignDialogVisible"
+      title="变更组件归属"
+      width="480px"
+      @close="closeComponentAssignDialog"
+    >
+      <div class="apply-body">
+        <div class="copy-tip">
+          当前资源：<strong>{{ selectedManifest?.resource_kind }}/{{ selectedManifest?.resource_name }}</strong>
+        </div>
+        <NRadioGroup v-model:value="componentAssignMode" name="orchestrator-component-assign" class="assign-radio-group">
+          <NRadio value="existing" :disabled="!componentOptionsForAssign.length">加入已有组件</NRadio>
+          <NRadio value="new">新建组件</NRadio>
+        </NRadioGroup>
+        <NSelect
+          v-if="componentAssignMode === 'existing'"
+          v-model:value="componentAssignExisting"
+          :options="componentAssignSelectOptions"
+          :disabled="!componentAssignSelectOptions.length"
+          filterable
+          class="assign-select-naive"
+          placeholder="选择目标组件"
+        />
+        <NInput
+          v-else
+          v-model:value="componentAssignNew"
+          type="text"
+          class="assign-input-naive"
+          placeholder="输入新组件名称"
+        />
       </div>
-    </Teleport>
-    <Teleport to="body">
-      <div v-if="listDeleteDialogVisible" class="apply-modal-overlay" @click.self="closeListDeleteDialog">
-        <section class="apply-modal" role="dialog" aria-label="删除确认">
-          <header class="apply-head">
-            <h3>{{ listContextTarget?.type === "component" ? "确认删除应用组件" : "确认删除资源" }}</h3>
-          </header>
-          <div class="apply-body">
-            <div v-if="listContextTarget?.type === 'component'" class="copy-tip">
-              将删除应用组件 <strong>{{ listContextTarget.component }}</strong>，以及该组件下全部资源（{{ listContextTarget.count }} 个）。
-            </div>
-            <div v-else class="copy-tip">
-              将删除资源 <strong>{{ listContextTarget?.type === "resource" ? listContextTarget.label : "" }}</strong>。
-            </div>
-          </div>
-          <footer class="apply-foot">
-            <button type="button" class="btn" @click="closeListDeleteDialog">取消</button>
-            <button type="button" class="btn btn-danger" @click="confirmDeleteFromContextMenu">确认删除</button>
-          </footer>
-        </section>
+      <template #footer>
+        <NButton secondary @click="closeComponentAssignDialog">取消</NButton>
+        <NButton
+          type="primary"
+          :disabled="
+            componentAssignMode === 'existing' ? !componentAssignExisting : !componentAssignNew.trim()
+          "
+          @click="applyManifestComponentAssignment"
+        >
+          确认变更
+        </NButton>
+      </template>
+    </BaseModal>
+    <BaseModal
+      :visible="listDeleteDialogVisible"
+      :title="listContextTarget?.type === 'component' ? '确认删除应用组件' : '确认删除资源'"
+      width="480px"
+      @close="closeListDeleteDialog"
+    >
+      <div class="apply-body">
+        <div v-if="listContextTarget?.type === 'component'" class="copy-tip">
+          将删除应用组件
+          <strong>{{ listContextTarget.component }}</strong>，以及该组件下全部资源（{{
+            listContextTarget.count
+          }}
+          个）。
+        </div>
+        <div v-else class="copy-tip">
+          将删除资源
+          <strong>{{ listContextTarget?.type === "resource" ? listContextTarget.label : "" }}</strong>。
+        </div>
       </div>
-    </Teleport>
+      <template #footer>
+        <NButton secondary @click="closeListDeleteDialog">取消</NButton>
+        <NButton type="error" @click="confirmDeleteFromContextMenu">确认删除</NButton>
+      </template>
+    </BaseModal>
   </div>
   <ResourceSnapshotViewer
     :visible="!!viewingHistoryItem"

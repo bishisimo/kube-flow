@@ -30,7 +30,7 @@ impl RelationExtractor for HpaRefExtractor {
             from: node_ref.clone(),
             to: ResourceRef::new(target_kind, node_ref.namespace.clone(), target_name),
             relation_type: RelationType::HpaTarget,
-            label_selector: None,
+            label_selector: None, to_display: None,
         }]
     }
 
@@ -58,7 +58,7 @@ impl RelationExtractor for HpaRefExtractor {
                 from: node_ref.clone(),
                 to: ResourceRef::new("HorizontalPodAutoscaler", node_ref.namespace.clone(), &h.name),
                 relation_type: RelationType::ScaledBy,
-                label_selector: None,
+                label_selector: None, to_display: None,
             })
             .collect()
     }

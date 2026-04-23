@@ -15,6 +15,7 @@ pub mod extractors {
     pub mod hpa_ref;
     pub mod rbac_refs;
     pub mod sa_bindings_reverse;
+    pub mod workload_service_link;
 }
 
 use crate::kube::resource_get::get_resource_value;
@@ -27,17 +28,35 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 // ── 数据结构 ──────────────────────────────────────────────────────────────────
 
-/// 资源的唯一标识。集群级资源 namespace 为 None。
+/// 图上的资源引用。`name` 仅当对应集群中可按 kind+namespace+name 唯一定位时非空；按 label 聚合的虚拟目标用空 `name` + `set_id`。
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct ResourceRef {
     pub kind: String,
     pub namespace: Option<String>,
     pub name: String,
+    /// 无 API 具名、仅由 label 集合标识的边目标在图内去重用，不是集群中的资源名。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set_id: Option<String>,
 }
 
 impl ResourceRef {
     pub fn new(kind: impl Into<String>, namespace: Option<String>, name: impl Into<String>) -> Self {
-        Self { kind: kind.into(), namespace, name: name.into() }
+        Self {
+            kind: kind.into(),
+            namespace,
+            name: name.into(),
+            set_id: None,
+        }
+    }
+
+    /// 无集群对象名、仅由 `set_id` 在图内与 label 集合一一对应；不要传入 `get`。
+    pub fn for_label_set(kind: impl Into<String>, namespace: Option<String>, set_id: impl Into<String>) -> Self {
+        Self {
+            kind: kind.into(),
+            namespace,
+            name: String::new(),
+            set_id: Some(set_id.into()),
+        }
     }
 }
 
@@ -46,11 +65,14 @@ impl ResourceRef {
 pub struct ResourceNode {
     pub resource_ref: ResourceRef,
     pub depth: u32,
-    /// true = 具名资源；false = 聚合节点（如 "Pods (3)"，由 label selector 展开）
+    /// 可在集群中按 `resource_ref` 的 kind+namespace+name 拉取 YAML；按 label 聚合的虚拟目标为 false
     pub is_concrete: bool,
-    /// 聚合节点的 label selector，供前端跳转列表使用
+    /// 聚合/虚拟目标：列表跳转用
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label_selector: Option<String>,
+    /// 人可读摘要（如 Pod 匹配数量），不当作资源名
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_label: Option<String>,
 }
 
 /// 关联类型枚举。
@@ -69,6 +91,8 @@ pub enum RelationType {
     // C类：Label Selector 绑定
     Selector,
     ServiceSelector,
+    /// Workload 的 Pod 模板 label 满足该 Service 的 spec.selector
+    ServicePodMatch,
     HpaTarget,
     // D类：名称精确引用
     BoundVolume,
@@ -88,6 +112,9 @@ pub struct ResourceEdge {
     pub relation_type: RelationType,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label_selector: Option<String>,
+    /// 与 `to` 的展示用（如 Pod 数），进入 `ResourceNode.display_label`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to_display: Option<String>,
 }
 
 /// 完整的资源关联图。
@@ -103,6 +130,26 @@ pub struct ResourceGraph {
 
 fn is_leaf_kind(kind: &str) -> bool {
     matches!(kind, "PersistentVolume" | "StorageClass" | "Node" | "IngressClass")
+}
+
+/// 对「同 kind + 命名空间 + label selector」的聚合边目标生成稳定、与文案无关的图内 id。
+pub fn set_id_for_label_aggregate(kind: &str, namespace: Option<&str>, label_selector: &str) -> String {
+    let mut h: u64 = 1469598103934665603;
+    const P: u64 = 1099511628211;
+    for b in kind.as_bytes() {
+        h = h.wrapping_mul(P).wrapping_add(*b as u64);
+    }
+    h = h.wrapping_mul(P);
+    if let Some(ns) = namespace {
+        for b in ns.as_bytes() {
+            h = h.wrapping_mul(P).wrapping_add(*b as u64);
+        }
+    }
+    h = h.wrapping_mul(P);
+    for b in label_selector.as_bytes() {
+        h = h.wrapping_mul(P).wrapping_add(*b as u64);
+    }
+    format!("v1:{:016x}", h)
 }
 
 // ── 工具函数（供 extractors 使用） ────────────────────────────────────────────
@@ -186,10 +233,8 @@ pub async fn build_graph(
         }
         visited.insert(ref_.clone());
 
-        let is_concrete = !ref_.name.is_empty();
-
-        if !is_concrete {
-            // 聚合节点已由调用方预插入节点表，无需 fetch
+        let can_fetch = !ref_.name.is_empty() && ref_.set_id.is_none();
+        if !can_fetch {
             continue;
         }
 
@@ -204,6 +249,7 @@ pub async fn build_graph(
                         depth,
                         is_concrete: true,
                         label_selector: None,
+                        display_label: None,
                     });
                 }
                 continue;
@@ -217,6 +263,7 @@ pub async fn build_graph(
                 depth,
                 is_concrete: true,
                 label_selector: None,
+                display_label: None,
             });
         }
 
@@ -254,7 +301,8 @@ pub async fn build_graph(
                 edge_set.insert(dedup_key);
                 let target = edge.to.clone();
                 let target_label_selector = edge.label_selector.clone();
-                let target_is_concrete = !target.name.is_empty();
+                let to_display = edge.to_display.clone();
+                let target_is_concrete = !target.name.is_empty() && target.set_id.is_none();
                 edges.push(edge);
 
                 if !visited.contains(&target) && !node_map.contains_key(&target) {
@@ -264,8 +312,11 @@ pub async fn build_graph(
                         depth: depth + 1,
                         is_concrete: target_is_concrete,
                         label_selector: target_label_selector,
+                        display_label: to_display,
                     });
-                    queue.push_back((target, depth + 1));
+                    if target_is_concrete {
+                        queue.push_back((target, depth + 1));
+                    }
                 }
             }
         }

@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { NButton, NEmpty, NPopover, NScrollbar, NSpace, NTabs, NTabPane, NTag } from "naive-ui";
+import { kfSpace } from "../kf";
 
 defineOptions({ name: "LogCenterView" });
 import LogView from "./LogView.vue";
@@ -189,56 +191,50 @@ onBeforeUnmount(() => {
 <template>
   <div class="log-center">
     <aside class="session-rail" :class="{ collapsed: sessionRailCollapsed }">
-      <button type="button" class="rail-toggle" @click="sessionRailCollapsed = !sessionRailCollapsed">
+      <NButton quaternary class="rail-toggle" @click="sessionRailCollapsed = !sessionRailCollapsed">
         <span>{{ sessionRailCollapsed ? "»" : "«" }}</span>
         <span v-if="!sessionRailCollapsed">日志会话</span>
-      </button>
+      </NButton>
       <div v-if="!sessionRailCollapsed" class="session-rail-body">
-        <div class="mode-switch">
-          <button
-            type="button"
-            class="mode-btn"
-            :class="{ active: activePane === 'resource' }"
-            @click="activePane = 'resource'"
-          >
-            资源日志
-          </button>
-          <button
-            type="button"
-            class="mode-btn"
-            :class="{ active: activePane === 'debug' }"
-            @click="activePane = 'debug'"
-          >
-            调试日志
-          </button>
-        </div>
-
-        <div v-if="activePane === 'resource' && groupedSessions.length" class="session-groups">
-          <section v-for="group in groupedSessions" :key="group.envId" class="session-group">
-            <div class="session-group-title">{{ group.envName }}</div>
-            <div
-              v-for="session in group.items"
-              :key="session.id"
-              class="session-item"
-              :class="{ active: currentSessionId === session.id }"
-            >
-              <button type="button" class="session-item-main-button" @click="setCurrentSession(session.id)">
-                <span class="session-item-badge" :class="session.kind">{{ sessionBadge(session) }}</span>
-                <span class="session-item-main">
-                  <span class="session-item-name" :title="sessionLabel(session)">{{ sessionLabel(session) }}</span>
-                  <span class="session-item-meta">{{ session.namespace }}</span>
-                </span>
-              </button>
-              <button type="button" class="session-item-close" @click="closeLogSession(session.id)">×</button>
-            </div>
-          </section>
-        </div>
-        <div v-else-if="activePane === 'resource'" class="session-empty">
-          还没有资源日志会话。你可以从工作台资源右键进入日志中心。
-        </div>
-        <div v-else class="session-empty">
-          调试日志用于查看 kube-flow 自身的后台行为与排障记录。
-        </div>
+        <NTabs v-model:value="activePane" type="segment" size="small" animated class="log-mode-tabs">
+          <NTabPane name="resource" tab="资源日志">
+            <NScrollbar class="session-scroll" trigger="hover">
+              <div v-if="groupedSessions.length" class="session-groups">
+                <section v-for="group in groupedSessions" :key="group.envId" class="session-group">
+                  <div class="session-group-title">{{ group.envName }}</div>
+                  <div
+                    v-for="session in group.items"
+                    :key="session.id"
+                    class="session-item"
+                    :class="{ active: currentSessionId === session.id }"
+                  >
+                    <NButton quaternary class="session-item-main-button" @click="setCurrentSession(session.id)">
+                      <NTag
+                        size="small"
+                        round
+                        :bordered="false"
+                        :class="session.kind === 'pod' ? 'badge-pod' : 'badge-workload'"
+                      >{{ sessionBadge(session) }}</NTag>
+                      <span class="session-item-main">
+                        <span class="session-item-name" :title="sessionLabel(session)">{{ sessionLabel(session) }}</span>
+                        <span class="session-item-meta">{{ session.namespace }}</span>
+                      </span>
+                    </NButton>
+                    <NButton text class="session-item-close" @click="closeLogSession(session.id)">×</NButton>
+                  </div>
+                </section>
+              </div>
+              <NEmpty
+                v-else
+                class="session-empty"
+                description="还没有资源日志会话。你可以从工作台资源右键进入日志中心。"
+              />
+            </NScrollbar>
+          </NTabPane>
+          <NTabPane name="debug" tab="调试日志">
+            <p class="session-empty session-empty-text">调试日志用于查看 kube-flow 自身的后台行为与排障记录。</p>
+          </NTabPane>
+        </NTabs>
       </div>
     </aside>
 
@@ -249,54 +245,73 @@ onBeforeUnmount(() => {
 
       <template v-else>
         <header v-if="currentSession" class="context-bar">
-          <div class="context-pill" :class="currentSession.kind">
-            {{ currentSession.kind === "pod" ? "Pod 日志" : "Workload 日志" }}
-          </div>
-          <div class="context-name-pill" :class="currentSession.kind">{{ currentSessionTitle }}</div>
-          <div class="context-meta">{{ currentSessionMeta }}</div>
-          <div class="compare-tools" ref="comparePickerRef">
-            <button
-              type="button"
-              class="compare-trigger"
-              :class="{ active: comparePickerOpen || compareEnabled }"
-              @click.stop="toggleComparePicker"
+          <NSpace v-bind="kfSpace.contextBar" class="context-bar-row">
+            <NSpace v-bind="kfSpace.contextBarMain" class="context-bar-main">
+              <NTag
+                size="small"
+                round
+                :bordered="false"
+                :class="currentSession.kind === 'pod' ? 'ctx-pill-pod' : 'ctx-pill-workload'"
+              >{{ currentSession.kind === "pod" ? "Pod 日志" : "Workload 日志" }}</NTag>
+              <NTag type="info" size="small" round :bordered="false" class="context-name-pill ctx-name">
+                {{ currentSessionTitle }}
+              </NTag>
+              <span class="context-meta">{{ currentSessionMeta }}</span>
+            </NSpace>
+            <div class="compare-tools" ref="comparePickerRef">
+            <NPopover
+              v-model:show="comparePickerOpen"
+              trigger="manual"
+              placement="bottom-end"
+              :width="340"
+              display-directive="show"
+              @clickoutside="comparePickerOpen = false"
             >
-              {{ compareEnabled ? "更换对比" : "对比" }}
-            </button>
-            <div v-if="comparePickerOpen" class="compare-popover" @click.stop>
-              <div class="compare-popover-title">选择对比目标</div>
-              <button
-                v-if="compareEnabled"
-                type="button"
-                class="compare-option clear"
-                @click="clearCompareSession"
-              >
-                结束对比
-              </button>
-              <div v-if="compareCandidates.length" class="compare-option-list">
-                <button
-                  v-for="session in compareCandidates"
-                  :key="session.id"
-                  type="button"
-                  class="compare-option"
-                  :class="{ selected: compareSessionId === session.id }"
-                  @click="selectCompareSession(session.id)"
-                >
-                  <span class="compare-option-title">{{ sessionLabel(session) }}</span>
-                  <span class="compare-option-meta">{{ session.envName }} / {{ session.namespace }}</span>
-                </button>
+              <template #trigger>
+                <NButton
+                  size="small"
+                  :type="comparePickerOpen || compareEnabled ? 'primary' : 'default'"
+                  secondary
+                  @click.stop="toggleComparePicker"
+                >{{ compareEnabled ? "更换对比" : "对比" }}</NButton>
+              </template>
+              <div class="compare-popover-inner" @click.stop>
+                <div class="compare-popover-title">选择对比目标</div>
+                <NButton
+                  v-if="compareEnabled"
+                  quaternary
+                  type="error"
+                  block
+                  class="compare-clear"
+                  @click="clearCompareSession"
+                >结束对比</NButton>
+                <div v-if="compareCandidates.length" class="compare-option-list">
+                  <NButton
+                    v-for="session in compareCandidates"
+                    :key="session.id"
+                    quaternary
+                    block
+                    class="compare-option"
+                    :class="{ selected: compareSessionId === session.id }"
+                    @click="selectCompareSession(session.id)"
+                  >
+                    <span class="compare-option-title">{{ sessionLabel(session) }}</span>
+                    <span class="compare-option-meta">{{ session.envName }} / {{ session.namespace }}</span>
+                  </NButton>
+                </div>
+                <div v-else class="compare-empty">还没有可用于对比的其他日志会话。</div>
               </div>
-              <div v-else class="compare-empty">还没有可用于对比的其他日志会话。</div>
+            </NPopover>
             </div>
-          </div>
+          </NSpace>
         </header>
 
         <section v-if="currentSession" class="log-stage" :class="{ compare: compareEnabled }">
           <article class="log-pane">
-            <div v-if="compareEnabled" class="log-pane-head">
+            <NSpace v-if="compareEnabled" v-bind="kfSpace.logPaneHead" class="log-pane-head">
               <span class="log-pane-title">{{ currentSessionTitle }}</span>
               <span class="log-pane-meta">{{ currentSessionMeta }}</span>
-            </div>
+            </NSpace>
             <KeepAlive :max="12">
               <WorkloadLogPanel
                 v-if="currentSession.kind === 'workload'"
@@ -366,8 +381,8 @@ onBeforeUnmount(() => {
   min-height: 0;
   overflow: hidden;
   background:
-    radial-gradient(circle at top left, rgba(37, 99, 235, 0.12), transparent 28%),
-    linear-gradient(180deg, #f8fbff 0%, #eef4fb 100%);
+    radial-gradient(circle at top left, color-mix(in srgb, var(--kf-primary) 12%, transparent), transparent 28%),
+    linear-gradient(180deg, var(--wb-panel-soft) 0%, var(--kf-bg-elevated) 100%);
 }
 
 .session-rail {
@@ -376,8 +391,8 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  border-right: 1px solid rgba(148, 163, 184, 0.22);
-  background: rgba(255, 255, 255, 0.92);
+  border-right: 1px solid var(--kf-border);
+  background: var(--kf-surface);
   backdrop-filter: blur(18px);
 }
 
@@ -391,9 +406,9 @@ onBeforeUnmount(() => {
   gap: 0.65rem;
   padding: 0.85rem 1rem;
   border: none;
-  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
+  border-bottom: 1px solid var(--kf-border);
   background: transparent;
-  color: #1e293b;
+  color: var(--kf-text-primary);
   font-size: 0.875rem;
   font-weight: 700;
   cursor: pointer;
@@ -402,34 +417,94 @@ onBeforeUnmount(() => {
 .session-rail-body {
   flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0.75rem 0.9rem 1rem;
+  overflow: hidden;
+}
+.log-mode-tabs {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.log-mode-tabs :deep(.n-tabs-pane-wrapper) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.log-mode-tabs :deep(.n-tab-pane) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding-top: 0.75rem;
+}
+.session-scroll {
+  flex: 1;
+  min-height: 0;
+  max-height: calc(100vh - 12rem);
+}
+.session-empty-text {
+  margin: 0.5rem 0 0;
+  line-height: 1.6;
+}
+.badge-pod {
+  min-width: 58px;
+  text-align: center;
+  background: color-mix(in srgb, var(--kf-success) 16%, transparent) !important;
+  color: var(--kf-success) !important;
+}
+.badge-workload {
+  min-width: 58px;
+  text-align: center;
+  background: color-mix(in srgb, var(--kf-warning) 16%, transparent) !important;
+  color: var(--kf-warning) !important;
+}
+.session-item-main-button {
+  flex: 1;
+  min-width: 0;
+  height: auto !important;
+  padding: 0 !important;
+  justify-content: flex-start !important;
+}
+.session-item-main-button :deep(.n-button__content) {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  width: 100%;
+  min-width: 0;
+}
+.compare-popover-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: min(400px, 70vh);
   overflow: auto;
-  padding: 1rem;
 }
-
-.mode-switch {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.45rem;
-  padding: 0.3rem;
-  border-radius: 16px;
-  background: rgba(226, 232, 240, 0.72);
+.compare-clear {
+  justify-content: center;
 }
-
-.mode-btn {
-  padding: 0.58rem 0.75rem;
-  border: none;
-  border-radius: 12px;
-  background: transparent;
-  color: #64748b;
-  font-size: 0.82rem;
+.ctx-pill-pod {
+  background: color-mix(in srgb, var(--kf-success) 16%, transparent) !important;
+  color: var(--kf-success) !important;
   font-weight: 700;
-  cursor: pointer;
 }
-
-.mode-btn.active {
-  background: #fff;
-  color: #1d4ed8;
-  box-shadow: 0 6px 18px rgba(148, 163, 184, 0.16);
+.ctx-pill-workload {
+  background: color-mix(in srgb, var(--kf-warning) 16%, transparent) !important;
+  color: var(--kf-warning) !important;
+  font-weight: 700;
+}
+.context-name-pill.ctx-name {
+  max-width: min(38vw, 420px);
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.context-bar .context-meta {
+  flex-shrink: 0;
 }
 
 .session-groups {
@@ -443,7 +518,7 @@ onBeforeUnmount(() => {
   margin-bottom: 0.4rem;
   font-size: 0.75rem;
   font-weight: 700;
-  color: #64748b;
+  color: var(--kf-text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
@@ -454,9 +529,9 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 0.7rem;
   padding: 0.8rem 0.85rem;
-  border: 1px solid rgba(226, 232, 240, 0.95);
+  border: 1px solid var(--kf-border);
   border-radius: 16px;
-  background: #fff;
+  background: var(--kf-surface-strong);
 }
 
 .session-item + .session-item {
@@ -465,13 +540,13 @@ onBeforeUnmount(() => {
 
 .session-item:hover {
   transform: translateY(-1px);
-  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
+  box-shadow: var(--kf-shadow-sm);
 }
 
 .session-item.active {
-  border-color: rgba(37, 99, 235, 0.35);
-  box-shadow: 0 14px 30px rgba(37, 99, 235, 0.12);
-  background: linear-gradient(135deg, #ffffff 0%, #eff6ff 100%);
+  border-color: color-mix(in srgb, var(--kf-primary) 40%, var(--kf-border));
+  box-shadow: 0 14px 30px color-mix(in srgb, var(--kf-primary) 12%, transparent);
+  background: linear-gradient(135deg, var(--kf-surface-strong) 0%, var(--kf-primary-soft) 100%);
 }
 
 .session-item-main-button {
@@ -498,13 +573,13 @@ onBeforeUnmount(() => {
 }
 
 .session-item-badge.workload {
-  background: rgba(245, 158, 11, 0.14);
-  color: #b45309;
+  background: color-mix(in srgb, var(--kf-warning) 16%, transparent);
+  color: var(--kf-warning);
 }
 
 .session-item-badge.pod {
-  background: rgba(34, 197, 94, 0.14);
-  color: #15803d;
+  background: color-mix(in srgb, var(--kf-success) 16%, transparent);
+  color: var(--kf-success);
 }
 
 .session-item-main {
@@ -516,7 +591,7 @@ onBeforeUnmount(() => {
   display: block;
   font-size: 0.84rem;
   font-weight: 600;
-  color: #0f172a;
+  color: var(--kf-text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -526,27 +601,27 @@ onBeforeUnmount(() => {
   display: block;
   margin-top: 0.18rem;
   font-size: 0.75rem;
-  color: #64748b;
+  color: var(--kf-text-secondary);
 }
 
 .session-item-close {
   border: none;
   background: transparent;
-  color: #94a3b8;
+  color: var(--kf-text-muted);
   font-size: 1rem;
   cursor: pointer;
 }
 
 .session-item-close:hover {
-  color: #dc2626;
+  color: var(--kf-danger);
 }
 
 .session-empty {
   margin-top: 1rem;
   padding: 1rem;
   border-radius: 16px;
-  background: rgba(248, 250, 252, 0.92);
-  color: #64748b;
+  background: var(--kf-bg-soft);
+  color: var(--kf-text-secondary);
   font-size: 0.8125rem;
   line-height: 1.6;
 }
@@ -561,13 +636,17 @@ onBeforeUnmount(() => {
 }
 
 .context-bar {
-  display: flex;
-  align-items: center;
-  gap: 0.8rem;
   padding: 0.9rem 1rem;
-  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
-  background: rgba(255, 255, 255, 0.78);
+  border-bottom: 1px solid var(--kf-border);
+  background: color-mix(in srgb, var(--kf-surface-strong) 78%, transparent);
   backdrop-filter: blur(14px);
+}
+.context-bar-row {
+  width: 100%;
+  min-width: 0;
+}
+.context-bar-main {
+  min-width: 0;
 }
 
 .context-pill {
@@ -578,21 +657,21 @@ onBeforeUnmount(() => {
 }
 
 .context-pill.workload {
-  background: rgba(245, 158, 11, 0.14);
-  color: #b45309;
+  background: color-mix(in srgb, var(--kf-warning) 16%, transparent);
+  color: var(--kf-warning);
 }
 
 .context-pill.pod {
-  background: rgba(34, 197, 94, 0.14);
-  color: #15803d;
+  background: color-mix(in srgb, var(--kf-success) 16%, transparent);
+  color: var(--kf-success);
 }
 
 .context-name-pill {
   max-width: min(38vw, 420px);
   padding: 0.42rem 0.8rem;
   border-radius: 14px;
-  background: rgba(37, 99, 235, 0.08);
-  color: #1d4ed8;
+  background: color-mix(in srgb, var(--kf-primary) 8%, var(--kf-mix-surface));
+  color: var(--wb-chip-text);
   font-size: 0.82rem;
   font-weight: 700;
   overflow: hidden;
@@ -601,21 +680,21 @@ onBeforeUnmount(() => {
 }
 
 .context-meta {
-  color: #64748b;
+  color: var(--kf-text-secondary);
   font-size: 0.82rem;
 }
 
 .compare-tools {
   position: relative;
-  margin-left: auto;
+  flex-shrink: 0;
 }
 
 .compare-trigger {
   padding: 0.5rem 0.9rem;
-  border: 1px solid rgba(37, 99, 235, 0.16);
+  border: 1px solid color-mix(in srgb, var(--kf-primary) 20%, var(--kf-border));
   border-radius: 12px;
-  background: rgba(239, 246, 255, 0.9);
-  color: #1d4ed8;
+  background: var(--kf-primary-soft);
+  color: var(--wb-chip-text);
   font-size: 0.8rem;
   font-weight: 700;
   cursor: pointer;
@@ -623,8 +702,8 @@ onBeforeUnmount(() => {
 
 .compare-trigger.active,
 .compare-trigger:hover {
-  background: #dbeafe;
-  border-color: rgba(37, 99, 235, 0.28);
+  background: color-mix(in srgb, var(--kf-primary) 16%, var(--kf-mix-surface));
+  border-color: color-mix(in srgb, var(--kf-primary) 32%, var(--kf-border));
 }
 
 .compare-popover {
@@ -639,16 +718,16 @@ onBeforeUnmount(() => {
   gap: 0.55rem;
   padding: 0.8rem;
   overflow: auto;
-  border: 1px solid rgba(226, 232, 240, 0.95);
+  border: 1px solid var(--kf-border);
   border-radius: 18px;
-  background: rgba(255, 255, 255, 0.98);
-  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.14);
+  background: var(--kf-surface-strong);
+  box-shadow: var(--kf-shadow-md);
 }
 
 .compare-popover-title {
   font-size: 0.78rem;
   font-weight: 700;
-  color: #334155;
+  color: var(--kf-text-primary);
 }
 
 .compare-option-list {
@@ -664,57 +743,57 @@ onBeforeUnmount(() => {
   gap: 0.18rem;
   width: 100%;
   padding: 0.72rem 0.8rem;
-  border: 1px solid rgba(226, 232, 240, 0.95);
+  border: 1px solid var(--kf-border);
   border-radius: 14px;
-  background: #fff;
+  background: var(--kf-surface-strong);
   text-align: left;
   cursor: pointer;
 }
 
 .compare-option:hover,
 .compare-option.selected {
-  border-color: rgba(37, 99, 235, 0.26);
-  background: rgba(239, 246, 255, 0.9);
+  border-color: color-mix(in srgb, var(--kf-primary) 35%, var(--kf-border));
+  background: var(--kf-primary-soft);
 }
 
 .compare-option.clear {
   align-items: center;
-  color: #b91c1c;
+  color: var(--kf-danger);
   font-weight: 700;
 }
 
 .compare-option-title {
   font-size: 0.82rem;
   font-weight: 700;
-  color: #0f172a;
+  color: var(--kf-text-primary);
 }
 
 .compare-option-meta {
   font-size: 0.75rem;
-  color: #64748b;
+  color: var(--kf-text-secondary);
 }
 
 .compare-empty {
   padding: 0.8rem;
   border-radius: 14px;
-  background: rgba(248, 250, 252, 0.95);
-  color: #64748b;
+  background: var(--kf-bg-soft);
+  color: var(--kf-text-secondary);
   font-size: 0.8rem;
 }
 
 .context-action {
   padding: 0.5rem 0.85rem;
-  border: 1px solid rgba(148, 163, 184, 0.24);
+  border: 1px solid var(--kf-border);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.8);
-  color: #334155;
+  background: color-mix(in srgb, var(--kf-surface-strong) 92%, transparent);
+  color: var(--kf-text-primary);
   font-size: 0.8rem;
   font-weight: 600;
   cursor: pointer;
 }
 
 .context-action:hover {
-  background: #fff;
+  background: var(--kf-surface-strong);
 }
 
 .log-stage {
@@ -741,30 +820,29 @@ onBeforeUnmount(() => {
 }
 
 .log-stage.compare .log-pane {
-  border: 1px solid rgba(226, 232, 240, 0.92);
+  border: 1px solid var(--kf-border);
   border-radius: 20px;
-  background: rgba(255, 255, 255, 0.88);
-  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.06);
+  background: color-mix(in srgb, var(--kf-surface-strong) 88%, transparent);
+  box-shadow: var(--kf-shadow-sm);
 }
 
 .log-pane-head {
-  display: flex;
-  align-items: center;
-  gap: 0.7rem;
+  width: 100%;
+  box-sizing: border-box;
   padding: 0.8rem 1rem;
-  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
-  background: rgba(248, 250, 252, 0.88);
+  border-bottom: 1px solid var(--kf-border);
+  background: color-mix(in srgb, var(--kf-bg-soft) 90%, var(--kf-surface-strong));
 }
 
 .log-pane-title {
   font-size: 0.84rem;
   font-weight: 700;
-  color: #0f172a;
+  color: var(--kf-text-primary);
 }
 
 .log-pane-meta {
   font-size: 0.78rem;
-  color: #64748b;
+  color: var(--kf-text-secondary);
 }
 
 .log-stage :deep(.workload-log-panel),
@@ -788,7 +866,7 @@ onBeforeUnmount(() => {
 .empty-kicker {
   font-size: 0.72rem;
   font-weight: 700;
-  color: #2563eb;
+  color: var(--kf-primary);
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
@@ -796,14 +874,14 @@ onBeforeUnmount(() => {
 .log-empty h3 {
   margin: 0;
   font-size: 1.5rem;
-  color: #0f172a;
+  color: var(--kf-text-primary);
 }
 
 .log-empty p {
   margin: 0;
   max-width: 560px;
   line-height: 1.6;
-  color: #64748b;
+  color: var(--kf-text-secondary);
 }
 
 @media (max-width: 960px) {
@@ -815,15 +893,11 @@ onBeforeUnmount(() => {
   .session-rail.collapsed {
     width: 100%;
     border-right: none;
-    border-bottom: 1px solid rgba(148, 163, 184, 0.22);
+    border-bottom: 1px solid var(--kf-border);
   }
 
-  .context-bar {
-    flex-wrap: wrap;
-  }
-
-  .compare-tools {
-    margin-left: 0;
+  .context-bar-row {
+    align-items: flex-start;
   }
 
   .compare-popover {

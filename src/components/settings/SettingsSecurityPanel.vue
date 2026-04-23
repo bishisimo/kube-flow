@@ -1,5 +1,14 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
+import {
+  NAlert,
+  NButton,
+  NCard,
+  NCheckbox,
+  NInput,
+  NSpace,
+  NTag,
+} from "naive-ui";
 import { useStrongholdStatusStore } from "../../stores/strongholdStatus";
 import {
   securityGetSettings,
@@ -150,36 +159,28 @@ onMounted(async () => {
     setStrongholdStatus(status);
     savedCredentials.value = credentials;
   } catch {
-    // 静默处理
+    // 静默：首次进入可能失败
   }
 });
 </script>
 
 <template>
-  <!-- 凭证存储后端 -->
-  <section class="card">
-    <h2 class="card-title">凭证存储后端</h2>
+  <NCard title="凭证存储后端" size="small" class="sec-card" :bordered="true">
     <p class="card-desc">选择 SSH 密码的持久化方式。切换后端不会迁移已有凭证。</p>
-    <div class="level-options">
-      <button
-        type="button"
-        class="level-btn"
-        :class="{ active: securityCfg.credential_store === 'stronghold' }"
+    <NSpace wrap>
+      <NButton
+        :type="securityCfg.credential_store === 'stronghold' ? 'primary' : 'default'"
+        :secondary="securityCfg.credential_store !== 'stronghold'"
         :disabled="securityLoading"
         @click="handleSetCredentialStore('stronghold')"
-      >
-        本地加密文件（默认）
-      </button>
-      <button
-        type="button"
-        class="level-btn"
-        :class="{ active: securityCfg.credential_store === 'os_keychain' }"
+      >本地加密文件（默认）</NButton>
+      <NButton
+        :type="securityCfg.credential_store === 'os_keychain' ? 'primary' : 'default'"
+        :secondary="securityCfg.credential_store !== 'os_keychain'"
         :disabled="securityLoading"
         @click="handleSetCredentialStore('os_keychain')"
-      >
-        系统钥匙串
-      </button>
-    </div>
+      >系统钥匙串</NButton>
+    </NSpace>
     <p class="backend-desc">
       <template v-if="securityCfg.credential_store === 'stronghold'">
         使用 AES-256-GCM 加密的本地文件，主密码通过 Argon2id 派生密钥，跨平台无依赖。
@@ -188,187 +189,249 @@ onMounted(async () => {
         使用操作系统凭证管理器（macOS Keychain / Windows Credential Manager / libsecret），无需主密码。
       </template>
     </p>
-  </section>
+  </NCard>
 
-  <!-- Stronghold 配置（仅 stronghold 模式显示） -->
-  <template v-if="securityCfg.credential_store === 'stronghold'">
-    <section class="card">
-      <h2 class="card-title">
-        Stronghold 加密文件
-        <span
-          class="status-badge"
-          :class="{
-            'badge-init': strongholdStatus === 'uninitialized',
-            'badge-locked': strongholdStatus === 'locked',
-            'badge-unlocked': strongholdStatus === 'unlocked',
-          }"
-        >
-          {{
-            strongholdStatus === "uninitialized"
-              ? "未初始化"
-              : strongholdStatus === "locked"
-              ? "已锁定"
-              : "已解锁"
-          }}
-        </span>
-      </h2>
-
-      <!-- 文件路径 -->
-      <div class="path-row">
-        <span class="path-label">快照路径</span>
-        <template v-if="!editingStrongholdPath">
-          <span class="path-value">
-            {{ securityCfg.stronghold_snapshot_path || "{app_data_dir}/credentials.hold（默认）" }}
-          </span>
-          <button
-            type="button"
-            class="link-btn"
-            @click="() => { editingStrongholdPath = true; tempStrongholdPath = securityCfg.stronghold_snapshot_path; }"
-          >
-            修改
-          </button>
-        </template>
-        <template v-else>
-          <input
-            v-model="tempStrongholdPath"
-            class="path-input"
-            placeholder="留空使用默认路径"
-          />
-          <button type="button" class="link-btn" @click="handleSaveStrongholdPath">保存</button>
-          <button type="button" class="link-btn" @click="editingStrongholdPath = false">取消</button>
-        </template>
+  <NCard
+    v-if="securityCfg.credential_store === 'stronghold'"
+    class="sec-card"
+    :bordered="true"
+  >
+    <template #header>
+      <div class="sec-card-head">
+        <span>Stronghold 加密文件</span>
+        <NTag
+          v-if="strongholdStatus === 'uninitialized'"
+          size="small"
+          round
+          :bordered="false"
+        >未初始化</NTag>
+        <NTag
+          v-else-if="strongholdStatus === 'locked'"
+          size="small"
+          round
+          type="warning"
+          :bordered="false"
+        >已锁定</NTag>
+        <NTag
+          v-else
+          size="small"
+          round
+          type="success"
+          :bordered="false"
+        >已解锁</NTag>
       </div>
-
-      <!-- 自动锁定 -->
-      <div class="option-group" style="margin-top: 1rem">
-        <label class="option-label">自动锁定（分钟，0 = 运行期间不自动锁定）</label>
-        <div class="option-buttons">
-          <button
-            v-for="opt in [0, 15, 30, 60]"
-            :key="opt"
-            type="button"
-            class="level-btn"
-            :class="{ active: securityCfg.auto_lock_minutes === opt }"
-            @click="handleAutoLockChange(opt)"
-          >
-            {{ opt === 0 ? "不锁定" : `${opt} 分钟` }}
-          </button>
-        </div>
-      </div>
-
-      <!-- 初始化表单 -->
-      <template v-if="strongholdStatus === 'uninitialized'">
-        <p class="card-desc" style="margin-top: 1rem">首次使用需设置主密码以创建加密存储。</p>
-        <div class="master-form">
-          <input
-            :type="showMasterPassword ? 'text' : 'password'"
-            v-model="masterPasswordInput"
-            class="master-input"
-            placeholder="主密码"
-          />
-          <input
-            :type="showMasterPassword ? 'text' : 'password'"
-            v-model="masterPasswordConfirm"
-            class="master-input"
-            placeholder="确认主密码"
-          />
-          <label class="checkbox-row">
-            <input type="checkbox" v-model="showMasterPassword" />
-            显示密码
-          </label>
-          <button
-            type="button"
-            class="btn-action"
-            :disabled="securityLoading"
-            @click="handleStrongholdInit"
-          >
-            初始化 Stronghold
-          </button>
-        </div>
-      </template>
-
-      <!-- 解锁表单 -->
-      <template v-else-if="strongholdStatus === 'locked'">
-        <p class="card-desc" style="margin-top: 1rem">输入主密码解锁以管理凭证。</p>
-        <div class="master-form">
-          <input
-            :type="showMasterPassword ? 'text' : 'password'"
-            v-model="masterPasswordInput"
-            class="master-input"
-            placeholder="主密码"
-            @keydown.enter="handleStrongholdUnlock"
-          />
-          <label class="checkbox-row">
-            <input type="checkbox" v-model="showMasterPassword" />
-            显示密码
-          </label>
-          <button
-            type="button"
-            class="btn-action"
-            :disabled="securityLoading"
-            @click="handleStrongholdUnlock"
-          >
-            解锁
-          </button>
-        </div>
-      </template>
-
-      <!-- 已解锁操作 -->
-      <template v-else>
-        <button
-          type="button"
-          class="btn-action btn-secondary-action"
-          style="margin-top: 1rem"
-          @click="handleStrongholdLock"
-        >
-          锁定 Stronghold
-        </button>
-      </template>
-
-      <p v-if="securityMsg" class="message" :class="{ error: securityMsgIsError }">
-        <span v-if="!securityMsgIsError" class="message-icon">✓</span>
-        {{ securityMsg }}
-      </p>
-    </section>
-  </template>
-
-  <!-- 已保存凭证管理 -->
-  <section class="card" v-if="strongholdStatus === 'unlocked' || securityCfg.credential_store === 'os_keychain'">
-    <h2 class="card-title">已保存的凭证</h2>
-    <p class="card-desc">以下为持久化后端中已保存的 SSH 隧道密码。</p>
-    <template v-if="savedCredentials.length === 0">
-      <p class="empty-tip">暂无已保存的凭证。</p>
     </template>
-    <ul v-else class="credential-list">
-      <li v-for="cred in savedCredentials" :key="cred.tunnel_id" class="credential-item">
-        <span class="cred-name">{{ cred.tunnel_id }}</span>
-        <span class="cred-store">{{ cred.store }}</span>
-        <button
-          type="button"
-          class="cred-delete"
-          :disabled="securityLoading"
-          @click="handleDeleteCredential(cred.tunnel_id)"
-        >
-          删除
-        </button>
-      </li>
-    </ul>
-    <p v-if="securityMsg" class="message" :class="{ error: securityMsgIsError }">
-      <span v-if="!securityMsgIsError" class="message-icon">✓</span>
-      {{ securityMsg }}
-    </p>
-  </section>
+    <div class="path-row">
+      <span class="path-label">快照路径</span>
+      <template v-if="!editingStrongholdPath">
+        <span class="path-value">
+          {{ securityCfg.stronghold_snapshot_path || "{app_data_dir}/credentials.hold（默认）" }}
+        </span>
+        <NButton text type="primary" @click="editingStrongholdPath = true; tempStrongholdPath = securityCfg.stronghold_snapshot_path">修改</NButton>
+      </template>
+      <template v-else>
+        <NInput
+          v-model:value="tempStrongholdPath"
+          class="path-input"
+          placeholder="留空使用默认路径"
+        />
+        <NButton quaternary @click="handleSaveStrongholdPath">保存</NButton>
+        <NButton quaternary @click="editingStrongholdPath = false">取消</NButton>
+      </template>
+    </div>
 
-  <!-- OS 钥匙串说明（无法枚举） -->
-  <section class="card" v-if="securityCfg.credential_store === 'os_keychain'">
-    <h2 class="card-title">系统钥匙串</h2>
+    <div class="lock-row">
+      <div class="option-label">自动锁定（分钟，0 = 运行期间不自动锁定）</div>
+      <NSpace wrap>
+        <NButton
+          v-for="opt in [0, 15, 30, 60]"
+          :key="opt"
+          :type="securityCfg.auto_lock_minutes === opt ? 'primary' : 'default'"
+          :secondary="securityCfg.auto_lock_minutes !== opt"
+          @click="handleAutoLockChange(opt)"
+        >{{ opt === 0 ? "不锁定" : `${opt} 分钟` }}</NButton>
+      </NSpace>
+    </div>
+
+    <template v-if="strongholdStatus === 'uninitialized'">
+      <p class="card-desc" style="margin-top: 1rem">首次使用需设置主密码以创建加密存储。</p>
+      <NSpace vertical :size="10" style="max-width: 400px; margin-top: 0.5rem;">
+        <NInput
+          v-model:value="masterPasswordInput"
+          :type="showMasterPassword ? 'text' : 'password'"
+          placeholder="主密码"
+        />
+        <NInput
+          v-model:value="masterPasswordConfirm"
+          :type="showMasterPassword ? 'text' : 'password'"
+          placeholder="确认主密码"
+        />
+        <NCheckbox v-model:checked="showMasterPassword">显示密码</NCheckbox>
+        <NButton
+          type="primary"
+          :disabled="securityLoading"
+          @click="handleStrongholdInit"
+        >初始化 Stronghold</NButton>
+      </NSpace>
+    </template>
+
+    <template v-else-if="strongholdStatus === 'locked'">
+      <p class="card-desc" style="margin-top: 1rem">输入主密码解锁以管理凭证。</p>
+      <NSpace vertical :size="10" style="max-width: 400px; margin-top: 0.5rem;">
+        <NInput
+          v-model:value="masterPasswordInput"
+          :type="showMasterPassword ? 'text' : 'password'"
+          placeholder="主密码"
+          @keydown.enter="handleStrongholdUnlock"
+        />
+        <NCheckbox v-model:checked="showMasterPassword">显示密码</NCheckbox>
+        <NButton type="primary" :disabled="securityLoading" @click="handleStrongholdUnlock">解锁</NButton>
+      </NSpace>
+    </template>
+
+    <NButton
+      v-else
+      style="margin-top: 1rem"
+      :disabled="securityLoading"
+      @click="handleStrongholdLock"
+    >锁定 Stronghold</NButton>
+
+    <NAlert
+      v-if="securityMsg"
+      class="msg-alert"
+      :type="securityMsgIsError ? 'error' : 'success'"
+      :show-icon="true"
+    >{{ securityMsg }}</NAlert>
+  </NCard>
+
+  <NCard
+    v-if="strongholdStatus === 'unlocked' || securityCfg.credential_store === 'os_keychain'"
+    title="已保存的凭证"
+    size="small"
+    class="sec-card"
+    :bordered="true"
+  >
+    <p class="card-desc">以下为持久化后端中已保存的 SSH 隧道密码。</p>
+    <p v-if="savedCredentials.length === 0" class="empty-tip">暂无已保存的凭证。</p>
+    <div
+      v-for="cred in savedCredentials"
+      :key="cred.tunnel_id"
+      class="cred-row"
+    >
+      <span class="cred-name">{{ cred.tunnel_id }}</span>
+      <NTag size="small" :bordered="false">{{ cred.store }}</NTag>
+      <NButton
+        quaternary
+        type="error"
+        size="small"
+        :disabled="securityLoading"
+        @click="handleDeleteCredential(cred.tunnel_id)"
+      >删除</NButton>
+    </div>
+    <NAlert
+      v-if="securityMsg"
+      class="msg-alert"
+      :type="securityMsgIsError ? 'error' : 'success'"
+      :show-icon="true"
+    >{{ securityMsg }}</NAlert>
+  </NCard>
+
+  <NCard
+    v-if="securityCfg.credential_store === 'os_keychain'"
+    title="系统钥匙串"
+    size="small"
+    class="sec-card"
+    :bordered="true"
+  >
     <p class="card-desc">
       凭证存储于操作系统的凭证管理器中，无需主密码，由系统负责加密保护。<br />
       可通过各隧道配置页的「清除已保存的密码」按钮单独删除。
     </p>
-    <p v-if="securityMsg" class="message" :class="{ error: securityMsgIsError }">
-      <span v-if="!securityMsgIsError" class="message-icon">✓</span>
-      {{ securityMsg }}
-    </p>
-  </section>
+  </NCard>
 </template>
+
+<style scoped>
+.sec-card {
+  max-width: 520px;
+  margin-bottom: 1rem;
+}
+.card-desc {
+  margin: 0 0 0.75rem;
+  font-size: 0.875rem;
+  color: #64748b;
+  line-height: 1.55;
+}
+.backend-desc {
+  margin: 0.75rem 0 0;
+  font-size: 0.8125rem;
+  color: #94a3b8;
+  line-height: 1.5;
+}
+.sec-card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.path-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  flex-wrap: wrap;
+}
+.path-label {
+  font-weight: 500;
+  color: #475569;
+  flex-shrink: 0;
+}
+.path-value {
+  flex: 1;
+  color: #64748b;
+  font-family: ui-monospace, monospace;
+  font-size: 0.8125rem;
+  word-break: break-all;
+  min-width: 0;
+}
+.path-input {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, monospace;
+}
+.lock-row {
+  margin-top: 1rem;
+}
+.option-label {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: #64748b;
+  margin-bottom: 0.5rem;
+}
+.cred-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  background: #f8fafc;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  font-size: 0.875rem;
+  margin-bottom: 0.5rem;
+}
+.cred-name {
+  flex: 1;
+  font-family: ui-monospace, monospace;
+  color: #1e293b;
+  font-size: 0.8125rem;
+  min-width: 0;
+  word-break: break-all;
+}
+.empty-tip {
+  font-size: 0.875rem;
+  color: #94a3b8;
+  margin: 0 0 0.5rem;
+}
+.msg-alert {
+  margin-top: 0.75rem;
+}
+</style>

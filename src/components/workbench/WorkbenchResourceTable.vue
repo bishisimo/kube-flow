@@ -291,13 +291,13 @@ const columns = computed<DataTableColumns<Record<string, unknown>>>(() => {
     out.push({
       title: col.label,
       key: col.key,
-      minWidth: isFirst ? 180 : 100,
+      minWidth: isFirst ? 184 : 108,
       resizable: !isFirst,
       ellipsis: col.key === "name" || isFirst ? { tooltip: true } : false,
       sorter: sortable ? "default" : false,
       sortOrder:
         sortable && props.sortBy === col.key ? (props.sortOrder === "asc" ? "ascend" : "descend") : false,
-      className: isFirst ? "wb-col-emphasis" : undefined,
+      className: isFirst ? "wb-col-emphasis" : "wb-col-meta",
       render(row) {
         return renderCell(col, row);
       },
@@ -321,7 +321,7 @@ function rowProps(row: Record<string, unknown>) {
     style: { cursor: "pointer" },
     onClick: (e: MouseEvent) => {
       const el = e.target as HTMLElement | null;
-      if (el?.closest?.(".n-checkbox, .n-radio, .n-data-table-td--selection, button, a")) {
+      if (el?.closest?.(".n-checkbox, .n-radio, .n-data-table-td--selection, button, a, .n-button")) {
         return;
       }
       props.onRowClick(row);
@@ -372,8 +372,8 @@ function onUpdateCheckedRowKeys(keys: DataTableRowKey[]) {
         :row-class-name="rowClassName"
         :striped="false"
         :single-line="false"
-        :bordered="true"
-        :bottom-bordered="true"
+        :bordered="false"
+        :bottom-bordered="false"
         :remote="true"
         :flex-height="true"
         :pagination="false"
@@ -418,22 +418,50 @@ function onUpdateCheckedRowKeys(keys: DataTableRowKey[]) {
   display: flex;
   flex-direction: column;
   padding: 0.65rem 1rem 1rem;
-  background: var(--wb-canvas, #eef2f9);
+  background: var(--wb-canvas);
 }
 .wb-list-header {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   flex-wrap: wrap;
-  padding: 0.55rem 0.75rem 0.45rem;
-  border-bottom: 1px solid var(--kf-border, rgba(148, 163, 184, 0.22));
+  padding: 0.55rem 0.75rem 0.35rem;
+  border-bottom: none;
   min-width: 0;
+  position: relative;
+}
+.wb-list-header::after {
+  content: "";
+  flex-basis: 100%;
+  order: 99;
+  height: 2px;
+  margin: 0.4rem 0.75rem 0;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--wb-accent-warm) 78%, transparent) 0%,
+    color-mix(in srgb, var(--kf-warning) 72%, transparent) 46%,
+    color-mix(in srgb, var(--wb-accent-forest) 68%, transparent) 100%
+  );
+  opacity: 0.95;
 }
 .wb-list-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
   font-size: 1rem;
   font-weight: 650;
   letter-spacing: -0.02em;
-  color: var(--kf-text-primary, #0f172a);
+  color: var(--wb-text-primary);
+}
+.wb-list-title::before {
+  content: "";
+  width: 4px;
+  height: 1.05em;
+  border-radius: 4px;
+  flex-shrink: 0;
+  background: linear-gradient(180deg, var(--wb-accent-forest) 0%, var(--wb-accent-spring) 100%);
+  box-shadow: 0 0 16px color-mix(in srgb, var(--wb-accent-spring) 22%, transparent);
 }
 .wb-list-badge {
   display: inline-flex;
@@ -444,9 +472,14 @@ function onUpdateCheckedRowKeys(keys: DataTableRowKey[]) {
   border-radius: 999px;
   font-size: 0.72rem;
   font-weight: 700;
-  color: var(--kf-primary, #2563eb);
-  background: var(--kf-primary-soft, #e8f0ff);
-  border: 1px solid rgba(37, 99, 235, 0.2);
+  color: var(--wb-chip-text);
+  background: linear-gradient(
+    135deg,
+    var(--wb-warm-soft),
+    color-mix(in srgb, var(--kf-warning) 8%, var(--kf-mix-surface))
+  );
+  border: 1px solid color-mix(in srgb, var(--wb-accent-warm) 28%, var(--wb-line));
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--kf-mix-surface) 75%, transparent);
 }
 .wb-table-scroll {
   flex: 1;
@@ -462,37 +495,67 @@ function onUpdateCheckedRowKeys(keys: DataTableRowKey[]) {
 }
 .wb-data-table:deep(.n-data-table-wrapper) {
   border-radius: 0 0 12px 12px;
-  background: #ffffff;
+  background: var(--wb-panel-elevated);
+  border: 1px solid var(--wb-table-border);
+  box-shadow:
+    0 1px 3px rgba(28, 25, 23, 0.07),
+    0 18px 38px color-mix(in srgb, var(--wb-accent-forest) 7%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--wb-accent-warm) 7%, transparent);
 }
 .wb-data-table:deep(.n-data-table-base-table-header) {
   position: sticky;
   top: 0;
   z-index: 2;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.55),
-    inset 0 -1px 0 rgba(100, 116, 139, 0.36);
+  box-shadow: 0 1px 0 var(--wb-line-strong);
 }
 .wb-data-table:deep(.n-data-table-th) {
-  font-weight: 650;
-  font-size: 0.72rem;
-  letter-spacing: 0.04em;
-  background: linear-gradient(180deg, #edf3fb 0%, #e1eaf6 100%);
-  border-bottom: 1px solid rgba(100, 116, 139, 0.32);
+  font-weight: 600;
+  font-size: 0.75rem;
+  letter-spacing: 0.01em;
+  color: var(--wb-table-heading-text);
+  background: var(--wb-table-header);
+  border-bottom: 2px solid color-mix(in srgb, var(--kf-primary) 24%, var(--wb-line-strong));
+  border-right: none;
+  border-left: none;
+  padding: 11px 16px;
+  transition: background 0.12s ease;
 }
 .wb-data-table:deep(.n-data-table-td) {
-  background: #ffffff;
+  background: var(--wb-table-body);
+  border-bottom: 1px solid var(--wb-line);
+  border-right: none;
+  border-left: none;
+  padding: 11px 16px;
+  transition: background 0.12s ease;
+}
+.wb-data-table:deep(
+  .n-data-table-base-table-body .n-data-table-tr:not(.wb-row-active):hover .n-data-table-td
+) {
+  background: var(--wb-row-hover);
 }
 .wb-data-table:deep(.wb-col-emphasis) {
   font-weight: 600;
-  color: var(--kf-text-primary, #0f172a);
+  color: var(--wb-text-primary);
+}
+.wb-data-table:deep(.wb-col-meta) {
+  color: var(--wb-text-meta);
+  font-size: 0.8125rem;
 }
 .wb-data-table:deep(.n-data-table-tr.wb-row-active .n-data-table-td) {
-  background: linear-gradient(180deg, #eef4ff 0%, #e1ebff 100%);
-  box-shadow: inset 2px 0 0 var(--kf-primary, #2563eb);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--wb-row-selected) 72%, var(--wb-teal-soft)),
+    var(--wb-row-selected)
+  );
+  box-shadow: inset 3px 0 0 var(--wb-accent-forest);
 }
 .wb-data-table:deep(.n-data-table-tr.wb-row-armed .n-data-table-td) {
-  background: linear-gradient(180deg, #fff1f2 0%, #ffe4e6 100%);
-  box-shadow: inset 2px 0 0 #dc2626;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--kf-danger-soft) 72%, var(--kf-mix-surface)),
+    color-mix(in srgb, var(--kf-danger-soft) 48%, var(--kf-mix-surface))
+  );
+  box-shadow: inset 3px 0 0 var(--kf-danger);
 }
 .wb-primary-btn {
   padding: 0;
@@ -503,7 +566,7 @@ function onUpdateCheckedRowKeys(keys: DataTableRowKey[]) {
 }
 .wb-primary-btn:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+  box-shadow: var(--wb-focus-ring);
 }
 .wb-primary-cell-content {
   display: inline-flex;
@@ -516,13 +579,20 @@ function onUpdateCheckedRowKeys(keys: DataTableRowKey[]) {
   height: 7px;
   border-radius: 999px;
   margin-top: 0.32rem;
-  background: var(--kf-primary, #2563eb);
-  opacity: 0.9;
+  background: linear-gradient(
+    145deg,
+    var(--wb-accent-warm) 0%,
+    var(--kf-warning) 48%,
+    var(--wb-accent-forest) 100%
+  );
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--wb-accent-forest) 28%, transparent),
+    0 0 14px color-mix(in srgb, var(--wb-accent-warm) 16%, transparent);
   flex-shrink: 0;
 }
 .wb-primary-title {
   font-weight: 620;
-  color: var(--kf-text-primary, #0f172a);
+  color: var(--wb-text-primary);
   line-height: 1.3;
   max-width: 100%;
   overflow: hidden;
@@ -535,7 +605,7 @@ function onUpdateCheckedRowKeys(keys: DataTableRowKey[]) {
 }
 .wb-taint-btn:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+  box-shadow: var(--wb-focus-ring);
 }
 .wb-taint-tag {
   --n-font-size: 12px;
@@ -545,12 +615,12 @@ function onUpdateCheckedRowKeys(keys: DataTableRowKey[]) {
   justify-content: center;
 }
 .wb-taint-tag-count {
-  --n-color: #dbeafe;
-  --n-text-color: #1d4ed8;
+  --n-color: var(--wb-teal-soft);
+  --n-text-color: var(--wb-accent-forest);
 }
 .wb-taint-tag-empty {
-  --n-color: #e2e8f0;
-  --n-text-color: #64748b;
+  --n-color: color-mix(in srgb, var(--kf-text-muted) 14%, var(--kf-mix-surface));
+  --n-text-color: var(--kf-text-secondary);
 }
 .wb-empty-wrap {
   padding: 1.25rem 0.75rem 1.5rem;
@@ -558,7 +628,7 @@ function onUpdateCheckedRowKeys(keys: DataTableRowKey[]) {
 .wb-empty-hint {
   margin: 0.65rem 0 0;
   font-size: 0.8125rem;
-  color: var(--kf-text-secondary, #64748b);
+  color: var(--wb-text-secondary);
   text-align: center;
 }
 .wb-empty-actions {

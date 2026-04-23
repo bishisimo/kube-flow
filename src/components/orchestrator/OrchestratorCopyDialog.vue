@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
+import { NButton, NCheckbox, NSelect } from "naive-ui";
+import BaseModal from "../base/BaseModal.vue";
 import { extractErrorMessage } from "../../utils/errorMessage";
 import { useOrchestratorPackagesStore } from "../../stores/orchestratorPackages";
 
@@ -21,6 +23,10 @@ const { copyComponentToEnv } = useOrchestratorPackagesStore();
 const copyTargetEnvId = ref("");
 const copyOverwrite = ref(true);
 const copyLoading = ref(false);
+
+const copyTargetOptions = computed(() =>
+  props.environments.filter((e) => e.id !== props.selectedEnvId).map((e) => ({ label: e.display_name, value: e.id }))
+);
 
 watch(
   () => [props.selectedEnvId, props.environments.map((e) => e.id).join(",")] as const,
@@ -66,40 +72,61 @@ function onClose() {
 </script>
 
 <template>
-  <Teleport to="body">
-    <div v-if="visible" class="apply-modal-overlay" @click.self="onClose">
-      <section class="apply-modal" role="dialog" aria-label="复制组件到环境">
-        <header class="apply-head">
-          <h3>复制组件到环境</h3>
-        </header>
-        <div class="apply-body">
-          <label class="field-label">
-            <span>目标环境</span>
-            <select v-model="copyTargetEnvId" class="select copy-select" :disabled="copyLoading">
-              <option value="" disabled>选择目标环境</option>
-              <option v-for="env in environments.filter((e) => e.id !== selectedEnvId)" :key="env.id" :value="env.id">
-                {{ env.display_name }}
-              </option>
-            </select>
-          </label>
-          <label class="field-check">
-            <input v-model="copyOverwrite" type="checkbox" :disabled="copyLoading" />
-            覆盖同名资源
-          </label>
-          <div class="copy-tip">将复制当前环境下组件 <strong>{{ selectedComponent }}</strong> 的全部资源 YAML。</div>
-        </div>
-        <footer class="apply-foot">
-          <button type="button" class="btn" :disabled="copyLoading" @click="onClose">取消</button>
-          <button
-            type="button"
-            class="btn btn-primary"
-            :disabled="!copyTargetEnvId || copyLoading"
-            @click="onCopyComponentToEnv"
-          >
-            {{ copyLoading ? "复制中…" : "开始复制" }}
-          </button>
-        </footer>
-      </section>
+  <BaseModal :visible="visible" title="复制组件到环境" width="480px" @close="onClose">
+    <div class="copy-dialog-body">
+      <label class="field-label">
+        <span>目标环境</span>
+        <NSelect
+          v-model:value="copyTargetEnvId"
+          :options="copyTargetOptions"
+          :disabled="copyLoading"
+          filterable
+          class="env-select-naive"
+        />
+      </label>
+      <NCheckbox v-model:checked="copyOverwrite" :disabled="copyLoading" class="field-check-naive">
+        覆盖同名资源
+      </NCheckbox>
+      <div class="copy-tip">将复制当前环境下组件 <strong>{{ selectedComponent }}</strong> 的全部资源 YAML。</div>
     </div>
-  </Teleport>
+    <template #footer>
+      <NButton secondary :disabled="copyLoading" @click="onClose">取消</NButton>
+      <NButton
+        type="primary"
+        :disabled="!copyTargetEnvId || copyLoading"
+        :loading="copyLoading"
+        @click="onCopyComponentToEnv"
+      >
+        开始复制
+      </NButton>
+    </template>
+  </BaseModal>
 </template>
+
+<style scoped>
+.copy-dialog-body {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.1rem 0 0.25rem;
+}
+.field-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  color: #334155;
+}
+.env-select-naive {
+  width: 100%;
+  min-width: 0;
+}
+.field-check-naive {
+  font-size: 0.8rem;
+  color: #334155;
+}
+.copy-tip {
+  font-size: 0.75rem;
+  color: #64748b;
+  line-height: 1.45;
+}
+</style>

@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, watch, computed } from "vue";
 import * as jsYaml from "js-yaml";
+import { NButton, NInput } from "naive-ui";
+import BaseModal from "./base/BaseModal.vue";
 import { extractErrorMessage } from "../utils/errorMessage";
 import ValueEditor from "./ValueEditor.vue";
 
@@ -250,22 +252,18 @@ function onFormatConfirmCancel() {
     <div class="kv-toolbar">
       <span class="kv-toolbar-title">Type: {{ secretType }} · Data（stringData 明文，提交时自动 base64）· 共 {{ rows.length }} 项</span>
       <div class="kv-toolbar-actions">
-        <button
-          type="button"
+        <NButton
+          size="small"
+          :secondary="!showDecoded"
+          :type="showDecoded ? 'primary' : 'default'"
           class="kv-parse-btn"
-          :class="{ active: showDecoded }"
           @click="showDecoded = !showDecoded"
         >
           {{ showDecoded ? "原始" : "解析" }}
-        </button>
-        <button
-          type="button"
-          class="btn-primary"
-          :disabled="saving || hasEmptyRow"
-          @click="onSave"
-        >
-          {{ saving ? "保存中…" : "应用" }}
-        </button>
+        </NButton>
+        <NButton type="primary" :disabled="saving || hasEmptyRow" :loading="saving" @click="onSave">
+          应用
+        </NButton>
       </div>
     </div>
     <div class="kv-main">
@@ -288,28 +286,28 @@ function onFormatConfirmCancel() {
             >
               <span class="kv-item-name">{{ row.key || "(未命名)" }}</span>
               <span v-if="getFormatHint(row.key)" class="kv-item-badge">{{ getFormatHint(row.key) }}</span>
-              <button
-                type="button"
+              <NButton
+                text
+                type="error"
+                size="tiny"
                 class="kv-item-remove"
                 aria-label="删除"
                 @click.stop="removeRow(i)"
               >
                 ×
-              </button>
+              </NButton>
             </div>
           </div>
-          <button type="button" class="kv-add" :disabled="hasEmptyRow" @click="addRow">
-            + 添加
-          </button>
+          <NButton quaternary block class="kv-add" :disabled="hasEmptyRow" @click="addRow">+ 添加</NButton>
         </template>
       </aside>
       <div class="kv-panel">
         <template v-if="selectedRow">
           <div class="kv-panel-header">
-            <input
-              v-model="selectedRow.key"
-              type="text"
+            <NInput
+              v-model:value="selectedRow.key"
               class="kv-key-input"
+              size="small"
               placeholder="例如 config.yaml"
               spellcheck="false"
             />
@@ -332,16 +330,18 @@ function onFormatConfirmCancel() {
         </div>
       </div>
     </div>
-    <div v-if="formatConfirmKeys.length" class="format-confirm-overlay" @click.self="onFormatConfirmCancel">
-      <div class="format-confirm-panel" role="dialog" aria-modal="true" aria-labelledby="format-confirm-title" @click.stop>
-        <h2 id="format-confirm-title" class="format-confirm-title">格式校验</h2>
-        <p class="format-confirm-desc">以下配置项内容与后缀格式不符：{{ formatConfirmKeys.join("、") }}。是否仍要应用？</p>
-        <div class="format-confirm-actions">
-          <button type="button" class="btn-secondary" @click="onFormatConfirmCancel">取消</button>
-          <button type="button" class="btn-primary" @click="onFormatConfirmApply">仍要应用</button>
-        </div>
-      </div>
-    </div>
+    <BaseModal
+      :visible="formatConfirmKeys.length > 0"
+      title="格式校验"
+      width="480px"
+      @close="onFormatConfirmCancel"
+    >
+      <p class="format-confirm-desc">以下配置项内容与后缀格式不符：{{ formatConfirmKeys.join("、") }}。是否仍要应用？</p>
+      <template #footer>
+        <NButton secondary @click="onFormatConfirmCancel">取消</NButton>
+        <NButton type="primary" @click="onFormatConfirmApply">仍要应用</NButton>
+      </template>
+    </BaseModal>
   </div>
 </template>
 
@@ -351,7 +351,7 @@ function onFormatConfirmCancel() {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: #fafbfc;
+  background: var(--kf-bg-soft);
   position: relative;
 }
 .kv-toolbar {
@@ -359,14 +359,14 @@ function onFormatConfirmCancel() {
   align-items: center;
   justify-content: space-between;
   padding: 0.75rem 1rem;
-  background: #fff;
-  border-bottom: 1px solid #e5e7eb;
+  background: var(--kf-surface-strong);
+  border-bottom: 1px solid var(--kf-border);
   flex-shrink: 0;
 }
 .kv-toolbar-title {
   font-size: 0.875rem;
   font-weight: 600;
-  color: #1f2937;
+  color: var(--kf-text-primary);
 }
 .kv-toolbar-actions {
   display: flex;
@@ -375,34 +375,34 @@ function onFormatConfirmCancel() {
 }
 .kv-parse-btn {
   padding: 0.4rem 0.75rem;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--kf-border);
   border-radius: 6px;
-  background: #fff;
+  background: var(--kf-surface-strong);
   font-size: 0.8125rem;
-  color: #6b7280;
+  color: var(--kf-text-secondary);
   cursor: pointer;
 }
 .kv-parse-btn:hover {
-  background: #f9fafb;
-  border-color: #d1d5db;
+  background: var(--kf-bg-soft);
+  border-color: var(--kf-border-strong);
 }
 .kv-parse-btn.active {
-  background: #eff6ff;
-  border-color: #2563eb;
-  color: #1d4ed8;
+  background: var(--kf-primary-soft);
+  border-color: var(--kf-primary);
+  color: var(--kf-primary);
 }
 .btn-primary {
   padding: 0.4rem 1rem;
   border: none;
   border-radius: 6px;
-  background: #2563eb;
+  background: var(--kf-primary);
   color: #fff;
   font-size: 0.8125rem;
   font-weight: 500;
   cursor: pointer;
 }
 .btn-primary:hover:not(:disabled) {
-  background: #1d4ed8;
+  opacity: 0.92;
 }
 .btn-primary:disabled {
   opacity: 0.6;
@@ -420,8 +420,8 @@ function onFormatConfirmCancel() {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  background: var(--sidebar-bg, #fafafa);
-  border-right: 1px solid var(--border-color, #e5e7eb);
+  background: var(--sidebar-bg, var(--kf-bg-soft));
+  border-right: 1px solid var(--border-color, var(--kf-border));
   transition: min-width 0.2s, width 0.2s;
 }
 .kv-sidebar.collapsed {
@@ -435,16 +435,16 @@ function onFormatConfirmCancel() {
   gap: 0.5rem;
   cursor: pointer;
   user-select: none;
-  border-bottom: 1px solid var(--border-color, #e5e7eb);
+  border-bottom: 1px solid var(--border-color, var(--kf-border));
   flex-shrink: 0;
-  background: var(--sidebar-bg, #fafafa);
+  background: var(--sidebar-bg, var(--kf-bg-soft));
 }
 .kv-sidebar-header:hover {
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--wb-row-hover, rgba(0, 0, 0, 0.06));
 }
 .kv-sidebar-icon {
   font-size: 1rem;
-  color: #555;
+  color: var(--kf-text-secondary);
   flex-shrink: 0;
 }
 .kv-sidebar-title {
@@ -468,17 +468,17 @@ function onFormatConfirmCancel() {
   border-radius: 6px;
   background: transparent;
   font-size: 0.8125rem;
-  color: #374151;
+  color: var(--kf-text-primary);
   text-align: left;
   cursor: pointer;
   transition: background 0.15s;
 }
 .kv-item:hover {
-  background: #f3f4f6;
+  background: var(--kf-bg-elevated);
 }
 .kv-item.active {
-  background: #eff6ff;
-  color: #1d4ed8;
+  background: var(--kf-primary-soft);
+  color: var(--kf-primary);
   font-weight: 500;
 }
 .kv-item-name {
@@ -495,12 +495,12 @@ function onFormatConfirmCancel() {
   font-size: 0.6875rem;
   font-weight: 500;
   text-transform: uppercase;
-  background: #e5e7eb;
-  color: #6b7280;
+  background: var(--kf-border);
+  color: var(--kf-text-secondary);
 }
 .kv-item.active .kv-item-badge {
-  background: #bfdbfe;
-  color: #1d4ed8;
+  background: color-mix(in srgb, var(--kf-primary) 32%, var(--kf-bg-soft));
+  color: var(--kf-primary);
 }
 .kv-item-remove {
   flex-shrink: 0;
@@ -512,7 +512,7 @@ function onFormatConfirmCancel() {
   background: transparent;
   font-size: 1rem;
   line-height: 1;
-  color: #9ca3af;
+  color: var(--kf-text-muted);
   cursor: pointer;
   opacity: 0;
   transition: opacity 0.15s;
@@ -521,23 +521,23 @@ function onFormatConfirmCancel() {
   opacity: 1;
 }
 .kv-item-remove:hover {
-  background: #fee2e2;
-  color: #dc2626;
+  background: var(--kf-danger-soft);
+  color: var(--kf-danger);
 }
 .kv-add {
   margin: 0.5rem;
   padding: 0.5rem;
-  border: 1px dashed #d1d5db;
+  border: 1px dashed var(--kf-border);
   border-radius: 6px;
-  background: #fff;
+  background: var(--kf-surface-strong);
   font-size: 0.8125rem;
-  color: #6b7280;
+  color: var(--kf-text-secondary);
   cursor: pointer;
   transition: border-color 0.15s, color 0.15s;
 }
 .kv-add:hover:not(:disabled) {
-  border-color: #94a3b8;
-  color: #475569;
+  border-color: var(--kf-border-strong);
+  color: var(--kf-text-primary);
 }
 .kv-add:disabled {
   cursor: not-allowed;
@@ -548,7 +548,7 @@ function onFormatConfirmCancel() {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  background: #fff;
+  background: var(--kf-surface-strong);
   overflow: hidden;
 }
 .kv-panel-header {
@@ -556,26 +556,15 @@ function onFormatConfirmCancel() {
   align-items: center;
   gap: 0.75rem;
   padding: 0.75rem 1rem;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--kf-border);
   flex-shrink: 0;
 }
 .kv-key-input {
   flex: 1;
   max-width: 320px;
-  padding: 0.5rem 0.75rem;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  font-size: 0.875rem;
+}
+.kv-key-input :deep(.n-input__input-el) {
   font-family: ui-monospace, monospace;
-  color: #1f2937;
-}
-.kv-key-input:focus {
-  outline: none;
-  border-color: #2563eb;
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
-}
-.kv-key-input::placeholder {
-  color: #9ca3af;
 }
 .kv-panel-body {
   flex: 1;
@@ -588,16 +577,16 @@ function onFormatConfirmCancel() {
   min-height: 0;
   overflow: auto;
   padding: 1rem;
-  background: #f9fafb;
+  background: var(--kf-bg-soft);
   border-radius: 8px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--kf-border);
 }
 .kv-raw-content {
   margin: 0;
   font-family: ui-monospace, monospace;
   font-size: 0.8125rem;
   line-height: 1.6;
-  color: #374151;
+  color: var(--kf-text-primary);
   white-space: pre-wrap;
   word-break: break-all;
 }
@@ -606,7 +595,7 @@ function onFormatConfirmCancel() {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #9ca3af;
+  color: var(--kf-text-muted);
   font-size: 0.875rem;
 }
 .format-confirm-overlay {
@@ -620,21 +609,21 @@ function onFormatConfirmCancel() {
 }
 .format-confirm-panel {
   padding: 1.25rem;
-  background: #fff;
+  background: var(--kf-surface-strong);
   border-radius: 8px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  box-shadow: var(--kf-shadow-md);
   min-width: 320px;
 }
 .format-confirm-title {
   margin: 0 0 0.75rem;
   font-size: 1rem;
   font-weight: 600;
-  color: #1f2937;
+  color: var(--kf-text-primary);
 }
 .format-confirm-desc {
   margin: 0 0 1.25rem;
   font-size: 0.875rem;
-  color: #4b5563;
+  color: var(--kf-text-secondary);
   line-height: 1.5;
 }
 .format-confirm-actions {
@@ -644,15 +633,15 @@ function onFormatConfirmCancel() {
 }
 .btn-secondary {
   padding: 0.4rem 1rem;
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--kf-border);
   border-radius: 6px;
-  background: #fff;
+  background: var(--kf-surface-strong);
   font-size: 0.8125rem;
-  color: #374151;
+  color: var(--kf-text-primary);
   cursor: pointer;
 }
 .btn-secondary:hover {
-  background: #f9fafb;
-  border-color: #9ca3af;
+  background: var(--kf-bg-soft);
+  border-color: var(--kf-border-strong);
 }
 </style>

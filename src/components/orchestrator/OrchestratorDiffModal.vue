@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { NButton, NEmpty, NModal, NScrollbar, NSpin, NTag } from "naive-ui";
 import { formatCodeCell, type DiffRow } from "../../features/orchestrator/yamlDiff";
 
 const props = defineProps<{
@@ -12,6 +13,10 @@ const props = defineProps<{
 const emit = defineEmits<{
   close: [];
 }>();
+
+function onClose() {
+  emit("close");
+}
 
 const diffStats = computed(() => {
   let added = 0;
@@ -29,56 +34,89 @@ const hasChanges = computed(() => props.diffRows.some((r) => r.type !== "context
 </script>
 
 <template>
-  <Teleport to="body">
-    <div v-if="visible" class="diff-modal-overlay" @click.self="emit('close')">
-      <section class="diff-modal" role="dialog" aria-label="集群 vs 本地配置差异">
-        <div class="diff-head">
-          <div class="diff-title">
-            <span>集群 vs 本地配置</span>
-            <template v-if="!loading && !notFound && diffRows.length">
-              <span v-if="hasChanges" class="diff-stat added">+{{ diffStats.added }}</span>
-              <span v-if="hasChanges" class="diff-stat removed">-{{ diffStats.removed }}</span>
-              <span v-if="hasChanges" class="diff-stat modified">~{{ diffStats.modified }}</span>
-              <span v-if="!hasChanges" class="diff-stat same">与集群一致</span>
-            </template>
-          </div>
-          <button type="button" class="btn btn-small" @click="emit('close')">关闭</button>
+  <NModal
+    :show="visible"
+    :mask-closable="true"
+    :auto-focus="false"
+    :trap-focus="false"
+    class="o-diff-n-modal"
+    :zIndex="2000"
+    @mask-click="onClose"
+    @esc="onClose"
+  >
+    <div class="diff-modal" role="dialog" aria-label="集群 vs 本地配置差异">
+      <div class="diff-head">
+        <div class="diff-title">
+          <span>集群 vs 本地配置</span>
+          <template v-if="!loading && !notFound && diffRows.length">
+            <NTag
+              v-if="hasChanges"
+              size="small"
+              :bordered="false"
+              type="success"
+              class="diff-stat-tag"
+            >+{{ diffStats.added }}</NTag>
+            <NTag
+              v-if="hasChanges"
+              size="small"
+              :bordered="false"
+              type="error"
+              class="diff-stat-tag"
+            >-{{ diffStats.removed }}</NTag>
+            <NTag
+              v-if="hasChanges"
+              size="small"
+              :bordered="false"
+              type="warning"
+              class="diff-stat-tag"
+            >~{{ diffStats.modified }}</NTag>
+            <NTag v-if="!hasChanges" size="small" :bordered="false" class="diff-stat-tag">与集群一致</NTag>
+          </template>
         </div>
-        <div class="diff-body">
-          <div v-if="loading" class="diff-status">正在获取集群资源…</div>
-          <div v-else-if="notFound" class="diff-status diff-not-found">
-            <span class="diff-not-found-icon">ⓘ</span>
-            集群中尚无此资源，应用后将新建。
-          </div>
-          <div v-else-if="!diffRows.length" class="diff-status">暂无数据</div>
-          <div v-else class="diff-table-wrap">
-            <table class="diff-table">
-              <tbody>
-                <tr v-for="(row, idx) in diffRows" :key="idx" :class="`row-${row.type}`">
-                  <td class="ln">{{ row.leftLineNo ?? "" }}</td>
-                  <td class="code left" v-html="formatCodeCell(row, 'left')" />
-                  <td class="ln">{{ row.rightLineNo ?? "" }}</td>
-                  <td class="code right" v-html="formatCodeCell(row, 'right')" />
-                </tr>
-              </tbody>
-            </table>
-          </div>
+        <NButton quaternary size="small" @click="onClose">关闭</NButton>
+      </div>
+      <div class="diff-body">
+        <div v-if="loading" class="diff-status diff-loading">
+          <NSpin size="medium" />
+          <span>正在获取集群资源…</span>
         </div>
-      </section>
+        <div v-else-if="notFound" class="diff-status diff-not-found">
+          <span class="diff-not-found-icon">ⓘ</span>
+          集群中尚无此资源，应用后将新建。
+        </div>
+        <NEmpty v-else-if="!diffRows.length" class="diff-empty" description="暂无数据" />
+        <NScrollbar v-else class="diff-table-scroll" trigger="hover">
+          <table class="diff-table">
+            <tbody>
+              <tr v-for="(row, idx) in diffRows" :key="idx" :class="`row-${row.type}`">
+                <td class="ln">{{ row.leftLineNo ?? "" }}</td>
+                <td class="code left" v-html="formatCodeCell(row, 'left')" />
+                <td class="ln">{{ row.rightLineNo ?? "" }}</td>
+                <td class="code right" v-html="formatCodeCell(row, 'right')" />
+              </tr>
+            </tbody>
+          </table>
+        </NScrollbar>
+      </div>
     </div>
-  </Teleport>
+  </NModal>
 </template>
 
 <style scoped>
-.diff-modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(15, 23, 42, 0.42);
-  z-index: 1100;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 1.5rem;
+:deep(.o-diff-n-modal .n-dialog) {
+  max-width: min(96vw, 1200px);
+  width: 100% !important;
+  padding: 0;
+  margin: 0 auto;
+}
+:deep(.o-diff-n-modal .n-dialog__content) {
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  width: 100% !important;
+  max-width: 100% !important;
 }
 .diff-modal {
   width: min(96vw, 1200px);
@@ -103,27 +141,33 @@ const hasChanges = computed(() => props.diffRows.some((r) => r.type !== "context
 .diff-title {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.5rem;
   font-size: 0.9375rem;
   font-weight: 700;
   color: #0f172a;
 }
-.diff-stat {
-  padding: 0.1rem 0.45rem;
-  border-radius: 999px;
-  font-size: 0.72rem;
-  font-weight: 700;
+.diff-stat-tag {
+  font-size: 0.72rem !important;
+  font-weight: 700 !important;
 }
-.diff-stat.added { background: #dcfce7; color: #166534; }
-.diff-stat.removed { background: #fee2e2; color: #991b1b; }
-.diff-stat.modified { background: #fef3c7; color: #92400e; }
-.diff-stat.same { background: #f1f5f9; color: #475569; }
 .diff-body {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+.diff-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.65rem;
+  flex: 1;
+  min-height: 8rem;
+  padding: 1.5rem;
+  font-size: 0.875rem;
+  color: #64748b;
 }
 .diff-status {
   padding: 1.5rem;
@@ -146,10 +190,18 @@ const hasChanges = computed(() => props.diffRows.some((r) => r.type !== "context
   font-size: 1.1rem;
   flex-shrink: 0;
 }
-.diff-table-wrap {
+.diff-empty {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  margin: 2rem auto;
+  max-width: 20rem;
+}
+.diff-table-scroll {
+  flex: 1;
+  min-height: 0;
+  padding: 0;
+  margin: 0;
+  width: 100%;
 }
 .diff-table {
   width: 100%;
@@ -177,16 +229,49 @@ const hasChanges = computed(() => props.diffRows.some((r) => r.type !== "context
   word-break: break-all;
   vertical-align: top;
 }
-.left { border-right: 1px solid #e2e8f0; }
-.row-context td { background: #fff; color: #334155; }
-.row-added .code.right { background: #f0fdf4; color: #166534; }
-.row-added .ln:last-of-type { background: #dcfce7; }
-.row-removed .code.left { background: #fff7f7; color: #991b1b; }
-.row-removed .ln:first-of-type { background: #fee2e2; }
-.row-modified .code.left { background: #fffbeb; color: #92400e; }
-.row-modified .code.right { background: #f0fdf4; color: #166534; }
-.row-modified .ln:first-of-type { background: #fef3c7; }
-.row-modified .ln:last-of-type { background: #dcfce7; }
-:deep(.inline-removed) { background: #fca5a5; border-radius: 2px; padding: 0 1px; }
-:deep(.inline-added) { background: #86efac; border-radius: 2px; padding: 0 1px; }
+.left {
+  border-right: 1px solid #e2e8f0;
+}
+.row-context td {
+  background: #fff;
+  color: #334155;
+}
+.row-added .code.right {
+  background: #f0fdf4;
+  color: #166534;
+}
+.row-added .ln:last-of-type {
+  background: #dcfce7;
+}
+.row-removed .code.left {
+  background: #fff7f7;
+  color: #991b1b;
+}
+.row-removed .ln:first-of-type {
+  background: #fee2e2;
+}
+.row-modified .code.left {
+  background: #fffbeb;
+  color: #92400e;
+}
+.row-modified .code.right {
+  background: #f0fdf4;
+  color: #166534;
+}
+.row-modified .ln:first-of-type {
+  background: #fef3c7;
+}
+.row-modified .ln:last-of-type {
+  background: #dcfce7;
+}
+:deep(.inline-removed) {
+  background: #fca5a5;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+:deep(.inline-added) {
+  background: #86efac;
+  border-radius: 2px;
+  padding: 0 1px;
+}
 </style>

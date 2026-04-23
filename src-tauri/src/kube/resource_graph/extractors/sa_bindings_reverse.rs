@@ -45,7 +45,7 @@ impl RelationExtractor for SaBindingsReverseExtractor {
                         from: ResourceRef::new("RoleBinding", Some(ns.to_string()), &rb.name),
                         to: node_ref.clone(),
                         relation_type: RelationType::RoleRef,
-                        label_selector: None,
+                        label_selector: None, to_display: None,
                     });
                 }
             }
@@ -65,7 +65,7 @@ impl RelationExtractor for SaBindingsReverseExtractor {
                         from: ResourceRef::new("ClusterRoleBinding", None, &crb.name),
                         to: node_ref.clone(),
                         relation_type: RelationType::RoleRef,
-                        label_selector: None,
+                        label_selector: None, to_display: None,
                     });
                 }
             }

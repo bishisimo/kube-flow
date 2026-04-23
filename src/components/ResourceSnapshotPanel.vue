@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from "vue";
+import { NButton } from "naive-ui";
 import type { ResourceSnapshotItem } from "../stores/resourceSnapshots";
 import { formatDateTime } from "../utils/dateFormat";
 
@@ -58,23 +59,26 @@ function clearPendingDelete(snapshotId?: string) {
         <div class="snapshot-title">{{ title || "资源快照" }}</div>
         <p v-if="subtitle" class="snapshot-subtitle">{{ subtitle }}</p>
       </div>
-      <button type="button" class="snapshot-create" :disabled="creating" @click="emit('create')">
+      <NButton type="primary" class="snapshot-create" :disabled="creating" :loading="creating" @click="emit('create')">
         {{ creating ? "生成中…" : createLabel || "生成快照" }}
-      </button>
+      </NButton>
     </div>
     <div v-if="currentSummary" class="snapshot-current">
       <span class="snapshot-current-label">当前资源</span>
       <p>{{ currentSummary }}</p>
     </div>
     <div v-if="snapshots.length" class="snapshot-list">
-      <button
+      <div
         v-for="item in snapshots"
         :key="item.id"
-        type="button"
         class="snapshot-card"
         :class="{ 'snapshot-card-danger': pendingDeleteId === item.id, 'snapshot-card-pinned': item.pinned }"
+        role="button"
+        tabindex="0"
         @click="emit('view', item)"
         @mouseleave="clearPendingDelete(item.id)"
+        @keydown.enter.prevent="emit('view', item)"
+        @keydown.space.prevent="emit('view', item)"
       >
         <div class="snapshot-card-top">
           <span class="snapshot-card-title">{{ item.title }}</span>
@@ -82,8 +86,9 @@ function clearPendingDelete(snapshotId?: string) {
             <span class="snapshot-card-badge kind">{{ categoryLabel(item.category) }}</span>
             <span v-if="item.pinned" class="snapshot-card-badge pinned">已置顶</span>
             <span class="snapshot-card-badge">{{ sourceLabel(item.source) }}</span>
-            <button
-              type="button"
+            <NButton
+              quaternary
+              size="tiny"
               class="snapshot-pin"
               :class="{ active: item.pinned }"
               :aria-label="item.pinned ? '取消置顶快照' : '置顶快照'"
@@ -91,9 +96,10 @@ function clearPendingDelete(snapshotId?: string) {
               @click.stop="emit('toggle-pin', item)"
             >
               {{ item.pinned ? "★" : "☆" }}
-            </button>
-            <button
-              type="button"
+            </NButton>
+            <NButton
+              quaternary
+              size="tiny"
               class="snapshot-delete"
               :class="{ confirm: pendingDeleteId === item.id }"
               aria-label="删除快照"
@@ -102,7 +108,7 @@ function clearPendingDelete(snapshotId?: string) {
               @blur="clearPendingDelete(item.id)"
             >
               {{ pendingDeleteId === item.id ? "确认" : "×" }}
-            </button>
+            </NButton>
           </div>
         </div>
         <p class="snapshot-card-summary">{{ item.summary }}</p>
@@ -110,7 +116,7 @@ function clearPendingDelete(snapshotId?: string) {
           <span>{{ formatDateTime(item.created_at) }}</span>
           <span>查看</span>
         </div>
-      </button>
+      </div>
     </div>
     <div v-else class="snapshot-empty">
       {{ emptyText || "还没有快照，先保存一个当前资源快照。" }}
