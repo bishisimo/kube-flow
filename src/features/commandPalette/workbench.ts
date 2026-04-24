@@ -5,6 +5,7 @@
  * - `@ns <name>`   命名空间（来自 namespacesByEnv，含 "all" 特殊值表示"全部"）
  * - `@kind <id>`   资源类型（RESOURCE_KINDS_FLAT）
  * - `#name <str>`  前端名字过滤（自由文本）
+ * - `><动作筛选>`  当前列表选中资源的可执行动作（见 resourceActionPalette，无二级 key）
  *
  * Executor：
  * - workbench:navigate  存在 @ns / @kind / #name 任一时组合写入 workbenchPendingNav
@@ -230,12 +231,14 @@ export function buildWorkbenchExecutors(): Executor[] {
             namespace?: string | null;
             nameFilter?: string;
             customTarget?: ResolvedAliasTarget | null;
+            focusResourceList?: boolean;
           } = {};
           if (envId) pending.envId = envId;
           if (parts.customTarget) pending.customTarget = parts.customTarget;
           else if (parts.kind) pending.kind = parts.kind;
           if (parts.ns !== undefined) pending.namespace = parts.ns;
           if (parts.name !== undefined) pending.nameFilter = parts.name;
+          pending.focusResourceList = true;
           workbenchPendingNav.value = pending;
         },
       };
@@ -256,7 +259,7 @@ export function buildWorkbenchExecutors(): Executor[] {
         icon: "🔎",
         run: () => {
           const envId = currentId.value ?? undefined;
-          workbenchPendingNav.value = { envId, nameFilter: text };
+          workbenchPendingNav.value = { envId, nameFilter: text, focusResourceList: true };
         },
       };
     },

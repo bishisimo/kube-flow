@@ -2,11 +2,13 @@
 /**
  * 命令面板：全局 Cmd/Ctrl+K 呼出，支持两种输入模式：
  * - 自由文本：模糊匹配所有已注册 CommandItem（tab 切换、全局动作、会话等）
- * - Token 语法：以 `@` / `#` / `>` 触发结构化输入，形成 chip + 值候选，组合后由 executor 执行
+ * - Token 语法：以 `@` / `#` / `>` 触发结构化输入；`>` 下列出当前工作台选中资源的可执行动作并可继续输入筛选
  *
  * 键盘：
  * - ArrowUp/Down / Home/End  候选导航
- * - Enter / Tab              同一套确认逻辑：选 spec 进入 value；选 value 或命令时尽量落 chip 并在可执行时执行后关闭
+ * - Tab                      仅推进（advance）：选 spec / value / 自由命令
+ * - Enter                    先推进；无法推进时（如组合已就绪）则提交，与 ⌘Enter 相同
+ * - ⌘Enter / Ctrl+Enter      提交（submit）：落 value 并执行 executor / 高亮命令
  * - Backspace (draft 为空)   弹回最后一个 chip 继续编辑
  * - Esc                      关闭
  */
@@ -29,8 +31,8 @@ const {
   executorPlan,
   close,
   commitDraft,
-  acceptCandidate,
-  executePlan,
+  advancePalette,
+  submitPlan,
   popLastToken,
   removeToken,
 } = palette;
@@ -41,8 +43,11 @@ const listRef = ref<HTMLDivElement | null>(null);
 const modeLabel = computed(() => {
   switch (parsed.value.mode) {
     case "keying":
-      return parsed.value.symbol === "#" ? "过滤器" : parsed.value.symbol === ">" ? "动作" : "对象";
+      if (parsed.value.symbol === "#") return "过滤器";
+      if (parsed.value.symbol === ">") return "资源动作";
+      return "对象";
     case "valuing":
+      if (parsed.value.symbol === ">") return "资源动作";
       return parsed.value.keyBuffer ?? "值";
     default:
       return "命令";
@@ -51,7 +56,10 @@ const modeLabel = computed(() => {
 
 const placeholder = computed(() => {
   const p = parsed.value;
-  if (p.mode === "valuing") return `${p.keyBuffer} 的值…`;
+  if (p.mode === "valuing") {
+    if (p.symbol === ">") return "筛选或选择动作…";
+    return `${p.keyBuffer} 的值…`;
+  }
   if (p.mode === "keying") return `选择 ${p.symbol} 后的类别…`;
   return "输入命令，或用 @ / # / > 组合语法";
 });
@@ -87,9 +95,21 @@ const groupedCandidates = computed<Group[]>(() => {
 
 function sectionOf(c: Candidate): string {
   if (c.kind === "command") return c.item.section ?? "其他";
-  if (c.kind === "spec") return c.spec.symbol === "#" ? "过滤器" : c.spec.symbol === ">" ? "动作" : "对象";
+  if (c.kind === "spec") {
+    if (c.spec.symbol === "#") return "过滤器";
+    if (c.spec.symbol === ">") return "资源";
+    return "对象";
+  }
   return c.value.section ?? c.spec.label;
 }
+
+watch(
+  () => candidates.value.length,
+  (len) => {
+    if (!len) activeIndex.value = 0;
+    else if (activeIndex.value >= len) activeIndex.value = len - 1;
+  },
+);
 
 watch([draft, tokens], () => {
   activeIndex.value = 0;
@@ -118,19 +138,10 @@ function scrollActiveIntoView() {
   });
 }
 
-/** Tab 与 Enter 共用，避免「一个只接受、一个还执行」两套心智。 */
-function confirmPalette(forcedIndex?: number) {
-  if (forcedIndex !== undefined) activeIndex.value = forcedIndex;
-  const p = parsed.value;
-  if (p.mode === "valuing") {
-    executePlan();
-    return;
-  }
-  if (tokens.value.length > 0) {
-    executePlan();
-    return;
-  }
-  acceptCandidate();
+function isMetaEnter(e: KeyboardEvent): boolean {
+  if (e.key !== "Enter") return false;
+  const mac = typeof navigator !== "undefined" && navigator.platform.toLowerCase().includes("mac");
+  return mac ? e.metaKey : e.ctrlKey;
 }
 
 function onKeydown(e: KeyboardEvent) {
@@ -149,9 +160,17 @@ function onKeydown(e: KeyboardEvent) {
     e.preventDefault();
     activeIndex.value = Math.max(0, candidates.value.length - 1);
     scrollActiveIntoView();
-  } else if (e.key === "Tab" || e.key === "Enter") {
+  } else if (e.key === "Enter" && isMetaEnter(e)) {
     e.preventDefault();
-    confirmPalette();
+    submitPlan();
+  } else if (e.key === "Tab") {
+    e.preventDefault();
+    advancePalette();
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    if (!advancePalette()) {
+      submitPlan();
+    }
   } else if (e.key === "Escape") {
     e.preventDefault();
     close();
@@ -164,7 +183,7 @@ function onKeydown(e: KeyboardEvent) {
 }
 
 function onCandidateClick(index: number) {
-  confirmPalette(index);
+  advancePalette(index);
   nextTick(() => inputRef.value?.focus());
 }
 
@@ -309,7 +328,10 @@ function commitOnSpace(e: KeyboardEvent) {
         <div v-else class="cmdk-empty">
           <div class="cmdk-empty-emoji">🔍</div>
           <div class="cmdk-empty-text">
-            <template v-if="parsed.mode === 'valuing'">尚无匹配；按 Enter 执行当前命令</template>
+            <template v-if="parsed.mode === 'valuing'">尚无匹配；可继续输入，或按 Enter 提交</template>
+            <template v-else-if="parsed.mode === 'free' && tokens.length && !parsed.rawText.trim() && executorPlan">
+              组合已就绪，按 <kbd class="cmdk-kbd-inline">Enter</kbd> 跳转工作台并聚焦列表
+            </template>
             <template v-else-if="draft">未找到与「{{ draft }}」相关的候选</template>
             <template v-else>输入以搜索命令…</template>
           </div>
@@ -327,8 +349,10 @@ function commitOnSpace(e: KeyboardEvent) {
 
       <div class="cmdk-footer">
         <span class="cmdk-hint-group"><kbd>↑↓</kbd><span>选择</span></span>
-        <span class="cmdk-hint-group"><kbd>Enter</kbd><span>/</span><kbd>Tab</kbd><span>确认</span></span>
-        <span class="cmdk-hint-group"><kbd>@</kbd><kbd>#</kbd><kbd>&gt;</kbd><span>组合语法</span></span>
+        <span class="cmdk-hint-group"><kbd>Tab</kbd><span>推进</span></span>
+        <span class="cmdk-hint-group"><kbd>Enter</kbd><span>推进或提交</span></span>
+        <span class="cmdk-hint-group cmdk-hint-muted"><kbd>⌘</kbd><kbd>Enter</kbd><span>亦可提交</span></span>
+        <span class="cmdk-hint-group"><kbd>@</kbd><kbd>#</kbd><kbd>></kbd><span>组合</span></span>
         <span class="cmdk-hint-spacer" />
         <span class="cmdk-hint-group cmdk-hint-muted">{{ candidates.length }} 条</span>
       </div>
@@ -338,8 +362,10 @@ function commitOnSpace(e: KeyboardEvent) {
 
 <style scoped>
 .cmdk-panel {
+  box-sizing: border-box;
   width: min(680px, 92vw);
-  max-height: min(70vh, 600px);
+  height: min(72vh, 580px);
+  max-height: min(72vh, 580px);
   display: flex;
   flex-direction: column;
   background: #ffffff;
@@ -354,6 +380,7 @@ function commitOnSpace(e: KeyboardEvent) {
   padding: 0.55rem 0.75rem;
   border-bottom: 1px solid var(--kf-border, rgba(148, 163, 184, 0.22));
   flex-shrink: 0;
+  min-height: 3rem;
 }
 .cmdk-scope {
   font-size: 0.72rem;
@@ -378,13 +405,18 @@ function commitOnSpace(e: KeyboardEvent) {
   min-width: 0;
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 0.3rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
 }
 .cmdk-chip {
   display: inline-flex;
   align-items: center;
   gap: 0.15rem;
+  flex-shrink: 0;
   padding: 0.14rem 0.2rem 0.14rem 0.45rem;
   border-radius: 6px;
   font-size: 0.78rem;
@@ -399,8 +431,8 @@ function commitOnSpace(e: KeyboardEvent) {
   color: #c2410c;
 }
 .cmdk-chip[data-sym=">"] {
-  background: rgba(168, 85, 247, 0.14);
-  color: #7c3aed;
+  background: rgba(124, 58, 237, 0.12);
+  color: #6d28d9;
 }
 .cmdk-chip-key { font-weight: 600; }
 .cmdk-chip-eq { opacity: 0.5; padding: 0 0.1rem; }
@@ -423,13 +455,23 @@ function commitOnSpace(e: KeyboardEvent) {
 }
 .cmdk-chip-x:hover { opacity: 1; background: rgba(15, 23, 42, 0.08); }
 .cmdk-input {
-  flex: 1;
+  flex: 1 1 120px;
   min-width: 120px;
   border: none;
   outline: none;
   background: transparent;
   font-size: 0.95rem;
   color: var(--kf-text-primary, #0f172a);
+}
+.cmdk-kbd-inline {
+  font-size: 0.68rem;
+  font-family: inherit;
+  padding: 0.06rem 0.28rem;
+  margin: 0 0.06rem;
+  border-radius: 4px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  color: #64748b;
+  background: #f8fafc;
 }
 .cmdk-kbd {
   font-size: 0.7rem;
@@ -446,6 +488,11 @@ function commitOnSpace(e: KeyboardEvent) {
   min-height: 0;
   overflow-y: auto;
   padding: 0.25rem 0.25rem 0.35rem;
+  display: flex;
+  flex-direction: column;
+}
+.cmdk-group {
+  flex-shrink: 0;
 }
 .cmdk-group-title {
   font-size: 0.68rem;
@@ -503,12 +550,14 @@ function commitOnSpace(e: KeyboardEvent) {
   flex-shrink: 0;
 }
 .cmdk-empty {
+  flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
   padding: 2.2rem 1rem;
+  min-height: 0;
   color: #64748b;
   font-size: 0.85rem;
 }
@@ -521,6 +570,8 @@ function commitOnSpace(e: KeyboardEvent) {
   border-top: 1px solid var(--kf-border, rgba(148, 163, 184, 0.22));
   background: rgba(37, 99, 235, 0.06);
   flex-shrink: 0;
+  min-height: 3.25rem;
+  box-sizing: border-box;
 }
 .cmdk-plan-icon {
   width: 24px;

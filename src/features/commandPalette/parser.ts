@@ -3,8 +3,9 @@
  *
  * 规则：
  * - 空字符串 / 非符号开头 → free 模式，整段作为 freeText
- * - `@` `#` `>` 开头 + 尚无空格 → keying 模式，剩余字符是 key buffer
- * - 符号 + key + 空格 + 可选 value → valuing 模式
+ * - `>` 开头 → valuing：`>` 后整段为动作筛选串（无二级 key），keyBuffer 固定为 ""
+ * - `@` `#` 开头 + 尚无空格 → keying 模式，剩余字符是 key buffer
+ * - `@` / `#`：符号 + key + 空格 + 可选 value → valuing 模式
  *
  * 注意 Draft 始终只承载"最后一个正在编辑的 token"。已 commit 的 token 走 tokens[]。
  */
@@ -21,6 +22,10 @@ export function parseDraft(draft: string): Draft {
     return { mode: "free", rawText: "", value: "" };
   }
   const first = draft[0];
+  if (first === ">") {
+    const rest = draft.slice(1);
+    return { mode: "valuing", symbol: ">", keyBuffer: "", value: rest, rawText: draft };
+  }
   if (!isTokenSymbol(first)) {
     return { mode: "free", rawText: draft, value: draft };
   }
@@ -41,7 +46,7 @@ export function writeKeySelection(symbol: TokenSymbol, key: string): string {
 
 /** 将 draft + 选中的 value 候选合并为一个完整 chip 文本，用于 commit。 */
 export function commitDraftToToken(draft: Draft, pickedValue: string | null): Token | null {
-  if (draft.mode !== "valuing" || !draft.symbol || !draft.keyBuffer) return null;
+  if (draft.mode !== "valuing" || draft.symbol === undefined || draft.keyBuffer === undefined) return null;
   const value = pickedValue ?? (draft.value ?? "").trim();
   if (!value) return null;
   return { symbol: draft.symbol, key: draft.keyBuffer, value };
@@ -49,7 +54,11 @@ export function commitDraftToToken(draft: Draft, pickedValue: string | null): To
 
 /** 序列化 Token 数组用于调试 / 展示。 */
 export function stringifyTokens(tokens: Token[]): string {
-  return tokens.map((t) => `${t.symbol}${t.key}=${t.value}`).join(" ");
+  return tokens
+    .map((t) =>
+      t.symbol === ">" && t.key === "" ? `${t.symbol}${t.value}` : `${t.symbol}${t.key}=${t.value}`,
+    )
+    .join(" ");
 }
 
 export { TOKEN_SYMBOLS };

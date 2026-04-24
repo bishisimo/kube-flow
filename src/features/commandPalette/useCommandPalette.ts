@@ -14,7 +14,8 @@
  *
  * 执行入口：
  * - commitDraft：将当前 value 草稿匹配为 chip（由 executePlan 或空格提交调用）
- * - executePlan：Enter/Tab 确认时，valuing 先落 chip 再匹配 executor；可执行则关闭并 run
+ * - advancePalette：仅推进（选 spec/value、选命令）；已提交 chip 且草稿为空时返回 false；面板在 Enter 上会先调用，失败再 submitPlan
+ * - submitPlan：executePlan（落 value chip + 跑 executor / 自由命令）；面板在 Enter 无法推进时会回退调用
  */
 import { computed, ref, watch } from "vue";
 import type {
@@ -43,6 +44,39 @@ import {
   scheduleWorkbenchKindPaletteSearch,
   workbenchKindPaletteExtensionHits,
 } from "../../stores/workbenchKindPalette";
+import { workbenchResourcePaletteAdapter } from "../../stores/workbenchResourcePalette";
+
+/** 已落 `@env` / `@term` / `@log` 的 value 后，自由区为空时仍要展示其「二阶段」动作命令候选。 */
+function hasTokenActionFreePhase(tokens: Token[]): boolean {
+  return tokens.some(
+    (t) =>
+      Boolean(t.value) &&
+      t.symbol === "@" &&
+      (t.key === "env" || t.key === "term" || t.key === "log"),
+  );
+}
+
+/** 二阶段环境/终端/日志动作命令：排序应仅由 weight 等显式配置决定，不受 MRU 影响。 */
+function isContextActionCommandId(id: string): boolean {
+  return (
+    id.startsWith("env:act:") || id.startsWith("term:act:") || id.startsWith("log:act:")
+  );
+}
+
+/** 同分时的稳定顺序：与 providers 中「环境/终端/日志动作」定义顺序一致（工作台始终优先于终端等）。 */
+function contextActionTieIndex(id: string): number {
+  if (id.startsWith("env:act:workbench:")) return 0;
+  if (id.startsWith("env:act:open:")) return 1;
+  if (id.startsWith("env:act:host-terminal:")) return 2;
+  if (id.startsWith("env:act:orchestrator:")) return 3;
+  if (id.startsWith("env:act:logs:")) return 4;
+  if (id.startsWith("env:act:close:")) return 5;
+  if (id.startsWith("term:act:focus:")) return 0;
+  if (id.startsWith("term:act:close:")) return 1;
+  if (id.startsWith("log:act:focus:")) return 0;
+  if (id.startsWith("log:act:close:")) return 1;
+  return 100;
+}
 
 const isOpen = ref(false);
 const draft = ref("");
@@ -117,8 +151,14 @@ function scoreCommandItem(
   item: CommandItem,
   text: string,
   ctx: string | null,
+  opts?: { ignoreMruForContextActions: boolean; tokenActionFreePhase: boolean },
 ): ScoredCommand | null {
-  const base = (item.weight ?? 0) + mruScoreOf(item.id) * 0.6 + categoryBoost(item);
+  const mruOff =
+    opts?.tokenActionFreePhase &&
+    opts?.ignoreMruForContextActions &&
+    isContextActionCommandId(item.id);
+  const mru = mruOff ? 0 : mruScoreOf(item.id) * 0.6;
+  const base = (item.weight ?? 0) + mru + categoryBoost(item);
   const ctxBonus = ctx && item.context === ctx ? 12 : 0;
   if (!text) {
     return { item, score: base + ctxBonus + 1, matchedIndices: [], matchedField: null };
@@ -177,13 +217,23 @@ const candidates = computed<Candidate[]>(() => {
 
   if (p.mode === "free") {
     const text = p.rawText;
+    if (tokens.value.length > 0 && !text.trim() && !hasTokenActionFreePhase(tokens.value)) {
+      return [];
+    }
+    const tokenPhase = hasTokenActionFreePhase(tokens.value);
     const scored: Array<{ sc: ScoredCommand }> = [];
     for (const item of allCommands.value) {
-      const s = scoreCommandItem(item, text, ctx);
+      const s = scoreCommandItem(item, text, ctx, {
+        ignoreMruForContextActions: true,
+        tokenActionFreePhase: tokenPhase,
+      });
       if (s) scored.push({ sc: s });
     }
     scored.sort((a, b) => {
       if (b.sc.score !== a.sc.score) return b.sc.score - a.sc.score;
+      if (tokenPhase && isContextActionCommandId(a.sc.item.id) && isContextActionCommandId(b.sc.item.id)) {
+        return contextActionTieIndex(a.sc.item.id) - contextActionTieIndex(b.sc.item.id);
+      }
       return a.sc.item.title.localeCompare(b.sc.item.title);
     });
     return scored.slice(0, 120).map<FreeCandidate>((x) => ({
@@ -222,7 +272,7 @@ const candidates = computed<Candidate[]>(() => {
     }));
   }
 
-  if (p.mode === "valuing" && p.symbol && p.keyBuffer) {
+  if (p.mode === "valuing" && p.symbol !== undefined && p.keyBuffer !== undefined) {
     const spec = findSpec(paletteContext, p.symbol, p.keyBuffer);
     if (!spec) return [];
     const values = spec.values(p.value ?? "");
@@ -276,7 +326,10 @@ function toggle() {
 function commitDraft(forcedValue?: string): boolean {
   const p = parsed.value;
   if (p.mode !== "valuing") return false;
-  const spec = p.symbol && p.keyBuffer ? findSpec(paletteContext, p.symbol, p.keyBuffer) : null;
+  const spec =
+    p.symbol !== undefined && p.keyBuffer !== undefined
+      ? findSpec(paletteContext, p.symbol, p.keyBuffer)
+      : null;
   if (!spec) return false;
   const raw = forcedValue ?? (p.value ?? "").trim();
   if (!raw) return false;
@@ -285,6 +338,9 @@ function commitDraft(forcedValue?: string): boolean {
       (v) => v.value.toLowerCase() === raw.toLowerCase() || v.title.toLowerCase() === raw.toLowerCase(),
     );
     if (!matched) return false;
+    if (isResourceActionValueSpec(spec)) {
+      return tryRunResourcePaletteActionImmediate(matched.value);
+    }
     const token = commitDraftToToken(p, matched.value);
     if (!token) return false;
     appendToken(token);
@@ -311,6 +367,23 @@ function appendToken(token: Token) {
   }
 }
 
+function isResourceActionValueSpec(spec: TokenSpec): boolean {
+  return spec.symbol === ">" && spec.key === "";
+}
+
+/** 「>」下列出的是可执行动作：选中即 runAction 并关面板，不落 chip、不经 executor 预览条。 */
+function tryRunResourcePaletteActionImmediate(valueId: string): boolean {
+  if (valueId === "__please_select") return false;
+  const a = workbenchResourcePaletteAdapter.value;
+  if (!a) return false;
+  close();
+  tokens.value = [];
+  draft.value = "";
+  activeIndex.value = 0;
+  queueMicrotask(() => a.runAction(valueId));
+  return true;
+}
+
 /** 选中某个候选的统一入口：根据候选类型自动完成 draft 推进 / chip 追加 / 命令执行。 */
 function acceptCandidate(index?: number): boolean {
   const list = candidates.value;
@@ -328,6 +401,9 @@ function acceptCandidate(index?: number): boolean {
     return true;
   }
   if (c.kind === "value") {
+    if (isResourceActionValueSpec(c.spec)) {
+      return tryRunResourcePaletteActionImmediate(c.value.value);
+    }
     appendToken({ symbol: c.spec.symbol, key: c.spec.key, value: c.value.value });
     draft.value = "";
     activeIndex.value = 0;
@@ -336,13 +412,18 @@ function acceptCandidate(index?: number): boolean {
   return false;
 }
 
-/** Enter 的完整语义：先尝试 commit 当前 draft，再执行 executor。 */
+/** 先落当前 value chip（若有），再执行 executor；无方案时仅在自由模式执行高亮命令。 */
 function executePlan() {
-  const p = parsed.value;
-  if (p.mode === "valuing") {
+  const p0 = parsed.value;
+  if (p0.mode === "valuing") {
     const list = candidates.value;
     const first = list[activeIndex.value];
     if (first && first.kind === "value") {
+      if (isResourceActionValueSpec(first.spec)) {
+        if (tryRunResourcePaletteActionImmediate(first.value.value)) return;
+        draft.value = "";
+        return;
+      }
       appendToken({ symbol: first.spec.symbol, key: first.spec.key, value: first.value.value });
     } else {
       commitDraft();
@@ -357,7 +438,8 @@ function executePlan() {
     draft.value = "";
     return;
   }
-  if (p.mode === "free") {
+  const p1 = parsed.value;
+  if (p1.mode === "free") {
     const list = candidates.value;
     const first = list[activeIndex.value];
     if (first && first.kind === "command") {
@@ -368,12 +450,37 @@ function executePlan() {
   }
 }
 
+/** Enter / Tab：只推进状态机，不执行工作台 executor。 */
+function advancePalette(forcedIndex?: number): boolean {
+  if (forcedIndex !== undefined) activeIndex.value = forcedIndex;
+  const p = parsed.value;
+  if (
+    tokens.value.length > 0 &&
+    p.mode === "free" &&
+    !p.rawText.trim() &&
+    !hasTokenActionFreePhase(tokens.value)
+  ) {
+    return false;
+  }
+  if (p.mode === "valuing" || p.mode === "keying") {
+    return acceptCandidate();
+  }
+  return acceptCandidate();
+}
+
+function submitPlan(): void {
+  executePlan();
+}
+
 function popLastToken() {
   if (!tokens.value.length) return;
   const next = [...tokens.value];
   const last = next.pop()!;
   tokens.value = next;
-  draft.value = `${last.symbol}${last.key} ${last.value}`;
+  draft.value =
+    last.symbol === ">" && last.key === ""
+      ? `>${last.value}`
+      : `${last.symbol}${last.key} ${last.value}`;
   activeIndex.value = 0;
 }
 
@@ -413,6 +520,8 @@ export function useCommandPalette() {
     commitDraft,
     acceptCandidate,
     executePlan,
+    advancePalette,
+    submitPlan,
     popLastToken,
     removeToken,
   };

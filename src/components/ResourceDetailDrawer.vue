@@ -507,7 +507,6 @@ watch(
     :max-width="DRAWER_MAX"
     :default-width="DRAWER_DEFAULT"
     :mask-closable="true"
-    :trap-focus="false"
     :auto-focus="false"
     :block-scroll="false"
     @update:show="onDrawerShowUpdate"

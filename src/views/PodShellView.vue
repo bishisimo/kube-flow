@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { NButton, NEmpty, NScrollbar, NSelect, NSpace, NTag } from "naive-ui";
+import { NAlert, NButton, NEmpty, NScrollbar, NSelect, NSpace, NTag } from "naive-ui";
 import { kfSpace } from "../kf";
 
 defineOptions({ name: "PodShellView" });
@@ -16,7 +16,7 @@ import {
 } from "../api/kube";
 import { hostShellStart, hostShellStdin, hostShellStop } from "../api/terminal";
 import { extractErrorMessage } from "../utils/errorMessage";
-import { isConnectionError } from "../stores/connection";
+import { isConnectionError, useConnectionStore } from "../stores/connection";
 import { useStrongholdAuthStore } from "../stores/strongholdAuth";
 import { useAppSettingsStore } from "../stores/appSettings";
 import PodShellTerminal from "../components/PodShellTerminal.vue";
@@ -32,7 +32,8 @@ const {
   pendingOpen,
   clearPendingOpen,
 } = useShellStore();
-const { environments } = useEnvStore();
+const { environments, currentId } = useEnvStore();
+const { envConnectionState, envConnectionError, setDisconnected } = useConnectionStore();
 const strongholdAuth = useStrongholdAuthStore();
 const { terminalInstanceCacheLimit, ensureAppSettingsLoaded } = useAppSettingsStore();
 
@@ -40,7 +41,7 @@ const sessionRailCollapsed = ref(false);
 const podOptions = ref<PodItem[]>([]);
 const containerOptions = ref<string[]>([]);
 const switcherLoading = ref(false);
-const hostEntryEnvId = ref("");
+const hostEntryEnvId = ref<string | null>(null);
 const reconnectAttemptMap = ref<Record<string, number>>({});
 const reconnectTimerMap = new Map<string, ReturnType<typeof setTimeout>>();
 const reconnectingSessionIds = new Set<string>();
@@ -89,6 +90,37 @@ const currentSessionContextName = computed(() => {
   if (!session) return "";
   if (session.kind === "host") return session.hostLabel || `${session.envName} 主机`;
   return session.podName || "Pod";
+});
+
+/** 当前会话对应环境在工作台连接层的状态（隧道 / API 等），与终端流 end 事件互补展示 */
+const envConnectionAlert = computed(() => {
+  const envId = currentSession.value?.envId;
+  if (!envId) return null;
+  void envConnectionState.value[envId];
+  void envConnectionError.value[envId];
+  const state = envConnectionState.value[envId] ?? "connected";
+  const err = envConnectionError.value[envId]?.trim();
+  if (state === "connected") return null;
+  if (state === "connecting") {
+    return {
+      type: "info" as const,
+      title: "环境正在连接",
+      body: "集群或隧道建立中，此环境下终端可能暂时不可用。",
+    };
+  }
+  if (state === "disconnected") {
+    return {
+      type: "warning" as const,
+      title: "环境连接已断开",
+      body: err
+        ? err
+        : "与工作台或集群的会话已中断。请在工作台对当前环境重连，或排障后再使用「重新连接」。",
+    };
+  }
+  if (state === "error") {
+    return { type: "error" as const, title: "环境连接异常", body: err || "请在工作台查看错误并尝试重连该环境。" };
+  }
+  return null;
 });
 
 const hasMountedTerminalSession = computed(() => sessions.value.some((session) => Boolean(session.streamId)));
@@ -636,6 +668,9 @@ function onTerminalEnd(sessionId: string, payload: { streamId: string; error?: s
     clearReconnectState(sessionId);
     return;
   }
+  if (payload.error && isConnectionError(payload.error)) {
+    setDisconnected(session.envId, payload.error);
+  }
   updateSession(sessionId, {
     streamId: null,
     status: "reconnecting",
@@ -699,12 +734,20 @@ watch(
   { immediate: true }
 );
 
+/**
+ * 与「当前工作台选中的环境」对齐：有 currentId 且仍存在于环境列表时默认选它，避免曾用首项当默认值；
+ * 无工作台当前环境时不默认任一项，由「请选择」再选，避免点错环境。
+ */
 watch(
-  () => hostEntryOptions.value.map((item) => item.id).join(","),
+  () => [hostEntryOptions.value.map((item) => item.id).join(","), currentId.value ?? ""] as const,
   () => {
-    if (!hostEntryEnvId.value || !hostEntryOptions.value.some((item) => item.id === hostEntryEnvId.value)) {
-      hostEntryEnvId.value = hostEntryOptions.value[0]?.id ?? "";
+    const ids = new Set(hostEntryOptions.value.map((item) => item.id));
+    const cur = currentId.value;
+    if (cur && ids.has(cur)) {
+      hostEntryEnvId.value = cur;
+      return;
     }
+    hostEntryEnvId.value = null;
   },
   { immediate: true }
 );
@@ -737,7 +780,8 @@ onUnmounted(() => {
             <NSelect
               v-model:value="hostEntryEnvId"
               :options="hostEntrySelectOptions"
-              placeholder="选择环境"
+              clearable
+              placeholder="请选择环境"
               filterable
               class="quick-open-select-naive"
             />
@@ -745,7 +789,7 @@ onUnmounted(() => {
               type="primary"
               class="quick-open-btn-naive"
               :disabled="!hostEntryEnvId"
-              @click="openHostShellForEnv(hostEntryEnvId)"
+              @click="hostEntryEnvId && openHostShellForEnv(hostEntryEnvId)"
             >打开终端</NButton>
           </NSpace>
         </div>
@@ -803,6 +847,16 @@ onUnmounted(() => {
           <p class="terminal-subtitle">{{ currentSessionSubtitle }}</p>
         </div>
       </header>
+
+      <NAlert
+        v-if="envConnectionAlert"
+        :type="envConnectionAlert.type"
+        :title="envConnectionAlert.title"
+        class="terminal-env-alert"
+        :bordered="true"
+      >
+        {{ envConnectionAlert.body }}
+      </NAlert>
 
       <section
         v-if="currentSession && (currentSession.streamId || currentSession.status === 'connecting' || currentSession.status === 'reconnecting')"
@@ -892,14 +946,19 @@ onUnmounted(() => {
         </div>
         <div class="empty-grid">
           <NButton
-            v-if="hostEntryEnvId"
+            v-if="hostEntryOptions.length"
             quaternary
             class="empty-card"
-            @click="openHostShellForEnv(hostEntryEnvId)"
+            :disabled="!hostEntryEnvId"
+            @click="hostEntryEnvId && openHostShellForEnv(hostEntryEnvId)"
           >
             <span class="empty-card-title">打开指定环境终端</span>
             <span class="empty-card-desc">
-              {{ hostEntryOptions.find((env) => env.id === hostEntryEnvId)?.display_name || "选择环境" }}
+              {{
+                hostEntryEnvId
+                  ? hostEntryOptions.find((env) => env.id === hostEntryEnvId)?.display_name
+                  : "请选择环境"
+              }}
             </span>
           </NButton>
           <div class="empty-card info">
@@ -1206,6 +1265,11 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
+.terminal-env-alert {
+  flex-shrink: 0;
+  margin: 0 1.25rem 0.75rem;
+}
+
 .terminal-header {
   display: flex;
   align-items: flex-start;
@@ -1256,6 +1320,14 @@ onUnmounted(() => {
 }
 .terminal-context-main {
   min-width: 0;
+}
+
+/* 深色内嵌条上的默认 Button 易沿用主文色（与 embed canvas 撞色）；显式用终端前景色 */
+.terminal-context-bar :deep(.n-button) {
+  color: var(--kf-embed-t-foreground);
+}
+.terminal-context-bar :deep(.n-button:not(:disabled):hover) {
+  color: var(--kf-embed-t-foreground);
 }
 
 .context-pill {
@@ -1373,6 +1445,9 @@ onUnmounted(() => {
   justify-content: center;
   gap: 0.65rem;
   padding: 2rem;
+}
+
+.terminal-empty:not(.error) {
   color: var(--kf-text-secondary);
 }
 
@@ -1380,10 +1455,26 @@ onUnmounted(() => {
   margin: 0 1.1rem 1.1rem;
   border-radius: 0 0 20px 20px;
   background: var(--kf-embed-t-canvas);
-  color: var(--kf-embed-t-foreground-subtle);
+  /* 与 body 主文色同 hex 的 canvas 上，必须用语义上的浅色，避免子节点未继承时与背景同色 */
+  color: var(--kf-embed-t-foreground);
 }
 
-.terminal-loading-hint,
+.terminal-loading > p:first-of-type {
+  margin: 0;
+  text-align: center;
+  color: var(--kf-embed-t-foreground);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.terminal-loading .terminal-loading-hint {
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: var(--kf-embed-t-foreground-subtle);
+  max-width: min(40rem, 100%);
+  text-align: center;
+}
+
 .empty-desc {
   font-size: 0.82rem;
   color: inherit;

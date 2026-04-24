@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, Fragment } from "vue";
+import { computed, h, Fragment, ref } from "vue";
 import {
   NButton,
   NDataTable,
@@ -59,7 +59,21 @@ const props = defineProps<{
   activeRowKey?: string | null;
   /** 二次确认删除已触发时，把 active 行再换成告警色。 */
   deleteActionArmed?: boolean;
+  /** 键盘导航时高亮行（与右键菜单高亮独立）。 */
+  keyboardFocusRowKey?: string | null;
 }>();
+
+const emit = defineEmits<{
+  shellKeydown: [e: KeyboardEvent];
+}>();
+
+const tableShellRef = ref<HTMLElement | null>(null);
+
+function focusShell() {
+  tableShellRef.value?.focus();
+}
+
+defineExpose({ focusShell, tableShellRef });
 
 const firstDataColumnKey = computed(() => props.tableColumns[0]?.key ?? "");
 
@@ -308,8 +322,14 @@ const columns = computed<DataTableColumns<Record<string, unknown>>>(() => {
 
 function rowClassName(row: Record<string, unknown>): string {
   const key = props.getRowKey(row);
-  if (!key || !props.activeRowKey || key !== props.activeRowKey) return "";
-  return props.deleteActionArmed ? "wb-row-active wb-row-armed" : "wb-row-active";
+  const parts: string[] = [];
+  if (key && props.keyboardFocusRowKey && key === props.keyboardFocusRowKey) {
+    parts.push("wb-row-keyboard-focus");
+  }
+  if (key && props.activeRowKey && key === props.activeRowKey) {
+    parts.push(props.deleteActionArmed ? "wb-row-active wb-row-armed" : "wb-row-active");
+  }
+  return parts.join(" ");
 }
 
 function rowKey(row: Record<string, unknown>) {
@@ -317,7 +337,9 @@ function rowKey(row: Record<string, unknown>) {
 }
 
 function rowProps(row: Record<string, unknown>) {
+  const rk = props.getRowKey(row);
   return {
+    "data-wb-row": rk || undefined,
     style: { cursor: "pointer" },
     onClick: (e: MouseEvent) => {
       const el = e.target as HTMLElement | null;
@@ -356,6 +378,12 @@ function onUpdateCheckedRowKeys(keys: DataTableRowKey[]) {
 </script>
 
 <template>
+  <div
+    ref="tableShellRef"
+    class="wb-table-keyboard-shell"
+    tabindex="0"
+    @keydown.capture="emit('shellKeydown', $event)"
+  >
   <section class="wb-list-card">
     <header class="wb-list-header">
       <span class="wb-list-title">资源列表</span>
@@ -409,9 +437,21 @@ function onUpdateCheckedRowKeys(keys: DataTableRowKey[]) {
       </NDataTable>
     </div>
   </section>
+  </div>
 </template>
 
 <style scoped>
+.wb-table-keyboard-shell {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  outline: none;
+}
+.wb-table-keyboard-shell:focus-visible {
+  border-radius: 14px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--wb-accent-forest) 55%, transparent);
+}
 .wb-list-card {
   flex: 1;
   min-height: 0;
@@ -529,9 +569,13 @@ function onUpdateCheckedRowKeys(keys: DataTableRowKey[]) {
   transition: background 0.12s ease;
 }
 .wb-data-table:deep(
-  .n-data-table-base-table-body .n-data-table-tr:not(.wb-row-active):hover .n-data-table-td
+  .n-data-table-base-table-body .n-data-table-tr:not(.wb-row-active):not(.wb-row-keyboard-focus):hover .n-data-table-td
 ) {
   background: var(--wb-row-hover);
+}
+.wb-data-table:deep(.n-data-table-tr.wb-row-keyboard-focus .n-data-table-td) {
+  background: color-mix(in srgb, var(--wb-accent-spring) 14%, var(--wb-table-body));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--wb-accent-forest) 35%, transparent);
 }
 .wb-data-table:deep(.wb-col-emphasis) {
   font-weight: 600;

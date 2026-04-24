@@ -62,6 +62,8 @@ export const workbenchPendingNav = ref<{
   namespace?: string | null;
   nameFilter?: string;
   customTarget?: ResolvedAliasTarget | null;
+  /** 为 true 时 Main 在导航后聚焦资源列表并启用键盘选行（由命令面板 ⌘Enter 提交导航触发） */
+  focusResourceList?: boolean;
 } | null>(null);
 
 /**

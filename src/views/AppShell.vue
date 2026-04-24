@@ -41,6 +41,8 @@ import {
   buildLogTokenSpec,
   buildWorkbenchTokenSpecs,
   buildWorkbenchExecutors,
+  buildResourceActionTokenSpec,
+  buildResourceActionExecutor,
   type CommandItem,
   type WorkbenchBridge,
 } from "../features/commandPalette";
@@ -297,9 +299,10 @@ function installProviders() {
       buildEnvTokenSpec(),
       buildTermTokenSpec(),
       buildLogTokenSpec(),
+      buildResourceActionTokenSpec(),
       ...buildWorkbenchTokenSpecs(),
     ]),
-    registerExecutors(buildWorkbenchExecutors()),
+    registerExecutors([...buildWorkbenchExecutors(), buildResourceActionExecutor()]),
   );
 }
 

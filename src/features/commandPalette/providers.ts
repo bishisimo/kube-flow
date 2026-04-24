@@ -253,7 +253,7 @@ export function createKindSwitchProvider(bridge: WorkbenchBridge) {
       context: "main",
       weight: 5,
       run: () => {
-        workbenchPendingNav.value = { envId, kind: k.id };
+        workbenchPendingNav.value = { envId, kind: k.id, focusResourceList: true };
         bridge.setTab("main");
       },
     }));
@@ -279,7 +279,7 @@ export function createNamespaceSwitchProvider(bridge: WorkbenchBridge) {
       context: "main",
       weight: 4,
       run: () => {
-        workbenchPendingNav.value = { envId, namespace: null };
+        workbenchPendingNav.value = { envId, namespace: null, focusResourceList: true };
         bridge.setTab("main");
       },
     });
@@ -294,7 +294,7 @@ export function createNamespaceSwitchProvider(bridge: WorkbenchBridge) {
         context: "main",
         weight: 3,
         run: () => {
-          workbenchPendingNav.value = { envId, namespace: name };
+          workbenchPendingNav.value = { envId, namespace: name, focusResourceList: true };
           bridge.setTab("main");
         },
       });

@@ -39,6 +39,9 @@ import {
   extensionStableKey,
   type FavoriteKindEntry,
 } from "../features/workbench";
+import { useCommandPalette } from "../features/commandPalette";
+import { workbenchResourcePaletteAdapter } from "../stores/workbenchResourcePalette";
+import { buildResourcePaletteValueCandidates } from "../features/workbench/resourcePaletteActions";
 import ResourceDetailDrawer from "../components/ResourceDetailDrawer.vue";
 import ChangeImageModal from "../components/ChangeImageModal.vue";
 import DeleteConfirmModal from "../components/DeleteConfirmModal.vue";
@@ -311,6 +314,12 @@ const {
   getState,
 });
 const workbenchToolbarRef = ref<InstanceType<typeof WorkbenchToolbar> | null>(null);
+const workbenchResourceTableRef = ref<InstanceType<typeof WorkbenchResourceTable> | null>(null);
+/** 资源列表键盘导航当前行（与 ActionMenu 的 active 行独立）。 */
+const keyboardFocusRowKey = ref<string | null>(null);
+/** 命令面板 ⌘Enter 导航后，待列表加载结束再聚焦表格壳层。 */
+const pendingListFocusAfterNav = ref(false);
+const paletteWorkbench = useCommandPalette();
 
 /** 子组件 expose 的模板 ref 在运行时为 Ref，类型侧可能已解包，这里统一取 DOM。 */
 function toolbarHTMLElement(
@@ -766,6 +775,8 @@ function getRowKey(row: Record<string, unknown>): string {
 }
 
 function onRowContextMenu(row: Record<string, unknown>, e: MouseEvent) {
+  const rk = getRowKey(row);
+  if (rk) keyboardFocusRowKey.value = rk;
   const resource = selectResourceFromRow(row);
   if (!resource) return;
   selectedResource.value = resource;
@@ -781,8 +792,116 @@ function onRowContextMenu(row: Record<string, unknown>, e: MouseEvent) {
 }
 
 function onRowClick(row: Record<string, unknown>) {
+  const rk = getRowKey(row);
+  if (rk) keyboardFocusRowKey.value = rk;
   const resource = selectResourceFromRow(row);
   if (resource) openDetailDrawerForResource(resource);
+}
+
+function tableRowKeysInOrder(): string[] {
+  return tableRows.value.map((r) => getRowKey(r)).filter((k) => Boolean(k));
+}
+
+function currentKeyboardRow(): Record<string, unknown> | null {
+  const k = keyboardFocusRowKey.value;
+  if (!k) return null;
+  return tableRows.value.find((r) => getRowKey(r) === k) ?? null;
+}
+
+/** 命令面板「>」资源动作所针对的对象：优先键盘当前行，否则回退到详情抽屉等资源上下文。 */
+const resourceForPalette = computed((): SelectedResourceRef | null => {
+  const row = currentKeyboardRow();
+  if (row) {
+    const r = selectResourceFromRow(row);
+    if (r) return r;
+  }
+  return selectedResource.value;
+});
+
+function scrollKeyboardRowIntoView() {
+  const k = keyboardFocusRowKey.value;
+  if (!k) return;
+  const esc =
+    typeof CSS !== "undefined" && "escape" in CSS
+      ? CSS.escape(k)
+      : k.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  document.querySelector<HTMLElement>(`tr[data-wb-row="${esc}"]`)?.scrollIntoView({ block: "nearest" });
+}
+
+function moveKeyboardRow(delta: number) {
+  const keys = tableRowKeysInOrder();
+  if (!keys.length) return;
+  const cur = keyboardFocusRowKey.value;
+  let idx = cur ? keys.indexOf(cur) : -1;
+  if (idx < 0) idx = delta > 0 ? -1 : 0;
+  const next = Math.min(keys.length - 1, Math.max(0, idx + delta));
+  keyboardFocusRowKey.value = keys[next] ?? null;
+  nextTick(() => scrollKeyboardRowIntoView());
+}
+
+function onKeyboardEnterRow(row: Record<string, unknown>) {
+  if (batchDeleteMode.value) {
+    const key = getRowKey(row);
+    const next = new Set(selectedRowKeys.value);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    selectedRowKeys.value = next;
+    return;
+  }
+  const resource = selectResourceFromRow(row);
+  if (!resource) return;
+  selectedResource.value = resource;
+  if (WORKBENCH_SHELL_WORKLOAD_KINDS.has(resource.kind)) {
+    openPodShell();
+  } else {
+    openDetailDrawerForResource(resource);
+  }
+}
+
+function onResourceListShellKeydown(e: KeyboardEvent) {
+  if (e.isComposing) return;
+  const shell = resourceTableShellElement();
+  if (!shell || !shell.contains(e.target as Node)) return;
+  const t = e.target as HTMLElement | null;
+  if (t?.closest?.("input, textarea, select, button, a, [contenteditable=true]")) return;
+
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === "ArrowDown") moveKeyboardRow(1);
+    else moveKeyboardRow(-1);
+    return;
+  }
+
+  const mac = typeof navigator !== "undefined" && navigator.platform.toLowerCase().includes("mac");
+  const isMetaEnter = e.key === "Enter" && (mac ? e.metaKey : e.ctrlKey);
+  const row = currentKeyboardRow();
+  if (!row && (e.key === "Enter" || isMetaEnter)) return;
+
+  if (isMetaEnter) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (row) onKeyboardEnterRow(row);
+    return;
+  }
+  if (e.key === "Enter") {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!row) return;
+    const resource = selectResourceFromRow(row);
+    if (!resource) return;
+    selectedResource.value = resource;
+    paletteWorkbench.open();
+    nextTick(() => {
+      paletteWorkbench.draft.value = ">";
+    });
+  }
+}
+
+/** 表格壳层 DOM：仅在该元素上响应列表快捷键，避免误捕嵌套控件。 */
+function resourceTableShellElement(): HTMLElement | null {
+  const c = workbenchResourceTableRef.value as { tableShellRef?: HTMLElement | null } | null;
+  return c?.tableShellRef ?? null;
 }
 
 function openDetailDrawerForResource(resource: SelectedResourceRef, initialTab: string | null = null) {
@@ -834,6 +953,31 @@ function openPodLogs() {
   closeActionMenu();
 }
 
+function paletteNodeTerminalDisabledReasonFor(resource: SelectedResourceRef): string {
+  if (!WORKBENCH_NODE_TERMINAL_RESOURCE_KINDS.has(resource.kind)) return "";
+  if (!currentId.value || !currentEnv.value) return "当前未定位到环境，无法打开节点终端。";
+  const strategy = getNodeTerminalStrategy(currentId.value);
+  if (!strategy?.enabled) {
+    return "当前环境还没有启用节点终端切换策略，请先到环境管理中的终端策略里配置。";
+  }
+  const nodeName =
+    resource.kind === "Node"
+      ? resource.name
+      : resource.kind === "Pod"
+        ? resource.nodeName?.trim() ?? ""
+        : "";
+  if (!nodeName) {
+    return resource.kind === "Pod"
+      ? "当前 Pod 尚未调度到节点，暂时无法打开所在节点终端。"
+      : "未找到节点信息，无法打开节点终端。";
+  }
+  return "";
+}
+
+function paletteNodeTerminalMenuLabelFor(resource: SelectedResourceRef): string {
+  return resource.kind === "Pod" ? "打开所在节点终端" : "打开节点终端";
+}
+
 const nodeTerminalTargetName = computed(() => {
   const resource = selectedResource.value;
   if (!resource) return "";
@@ -849,24 +993,14 @@ const nodeTerminalMenuLabel = computed(() => {
 
 const nodeTerminalDisabledReason = computed(() => {
   const resource = selectedResource.value;
-  if (!resource || !WORKBENCH_NODE_TERMINAL_RESOURCE_KINDS.has(resource.kind)) return "";
-  if (!currentId.value || !currentEnv.value) return "当前未定位到环境，无法打开节点终端。";
-  const strategy = getNodeTerminalStrategy(currentId.value);
-  if (!strategy?.enabled) {
-    return "当前环境还没有启用节点终端切换策略，请先到环境管理中的终端策略里配置。";
-  }
-  if (!nodeTerminalTargetName.value) {
-    return resource.kind === "Pod"
-      ? "当前 Pod 尚未调度到节点，暂时无法打开所在节点终端。"
-      : "未找到节点信息，无法打开节点终端。";
-  }
-  return "";
+  if (!resource) return "";
+  return paletteNodeTerminalDisabledReasonFor(resource);
 });
 
 const podDebugDisabledReason = computed(() => {
   const resource = selectedResource.value;
   if (!resource || resource.kind !== "Pod") return "";
-  return nodeTerminalDisabledReason.value;
+  return paletteNodeTerminalDisabledReasonFor(resource);
 });
 
 const canOpenPodDebug = computed(
@@ -1240,12 +1374,67 @@ onMounted(async () => {
   if (id) restoreEnvViewState(id);
   document.addEventListener("click", onDocClick);
   unlistenConnection = await setupConnectionProgressListener();
+  workbenchResourcePaletteAdapter.value = {
+    getValueCandidates: () => {
+      const r = resourceForPalette.value;
+      if (!r) {
+        return buildResourcePaletteValueCandidates(null, null);
+      }
+      return buildResourcePaletteValueCandidates(r, {
+        nodeTerminalMenuLabel: paletteNodeTerminalMenuLabelFor(r),
+        nodeTerminalDisabledReason: paletteNodeTerminalDisabledReasonFor(r),
+        podDebugDisabledReason: r.kind === "Pod" ? paletteNodeTerminalDisabledReasonFor(r) : "",
+      });
+    },
+    runAction: (id: string) => {
+      if (id === "__please_select") return;
+      const r = resourceForPalette.value;
+      if (!r) return;
+      selectedResource.value = r;
+      switch (id) {
+        case "openDetail":
+          openResourceDetail();
+          break;
+        case "openTopology":
+          openTopology();
+          break;
+        case "openPodLogs":
+          openPodLogs();
+          break;
+        case "openPodShell":
+          openPodShell();
+          break;
+        case "openNodeTerminal":
+          void openNodeTerminalFromMenu();
+          break;
+        case "openPodDebug":
+          void openPodDebugModal();
+          break;
+        case "openEditConfig":
+          openEditConfig();
+          break;
+        case "openChangeImage":
+          openChangeImageModal();
+          break;
+        case "openSyncOrchestrator":
+          void openSyncToOrchestratorDialog();
+          break;
+        case "handleDelete":
+          deleteActionArmed.value = false;
+          openDeleteConfirm();
+          break;
+        default:
+          break;
+      }
+    },
+  };
 });
 
 onUnmounted(() => {
   document.removeEventListener("click", onDocClick);
   unlistenConnection?.();
   stopNodeAllocationPolling();
+  workbenchResourcePaletteAdapter.value = null;
 });
 
 watch(selectedKind, () => {
@@ -1322,11 +1511,13 @@ watch(
   (nav) => {
     if (!nav) return;
     const pending = nav;
+    const wantListFocus = pending.focusResourceList === true;
     workbenchPendingNav.value = null;
     if (pending.envId && pending.envId !== currentId.value) {
       setCurrent(pending.envId);
     }
     nextTick(() => {
+      if (wantListFocus) pendingListFocusAfterNav.value = true;
       const nf = pending.nameFilter;
       if (pending.customTarget) {
         navigateTo({
@@ -1354,6 +1545,24 @@ watch(
   },
   { immediate: true },
 );
+
+watch(
+  [pendingListFocusAfterNav, listLoading, tableRows],
+  async () => {
+    if (!pendingListFocusAfterNav.value || listLoading.value) return;
+    pendingListFocusAfterNav.value = false;
+    await nextTick();
+    const first = tableRows.value[0];
+    keyboardFocusRowKey.value = first ? getRowKey(first) : null;
+    workbenchResourceTableRef.value?.focusShell?.();
+  },
+  { flush: "post" },
+);
+
+watch([selectedKind, selectedNamespace, selectedCustomTarget], () => {
+  if (pendingListFocusAfterNav.value) return;
+  keyboardFocusRowKey.value = null;
+});
 
 watch(
   () => ({
@@ -1458,6 +1667,7 @@ const {
 </script>
 
 <template>
+  <div class="main-workbench-wrap">
   <NLayout :has-sider="openedEnvs.length > 0" class="main-layout">
     <NLayoutSider
       v-if="openedEnvs.length"
@@ -1562,6 +1772,8 @@ const {
           @dismiss-error="dismissError"
         >
           <WorkbenchResourceTable
+            ref="workbenchResourceTableRef"
+            :keyboard-focus-row-key="keyboardFocusRowKey"
             :workbench-kind-label="workbenchKindLabel"
             :effective-namespace="effectiveNamespace"
             :table-rows="tableRows"
@@ -1602,13 +1814,16 @@ const {
             :clear-all-filters="clearAllFilters"
             :select-all-namespaces="() => selectNamespace(null)"
             :open-kind-selector="openKindSelector"
+            @shell-keydown="onResourceListShellKeydown"
           />
         </WorkbenchResourceFrame>
     </div>
     <div v-else class="empty-state">
-      <div class="empty-emoji" aria-hidden="true">🌐</div>
-      <p class="empty-title">暂无打开的环境</p>
-      <p class="empty-desc">请先在「环境管理」中打开至少一个环境。</p>
+      <div class="empty-state-card" role="status">
+        <div class="empty-emoji" aria-hidden="true">🌐</div>
+        <p class="empty-title">暂无打开的环境</p>
+        <p class="empty-desc">请先在「环境管理」中打开至少一个环境。</p>
+      </div>
     </div>
 
     <!-- overlay 组件全部基于 Teleport 渲染到 body，不会影响 NLayout 的 flex 布局 -->
@@ -1682,6 +1897,7 @@ const {
       @confirm="onDeleteConfirm"
     />
   </NLayout>
+  </div>
 </template>
 
 

@@ -38,3 +38,4 @@ export {
   type WorkbenchBridge,
 } from "./providers";
 export { buildWorkbenchTokenSpecs, buildWorkbenchExecutors } from "./workbench";
+export { buildResourceActionTokenSpec, buildResourceActionExecutor } from "./resourceActionPalette";
