@@ -15,6 +15,7 @@ pub mod extractors {
     pub mod hpa_ref;
     pub mod rbac_refs;
     pub mod sa_bindings_reverse;
+    pub mod pod_service_link;
     pub mod workload_service_link;
 }
 
