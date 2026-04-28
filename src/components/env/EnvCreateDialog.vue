@@ -309,6 +309,7 @@ async function submit() {
           <span class="field-label">SSH 认证密码（可选）</span>
           <NInput
             v-model:value="password"
+            class="kf-password-input"
             type="password"
             show-password-on="click"
             placeholder="创建后自动保存到安全存储"

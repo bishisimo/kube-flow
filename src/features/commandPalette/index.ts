@@ -4,6 +4,7 @@ export type {
   CommandProvider,
   ScoredCommand,
   Token,
+  TokenValue,
   TokenSymbol,
   TokenSpec,
   TokenValueCandidate,

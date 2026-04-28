@@ -51,18 +51,29 @@ export function buildWorkbenchTokenSpecs(): TokenSpec[] {
     label: "命名空间",
     hint: "限定工作台的命名空间",
     icon: "◈",
+    domain: "token-key:workbench-filter",
     context: "main",
     weight: 10,
     values: (query) => {
       const envId = currentId.value;
       const pool: TokenValueCandidate[] = [
-        { value: "all", title: "全部命名空间", subtitle: "清除 ns 过滤", icon: "∀" },
+        { value: "all", title: "全部命名空间", subtitle: "清除 ns 过滤", icon: "∀", domain: "ns:all", order: 0 },
       ];
       if (envId) {
         const names = namespacesByEnv.value[envId] ?? [];
-        for (const name of names) pool.push({ value: name, title: name, icon: "◈" });
+        for (const name of names) pool.push({ value: name, title: name, icon: "◈", domain: "ns:list", order: 10 });
       }
       return fuzzyFilter(query, pool, (x) => x.title);
+    },
+    resolveValue: (raw) => {
+      if (raw === "all") {
+        return { value: "all", title: "全部命名空间", subtitle: "清除 ns 过滤", icon: "∀", domain: "ns:all", order: 0 };
+      }
+      const envId = currentId.value;
+      if (!envId) return null;
+      const names = namespacesByEnv.value[envId] ?? [];
+      if (!names.includes(raw)) return null;
+      return { value: raw, title: raw, icon: "◈", domain: "ns:list", order: 10 };
     },
   };
 
@@ -72,6 +83,7 @@ export function buildWorkbenchTokenSpecs(): TokenSpec[] {
     label: "资源类型",
     hint: "限定工作台展示的资源类型",
     icon: "📦",
+    domain: "token-key:workbench-filter",
     context: "main",
     weight: 9,
     values: (query) => {
@@ -93,6 +105,9 @@ export function buildWorkbenchTokenSpecs(): TokenSpec[] {
             hint: k.id,
             icon: "★",
             section: "收藏",
+            domain: "kind:favorites",
+            order: 0,
+            pinned: true,
             keywords: [k.id, k.label],
           });
         } else {
@@ -103,6 +118,9 @@ export function buildWorkbenchTokenSpecs(): TokenSpec[] {
             subtitle: `${t.api_version} · ${t.plural} · 收藏`,
             icon: "★",
             section: "收藏",
+            domain: "kind:favorites",
+            order: 0,
+            pinned: true,
             keywords: [t.kind, t.plural, ...(t.short_names ?? [])],
           });
         }
@@ -116,6 +134,8 @@ export function buildWorkbenchTokenSpecs(): TokenSpec[] {
           hint: k.id,
           icon: "📦",
           section: "内置",
+          domain: "kind:builtin",
+          order: 10,
           keywords: [k.id, k.label],
         });
       }
@@ -127,6 +147,8 @@ export function buildWorkbenchTokenSpecs(): TokenSpec[] {
           subtitle: `${t.api_version} · ${t.plural}`,
           icon: "📦",
           section: "扩展",
+          domain: "kind:extension",
+          order: 20,
           keywords: [t.kind, t.plural, t.group, ...(t.short_names ?? [])],
         });
       }
@@ -137,6 +159,40 @@ export function buildWorkbenchTokenSpecs(): TokenSpec[] {
         120
       );
     },
+    resolveValue: (raw) => {
+      if (raw.startsWith("ext:")) {
+        try {
+          const target = JSON.parse(decodeURIComponent(raw.slice(4))) as ResolvedAliasTarget;
+          const live = workbenchKindPaletteExtensionHits.value.find(
+            (item) => extensionStableKey(item) === extensionStableKey(target),
+          );
+          const resolved = live ?? target;
+          return {
+            value: raw,
+            title: resolved.kind,
+            subtitle: `${resolved.api_version} · ${resolved.plural}`,
+            icon: "📦",
+            section: "扩展",
+            domain: "kind:extension",
+            order: 20,
+          };
+        } catch {
+          return null;
+        }
+      }
+      const builtin = RESOURCE_KINDS_FLAT.find((item) => item.id === raw);
+      if (!builtin) return null;
+      return {
+        value: builtin.id,
+        title: builtin.label,
+        subtitle: KIND_GROUP_LABEL.get(builtin.id) ?? "",
+        hint: builtin.id,
+        icon: "📦",
+        section: "内置",
+        domain: "kind:builtin",
+        order: 10,
+      };
+    },
   };
 
   const nameSpec: TokenSpec = {
@@ -145,6 +201,7 @@ export function buildWorkbenchTokenSpecs(): TokenSpec[] {
     label: "名字过滤",
     hint: "前端按名字包含筛选",
     icon: "🔎",
+    domain: "token-key:workbench-filter",
     context: "main",
     weight: 8,
     freeText: true,
@@ -157,10 +214,11 @@ export function buildWorkbenchTokenSpecs(): TokenSpec[] {
             title: "输入名字关键字…",
             subtitle: "支持模糊匹配（前端过滤）",
             icon: "🔎",
+            domain: "token-key:workbench-filter",
           },
         ];
       }
-      return [{ value: q, title: q, subtitle: "作为名字过滤", icon: "🔎" }];
+      return [{ value: q, title: q, subtitle: "作为名字过滤", icon: "🔎", domain: "token-key:workbench-filter" }];
     },
   };
 
@@ -176,23 +234,23 @@ interface WorkbenchPlanParts {
   name?: string;
 }
 
-function readParts(tokens: ReadonlyArray<{ symbol: string; key: string; value: string }>): WorkbenchPlanParts {
+function readParts(tokens: ReadonlyArray<{ symbol: string; key: string; value: { raw: string } }>): WorkbenchPlanParts {
   const parts: WorkbenchPlanParts = {};
   for (const t of tokens) {
     if (t.symbol === "@" && t.key === "ns") {
-      parts.ns = t.value === "all" ? null : t.value;
+      parts.ns = t.value.raw === "all" ? null : t.value.raw;
     } else if (t.symbol === "@" && t.key === "kind") {
-      if (t.value.startsWith("ext:")) {
+      if (t.value.raw.startsWith("ext:")) {
         try {
-          parts.customTarget = JSON.parse(decodeURIComponent(t.value.slice(4))) as ResolvedAliasTarget;
+          parts.customTarget = JSON.parse(decodeURIComponent(t.value.raw.slice(4))) as ResolvedAliasTarget;
         } catch {
-          parts.kind = t.value;
+          parts.kind = t.value.raw;
         }
       } else {
-        parts.kind = t.value;
+        parts.kind = t.value.raw;
       }
     } else if (t.symbol === "#" && t.key === "name") {
-      parts.name = t.value;
+      parts.name = t.value.raw;
     }
   }
   return parts;

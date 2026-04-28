@@ -35,6 +35,7 @@ const {
   submitPlan,
   popLastToken,
   removeToken,
+  displayTokenValue,
 } = palette;
 
 const inputRef = ref<HTMLInputElement | null>(null);
@@ -271,7 +272,7 @@ function commitOnSpace(e: KeyboardEvent) {
           >
             <span class="cmdk-chip-key">{{ t.symbol }}{{ t.key }}</span>
             <span class="cmdk-chip-eq">=</span>
-            <span class="cmdk-chip-val">{{ t.value }}</span>
+            <span class="cmdk-chip-val">{{ displayTokenValue(t) }}</span>
             <NButton text class="cmdk-chip-x" size="tiny" aria-label="移除" @click.stop="onChipRemove(t)">×</NButton>
           </span>
           <input

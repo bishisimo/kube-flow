@@ -69,6 +69,7 @@ function handleKeydown(e: KeyboardEvent) {
     <NInput
       id="ssh-password"
       v-model:value="password"
+      class="kf-password-input"
       :type="inputType"
       placeholder="输入 SSH 密码"
       show-password-on="click"
@@ -117,4 +118,5 @@ function handleKeydown(e: KeyboardEvent) {
 .error-msg {
   margin-top: 0.7rem;
 }
+
 </style>

@@ -25,6 +25,7 @@ export function buildResourceActionTokenSpec(): TokenSpec {
     label: "动作",
     hint: "列出当前资源可执行操作，继续输入可筛选",
     icon: "⚡",
+    domain: "token-key:workbench-action",
     context: "main",
     weight: 12,
     values: (query) => {
@@ -36,6 +37,7 @@ export function buildResourceActionTokenSpec(): TokenSpec {
             title: "请切换到工作台",
             subtitle: "在工作台页面使用资源动作",
             icon: "⚠️",
+            domain: "token-key:workbench-action",
           },
         ];
       }
@@ -56,7 +58,7 @@ export function buildResourceActionExecutor(): Executor {
       if (!act) return null;
       const a = workbenchResourcePaletteAdapter.value;
       if (!a) return null;
-      if (act.value === "__please_select") {
+      if (act.value.raw === "__please_select") {
         return {
           title: "请先选中资源",
           subtitle: "在工作台列表用 ↑↓ 选择一行",
@@ -65,13 +67,13 @@ export function buildResourceActionExecutor(): Executor {
         };
       }
       const title =
-        a.getValueCandidates().find((c) => c.value === act.value)?.title ?? act.value;
+        a.getValueCandidates().find((c) => c.value === act.value.raw)?.title ?? act.value.raw;
       return {
         title: `执行：${title}`,
         subtitle: "资源动作",
         icon: "⚡",
         run: () => {
-          a.runAction(act.value);
+          a.runAction(act.value.raw);
         },
       };
     },

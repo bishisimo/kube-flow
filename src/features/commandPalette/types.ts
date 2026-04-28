@@ -16,6 +16,7 @@ import type { VNodeChild } from "vue";
 /* ---------------- L1：命令项 ---------------- */
 
 export type CommandCategory = "nav" | "action" | "session";
+export type CommandDomain = string;
 
 export interface CommandItem {
   id: string;
@@ -23,12 +24,15 @@ export interface CommandItem {
   subtitle?: string;
   hint?: string;
   section?: string;
+  domain?: CommandDomain;
   keywords?: string[];
   category: CommandCategory;
   icon?: string | (() => VNodeChild);
   availableWhen?: () => boolean;
   run: () => void | Promise<void>;
   weight?: number;
+  order?: number;
+  pinned?: boolean;
   context?: string;
 }
 
@@ -45,10 +49,15 @@ export type CommandProvider = () => CommandItem[];
 
 export type TokenSymbol = "@" | "#" | ">";
 
+export interface TokenValue {
+  raw: string;
+  label?: string;
+}
+
 export interface Token {
   symbol: TokenSymbol;
   key: string;
-  value: string;
+  value: TokenValue;
 }
 
 export interface TokenValueCandidate {
@@ -58,10 +67,13 @@ export interface TokenValueCandidate {
   subtitle?: string;
   hint?: string;
   icon?: string;
+  domain?: CommandDomain;
   /** 模糊匹配评分时的额外关键字。 */
   keywords?: string[];
   /** 在 valuing 面板中覆盖 spec.label 作为分组标题，用于区分展示（如"已打开"/"可打开"）。 */
   section?: string;
+  order?: number;
+  pinned?: boolean;
 }
 
 /** 一类 token 的声明（如"@ns = 命名空间"）。 */
@@ -73,10 +85,13 @@ export interface TokenSpec {
   /** 简短说明，展示在候选副行。 */
   hint?: string;
   icon?: string;
+  domain?: CommandDomain;
   /** 仅在此上下文（tab id）生效；留空表示所有上下文。 */
   context?: string;
   /** 返回 value 候选；query 为用户在 value 位已输入的字符串。 */
   values: (query: string) => TokenValueCandidate[];
+  /** 根据原始值实时解析展示；返回 null 表示值已失效，应从 token 列表移除。 */
+  resolveValue?: (raw: string) => TokenValueCandidate | null;
   /**
    * 是否自由文本（如 #name / #label）。
    * freeText = true 时允许 value 无候选匹配也可 commit（直接用户原文）。

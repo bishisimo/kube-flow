@@ -50,7 +50,7 @@ import { workbenchResourcePaletteAdapter } from "../../stores/workbenchResourceP
 function hasTokenActionFreePhase(tokens: Token[]): boolean {
   return tokens.some(
     (t) =>
-      Boolean(t.value) &&
+      Boolean(t.value.raw) &&
       t.symbol === "@" &&
       (t.key === "env" || t.key === "term" || t.key === "log"),
   );
@@ -131,8 +131,81 @@ export interface ValueCandidate {
   spec: TokenSpec;
   value: TokenValueCandidate;
   matchedIndices: number[];
+  score: number;
 }
 export type Candidate = FreeCandidate | KeyingCandidate | ValueCandidate;
+
+const DOMAIN_ORDER: Record<string, number> = {
+  "token-key:scope": 10,
+  "token-key:workbench-filter": 20,
+  "token-key:workbench-action": 30,
+  "nav:tabs": 100,
+  "action:global": 110,
+  "env:opened": 200,
+  "env:closed": 210,
+  "env:actions": 220,
+  "kind:recent": 300,
+  "kind:favorites": 310,
+  "kind:builtin": 320,
+  "kind:extension": 330,
+  "ns:recent": 340,
+  "ns:all": 350,
+  "ns:list": 360,
+  "shell:host": 400,
+  "shell:pod": 410,
+  "shell:actions": 420,
+  "log:pod": 430,
+  "log:workload": 440,
+  "log:actions": 450,
+};
+
+function tokenRaw(token: Token): string {
+  return token.value.raw;
+}
+
+function tokenLabel(token: Token): string {
+  return token.value.label ?? token.value.raw;
+}
+
+function domainOrderOf(domain: string | undefined): number {
+  if (!domain) return 9999;
+  return DOMAIN_ORDER[domain] ?? 9000;
+}
+
+function candidateDomain(c: Candidate): string | undefined {
+  if (c.kind === "command") return c.item.domain;
+  if (c.kind === "spec") return c.spec.domain;
+  return c.value.domain ?? c.spec.domain;
+}
+
+function candidatePinned(c: Candidate): boolean {
+  if (c.kind === "command") return Boolean(c.item.pinned);
+  if (c.kind === "spec") return false;
+  return Boolean(c.value.pinned);
+}
+
+function candidateOrder(c: Candidate): number {
+  if (c.kind === "command") return c.item.order ?? 0;
+  if (c.kind === "spec") return 0;
+  return c.value.order ?? 0;
+}
+
+function candidateTitle(c: Candidate): string {
+  if (c.kind === "command") return c.item.title;
+  if (c.kind === "spec") return c.spec.label;
+  return c.value.title;
+}
+
+function compareCandidateDomains(a: Candidate, b: Candidate): number {
+  const da = domainOrderOf(candidateDomain(a));
+  const db = domainOrderOf(candidateDomain(b));
+  if (da !== db) return da - db;
+  const pinDelta = Number(candidatePinned(b)) - Number(candidatePinned(a));
+  if (pinDelta !== 0) return pinDelta;
+  const orderDelta = candidateOrder(a) - candidateOrder(b);
+  if (orderDelta !== 0) return orderDelta;
+  return candidateTitle(a).localeCompare(candidateTitle(b));
+}
 
 function categoryBoost(item: CommandItem): number {
   switch (item.category) {
@@ -206,6 +279,23 @@ const specsForSymbol = useSpecsForSymbol(paletteContext, symbolRef);
 const specsForContext = useSpecsForContext(paletteContext);
 const executorsForContext = useExecutorsForContext(paletteContext);
 
+function resolveTokenCandidate(token: Token): TokenValueCandidate | null {
+  const spec = findSpec(paletteContext, token.symbol, token.key);
+  if (!spec) return null;
+  if (spec.resolveValue) return spec.resolveValue(tokenRaw(token));
+  return { value: tokenRaw(token), title: tokenLabel(token), domain: spec.domain };
+}
+
+watch(
+  [tokens, specsForContext],
+  () => {
+    if (!tokens.value.length) return;
+    const next = tokens.value.filter((token) => resolveTokenCandidate(token) != null);
+    if (next.length !== tokens.value.length) tokens.value = next;
+  },
+  { deep: true },
+);
+
 /** 当前 draft 对应的候选列表（已按得分降序）。 */
 const candidates = computed<Candidate[]>(() => {
   const p = parsed.value;
@@ -229,18 +319,24 @@ const candidates = computed<Candidate[]>(() => {
       });
       if (s) scored.push({ sc: s });
     }
-    scored.sort((a, b) => {
-      if (b.sc.score !== a.sc.score) return b.sc.score - a.sc.score;
-      if (tokenPhase && isContextActionCommandId(a.sc.item.id) && isContextActionCommandId(b.sc.item.id)) {
-        return contextActionTieIndex(a.sc.item.id) - contextActionTieIndex(b.sc.item.id);
-      }
-      return a.sc.item.title.localeCompare(b.sc.item.title);
-    });
-    return scored.slice(0, 120).map<FreeCandidate>((x) => ({
+    const out = scored.slice(0, 120).map<FreeCandidate>((x) => ({
       kind: "command",
       item: x.sc.item,
       matchedIndices: x.sc.matchedField === "title" ? x.sc.matchedIndices : [],
     }));
+    const scoreMap = new Map(scored.map((x) => [x.sc.item.id, x.sc.score]));
+    out.sort((a, b) => {
+      const domainDelta = compareCandidateDomains(a, b);
+      if (domainDelta !== 0) return domainDelta;
+      const sa = scoreMap.get(a.item.id) ?? 0;
+      const sb = scoreMap.get(b.item.id) ?? 0;
+      if (sb !== sa) return sb - sa;
+      if (tokenPhase && isContextActionCommandId(a.item.id) && isContextActionCommandId(b.item.id)) {
+        return contextActionTieIndex(a.item.id) - contextActionTieIndex(b.item.id);
+      }
+      return a.item.title.localeCompare(b.item.title);
+    });
+    return out;
   }
 
   if (p.mode === "keying") {
@@ -261,27 +357,43 @@ const candidates = computed<Candidate[]>(() => {
         scored.push({ spec, score: (spec.weight ?? 0) + best.score, indices: best.indices });
       }
     }
-    scored.sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score;
-      return a.spec.key.localeCompare(b.spec.key);
-    });
-    return scored.slice(0, 60).map<KeyingCandidate>((x) => ({
+    const out = scored.slice(0, 60).map<KeyingCandidate>((x) => ({
       kind: "spec",
       spec: x.spec,
       matchedIndices: x.indices,
     }));
+    const scoreMap = new Map(scored.map((x) => [x.spec.key, x.score]));
+    out.sort((a, b) => {
+      const domainDelta = compareCandidateDomains(a, b);
+      if (domainDelta !== 0) return domainDelta;
+      const sa = scoreMap.get(a.spec.key) ?? 0;
+      const sb = scoreMap.get(b.spec.key) ?? 0;
+      if (sb !== sa) return sb - sa;
+      return a.spec.key.localeCompare(b.spec.key);
+    });
+    return out;
   }
 
   if (p.mode === "valuing" && p.symbol !== undefined && p.keyBuffer !== undefined) {
     const spec = findSpec(paletteContext, p.symbol, p.keyBuffer);
     if (!spec) return [];
-    const values = spec.values(p.value ?? "");
-    return values.slice(0, 120).map<ValueCandidate>((v) => ({
+    const query = p.value ?? "";
+    const out = spec.values(query).slice(0, 120).map<ValueCandidate>((v) => ({
       kind: "value",
       spec,
       value: v,
       matchedIndices: [],
+      score: query.trim()
+        ? fuzzyMatch(query, `${v.title} ${v.subtitle ?? ""} ${v.keywords?.join(" ") ?? ""}`).score
+        : 0,
     }));
+    out.sort((a, b) => {
+      const domainDelta = compareCandidateDomains(a, b);
+      if (domainDelta !== 0) return domainDelta;
+      if (b.score !== a.score) return b.score - a.score;
+      return a.value.title.localeCompare(b.value.title);
+    });
+    return out;
   }
 
   return [];
@@ -341,11 +453,11 @@ function commitDraft(forcedValue?: string): boolean {
     if (isResourceActionValueSpec(spec)) {
       return tryRunResourcePaletteActionImmediate(matched.value);
     }
-    const token = commitDraftToToken(p, matched.value);
+    const token = commitDraftToToken(p, matched.value, matched.title);
     if (!token) return false;
     appendToken(token);
   } else {
-    const token = commitDraftToToken(p, raw);
+    const token = commitDraftToToken(p, raw, raw);
     if (!token) return false;
     appendToken(token);
   }
@@ -404,7 +516,11 @@ function acceptCandidate(index?: number): boolean {
     if (isResourceActionValueSpec(c.spec)) {
       return tryRunResourcePaletteActionImmediate(c.value.value);
     }
-    appendToken({ symbol: c.spec.symbol, key: c.spec.key, value: c.value.value });
+    appendToken({
+      symbol: c.spec.symbol,
+      key: c.spec.key,
+      value: { raw: c.value.value, label: c.value.title },
+    });
     draft.value = "";
     activeIndex.value = 0;
     return true;
@@ -424,7 +540,11 @@ function executePlan() {
         draft.value = "";
         return;
       }
-      appendToken({ symbol: first.spec.symbol, key: first.spec.key, value: first.value.value });
+      appendToken({
+        symbol: first.spec.symbol,
+        key: first.spec.key,
+        value: { raw: first.value.value, label: first.value.title },
+      });
     } else {
       commitDraft();
     }
@@ -479,13 +599,17 @@ function popLastToken() {
   tokens.value = next;
   draft.value =
     last.symbol === ">" && last.key === ""
-      ? `>${last.value}`
-      : `${last.symbol}${last.key} ${last.value}`;
+      ? `>${last.value.raw}`
+      : `${last.symbol}${last.key} ${last.value.raw}`;
   activeIndex.value = 0;
 }
 
 function removeToken(symbol: string, key: string) {
   tokens.value = tokens.value.filter((t) => !(t.symbol === symbol && t.key === key));
+}
+
+function displayTokenValue(token: Token): string {
+  return resolveTokenCandidate(token)?.title ?? tokenLabel(token);
 }
 
 /* ---------------- 快捷键安装 ---------------- */
@@ -514,6 +638,7 @@ export function useCommandPalette() {
     candidates,
     executorPlan,
     specsForContext,
+    displayTokenValue,
     open,
     close,
     toggle,

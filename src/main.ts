@@ -5,6 +5,7 @@ import router from "./router";
 import { installDefaultSpellcheckPolicy } from "./bootstrap/spellcheckPolicy";
 import { installEscapeWindowGuard } from "./bootstrap/escapeWindowGuard";
 import "./styles/kf-select-toolbar.css";
+import "./styles/kf-password-input.css";
 
 installEscapeWindowGuard();
 

@@ -68,7 +68,7 @@ async function remove() {
         v-model:value="draft"
         type="password"
         show-password-on="click"
-        class="cred-input"
+        class="cred-input kf-password-input"
         :placeholder="exists ? (modifyPlaceholder ?? '输入新密码') : (savePlaceholder ?? '输入密码')"
         :disabled="disabled || loading"
         @keyup.enter="save"
@@ -134,6 +134,7 @@ async function remove() {
   flex: 1;
   min-width: 12rem;
 }
+
 .cred-msg {
   margin-top: 0.55rem;
 }

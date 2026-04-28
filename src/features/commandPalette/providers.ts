@@ -22,21 +22,21 @@ export interface WorkbenchBridge {
 function useEnvTokenValue(): ComputedRef<string | null> {
   const { tokens } = useCommandPalette();
   return computed(
-    () => tokens.value.find((t) => t.symbol === "@" && t.key === "env")?.value ?? null,
+    () => tokens.value.find((t) => t.symbol === "@" && t.key === "env")?.value.raw ?? null,
   );
 }
 
 function useTermTokenValue(): ComputedRef<string | null> {
   const { tokens } = useCommandPalette();
   return computed(
-    () => tokens.value.find((t) => t.symbol === "@" && t.key === "term")?.value ?? null,
+    () => tokens.value.find((t) => t.symbol === "@" && t.key === "term")?.value.raw ?? null,
   );
 }
 
 function useLogTokenValue(): ComputedRef<string | null> {
   const { tokens } = useCommandPalette();
   return computed(
-    () => tokens.value.find((t) => t.symbol === "@" && t.key === "log")?.value ?? null,
+    () => tokens.value.find((t) => t.symbol === "@" && t.key === "log")?.value.raw ?? null,
   );
 }
 
@@ -72,10 +72,13 @@ export function createEnvSwitchProvider(bridge: WorkbenchBridge) {
           : env.current_context ?? env.contexts[0]?.context_name ?? "本地 kubeconfig",
       hint: currentId.value === env.id ? "当前" : undefined,
       section: "已打开环境",
+      domain: "env:opened",
       category: "nav",
       icon: "🌐",
       keywords: [env.display_name, ...(env.tags ?? []), env.source],
+      pinned: currentId.value === env.id,
       weight: currentId.value === env.id ? 2 : 8,
+      order: currentId.value === env.id ? 0 : 10,
       run: () => {
         setCurrent(env.id);
         bridge.setTab("main");
@@ -104,10 +107,12 @@ export function createEnvOpenProvider(bridge: WorkbenchBridge) {
             ? "SSH 环境"
             : env.current_context ?? env.contexts[0]?.context_name ?? "本地 kubeconfig",
         section: "可打开环境",
+        domain: "env:closed",
         category: "action" as const,
         icon: "＋",
         keywords: [env.display_name, "open", "打开", "connect", "连接", ...(env.tags ?? []), env.source],
         weight: 7,
+        order: 10,
         run: () => {
           openEnv(env.id);
           bridge.setTab("main");
@@ -137,10 +142,12 @@ export function createEnvTokenActionsProvider(bridge: WorkbenchBridge) {
         id: `env:act:workbench:${env.id}`,
         title: isCurrent ? `前往 ${env.display_name} 的工作台` : `切换到 ${env.display_name} 的工作台`,
         section: "环境动作",
+        domain: "env:actions",
         category: "nav",
         icon: "🗂️",
         keywords: ["workbench", "工作台", "switch", "切换"],
         weight: 50,
+        order: 0,
         run: () => {
           setCurrent(env.id);
           bridge.setTab("main");
@@ -151,10 +158,12 @@ export function createEnvTokenActionsProvider(bridge: WorkbenchBridge) {
         id: `env:act:open:${env.id}`,
         title: `打开 ${env.display_name} 的工作台`,
         section: "环境动作",
+        domain: "env:actions",
         category: "action",
         icon: "＋",
         keywords: ["open", "打开", "connect", "连接"],
         weight: 50,
+        order: 0,
         run: () => {
           openEnv(env.id);
           bridge.setTab("main");
@@ -166,10 +175,12 @@ export function createEnvTokenActionsProvider(bridge: WorkbenchBridge) {
       id: `env:act:host-terminal:${env.id}`,
       title: `打开 ${env.display_name} 的主机终端`,
       section: "环境动作",
+      domain: "env:actions",
       category: "action",
       icon: "🖥️",
       keywords: ["terminal", "host", "shell", "终端", "主机"],
       weight: 45,
+      order: 10,
       run: () => {
         useShellStore().pendingOpen.value = {
           kind: "host",
@@ -185,10 +196,12 @@ export function createEnvTokenActionsProvider(bridge: WorkbenchBridge) {
       id: `env:act:orchestrator:${env.id}`,
       title: `前往 ${env.display_name} 的编排中心`,
       section: "环境动作",
+      domain: "env:actions",
       category: "nav",
       icon: "🧩",
       keywords: ["orchestrator", "编排", "manifest"],
       weight: 42,
+      order: 20,
       run: () => {
         if (!isOpen) openEnv(env.id);
         else setCurrent(env.id);
@@ -200,10 +213,12 @@ export function createEnvTokenActionsProvider(bridge: WorkbenchBridge) {
       id: `env:act:logs:${env.id}`,
       title: `前往 ${env.display_name} 的日志中心`,
       section: "环境动作",
+      domain: "env:actions",
       category: "nav",
       icon: "📜",
       keywords: ["log", "logs", "日志"],
       weight: 42,
+      order: 30,
       run: () => {
         if (!isOpen) openEnv(env.id);
         else setCurrent(env.id);
@@ -217,10 +232,12 @@ export function createEnvTokenActionsProvider(bridge: WorkbenchBridge) {
         title: `关闭 ${env.display_name}`,
         subtitle: "从已打开列表移除",
         section: "环境动作",
+        domain: "env:actions",
         category: "action",
         icon: "✕",
         keywords: ["close", "关闭", "断开", "disconnect"],
         weight: 30,
+        order: 40,
         run: () => {
           void closeEnv(env.id);
         },
@@ -247,11 +264,13 @@ export function createKindSwitchProvider(bridge: WorkbenchBridge) {
       subtitle: groupLabel.get(k.id) ?? "",
       hint: k.id,
       section: "资源类型",
+      domain: "kind:builtin",
       category: "nav",
       icon: "📦",
       keywords: [k.id, k.label],
       context: "main",
       weight: 5,
+      order: 20,
       run: () => {
         workbenchPendingNav.value = { envId, kind: k.id, focusResourceList: true };
         bridge.setTab("main");
@@ -273,11 +292,13 @@ export function createNamespaceSwitchProvider(bridge: WorkbenchBridge) {
       title: "所有命名空间",
       subtitle: "清除命名空间筛选",
       section: "命名空间",
+      domain: "ns:all",
       category: "nav",
       icon: "∀",
       keywords: ["all", "全部", "*"],
       context: "main",
       weight: 4,
+      order: 0,
       run: () => {
         workbenchPendingNav.value = { envId, namespace: null, focusResourceList: true };
         bridge.setTab("main");
@@ -288,11 +309,13 @@ export function createNamespaceSwitchProvider(bridge: WorkbenchBridge) {
         id: `ns:${envId}:${name}`,
         title: name,
         section: "命名空间",
+        domain: "ns:list",
         category: "nav",
         icon: "◈",
         keywords: [name],
         context: "main",
         weight: 3,
+        order: 10,
         run: () => {
           workbenchPendingNav.value = { envId, namespace: name, focusResourceList: true };
           bridge.setTab("main");
@@ -322,6 +345,7 @@ export function createShellSessionProvider(bridge: WorkbenchBridge) {
         subtitle: [s.envName, ns].filter(Boolean).join(" · "),
         hint: currentSessionId.value === s.id ? "当前" : s.status,
         section: s.kind === "host" ? "主机终端" : "Pod 终端",
+        domain: s.kind === "host" ? "shell:host" : "shell:pod",
         category: "session",
         icon: s.kind === "host" ? "🖥️" : "⬢",
         keywords: [label, s.envName, s.kind, s.namespace ?? ""],
@@ -335,10 +359,12 @@ export function createShellSessionProvider(bridge: WorkbenchBridge) {
         title: `关闭终端：${label}`,
         subtitle: s.envName,
         section: "终端操作",
+        domain: "shell:actions",
         category: "action",
         icon: "✕",
         keywords: ["close", "关闭", "kill"],
         weight: -4,
+        order: 20,
         run: () => removeSession(s.id),
       });
     }
@@ -361,6 +387,7 @@ export function createLogSessionProvider(bridge: WorkbenchBridge) {
         subtitle: `${s.envName} · ${s.namespace}`,
         hint: currentSessionId.value === s.id ? "当前" : undefined,
         section: "日志会话",
+        domain: s.kind === "pod" ? "log:pod" : "log:workload",
         category: "session",
         icon: "📜",
         keywords: [label, s.envName, s.namespace],
@@ -374,9 +401,11 @@ export function createLogSessionProvider(bridge: WorkbenchBridge) {
         title: `关闭日志：${label}`,
         subtitle: s.envName,
         section: "日志操作",
+        domain: "log:actions",
         category: "action",
         icon: "✕",
         weight: -4,
+        order: 20,
         keywords: ["close", "关闭"],
         run: () => closeSession(s.id),
       });
@@ -400,6 +429,7 @@ export function buildEnvTokenSpec(): TokenSpec {
     label: "环境",
     hint: "选中一个环境，面板候选将切换为该环境的动作",
     icon: "🌐",
+    domain: "token-key:scope",
     weight: 12,
     values: (query) => {
       const opened = new Set(openedIds.value);
@@ -419,7 +449,10 @@ export function buildEnvTokenSpec(): TokenSpec {
           subtitle,
           hint: isCurrent ? "当前" : isOpen ? "已打开" : undefined,
           icon: "🌐",
+          domain: isOpen ? "env:opened" : "env:closed",
           section: isOpen ? "已打开环境" : "可打开环境",
+          pinned: isCurrent,
+          order: isCurrent ? 0 : isOpen ? 10 : 20,
           keywords: [env.display_name, ...(env.tags ?? []), env.source, env.id],
         };
         if (isOpen) openedList.push(v);
@@ -443,6 +476,26 @@ export function buildEnvTokenSpec(): TokenSpec {
         (x) => `${x.title} ${(x.keywords ?? []).join(" ")}`,
       );
       return [...opened2, ...closed2];
+    },
+    resolveValue: (raw) => {
+      const env = environments.value.find((item) => item.id === raw);
+      if (!env) return null;
+      const isOpen = openedIds.value.includes(env.id);
+      const isCurrent = currentId.value === env.id;
+      return {
+        value: env.id,
+        title: env.display_name,
+        subtitle:
+          env.source === "ssh_tunnel"
+            ? "SSH 环境"
+            : env.current_context ?? env.contexts[0]?.context_name ?? "本地 kubeconfig",
+        hint: isCurrent ? "当前" : isOpen ? "已打开" : undefined,
+        icon: "🌐",
+        domain: isOpen ? "env:opened" : "env:closed",
+        section: isOpen ? "已打开环境" : "可打开环境",
+        pinned: isCurrent,
+        order: isCurrent ? 0 : isOpen ? 10 : 20,
+      };
     },
   };
 }
@@ -468,6 +521,7 @@ export function buildTermTokenSpec(): TokenSpec {
     label: "终端会话",
     hint: "选中一个终端会话，面板候选将切换为该会话的动作",
     icon: "🖥️",
+    domain: "token-key:scope",
     weight: 10,
     values: (query) => {
       const hostList: TokenValueCandidate[] = [];
@@ -483,7 +537,10 @@ export function buildTermTokenSpec(): TokenSpec {
           subtitle: [s.envName, ns].filter(Boolean).join(" · "),
           hint: isCurrent ? "当前" : s.status,
           icon: s.kind === "host" ? "🖥️" : "⬢",
+          domain: s.kind === "host" ? "shell:host" : "shell:pod",
           section: s.kind === "host" ? "主机终端" : "Pod 终端",
+          pinned: isCurrent,
+          order: isCurrent ? 0 : 10,
           keywords: [label, s.envName, s.kind, s.namespace ?? "", s.podName ?? "", s.container ?? ""],
         };
         if (s.kind === "host") hostList.push(v);
@@ -501,6 +558,23 @@ export function buildTermTokenSpec(): TokenSpec {
       const host2 = fuzzyFilter(query, hostList, (x) => `${x.title} ${x.subtitle ?? ""}`);
       const pod2 = fuzzyFilter(query, podList, (x) => `${x.title} ${x.subtitle ?? ""}`);
       return [...host2, ...pod2];
+    },
+    resolveValue: (raw) => {
+      const s = sessions.value.find((item) => item.id === raw);
+      if (!s) return null;
+      const label = shellSessionLabel(s);
+      const isCurrent = currentSessionId.value === s.id;
+      return {
+        value: s.id,
+        title: label,
+        subtitle: [s.envName, s.namespace ?? ""].filter(Boolean).join(" · "),
+        hint: isCurrent ? "当前" : s.status,
+        icon: s.kind === "host" ? "🖥️" : "⬢",
+        domain: s.kind === "host" ? "shell:host" : "shell:pod",
+        section: s.kind === "host" ? "主机终端" : "Pod 终端",
+        pinned: isCurrent,
+        order: isCurrent ? 0 : 10,
+      };
     },
   };
 }
@@ -525,10 +599,12 @@ export function createTermTokenActionsProvider(bridge: WorkbenchBridge) {
       title: isCurrent ? `前往终端：${label}` : `切换到终端：${label}`,
       subtitle: s.envName,
       section: "终端动作",
+      domain: "shell:actions",
       category: "nav",
       icon: s.kind === "host" ? "🖥️" : "⬢",
       keywords: ["focus", "switch", "切换", "聚焦", "open", "前往"],
       weight: 50,
+      order: 0,
       run: () => {
         setCurrent(s.id);
         bridge.setTab("shell");
@@ -540,10 +616,12 @@ export function createTermTokenActionsProvider(bridge: WorkbenchBridge) {
       title: `关闭终端：${label}`,
       subtitle: s.envName,
       section: "终端动作",
+      domain: "shell:actions",
       category: "action",
       icon: "✕",
       keywords: ["close", "关闭", "kill"],
       weight: 20,
+      order: 10,
       run: () => removeSession(s.id),
     });
 
@@ -572,6 +650,7 @@ export function buildLogTokenSpec(): TokenSpec {
     label: "日志会话",
     hint: "选中一个日志会话，面板候选将切换为该会话的动作",
     icon: "📜",
+    domain: "token-key:scope",
     weight: 9,
     values: (query) => {
       const podList: TokenValueCandidate[] = [];
@@ -586,7 +665,10 @@ export function buildLogTokenSpec(): TokenSpec {
           subtitle: `${s.envName} · ${s.namespace}`,
           hint: isCurrent ? "当前" : undefined,
           icon: "📜",
+          domain: s.kind === "pod" ? "log:pod" : "log:workload",
           section: s.kind === "pod" ? "Pod 日志" : "Workload 日志",
+          pinned: isCurrent,
+          order: isCurrent ? 0 : 10,
           keywords: [label, s.envName, s.namespace, s.podName ?? "", s.workloadKind ?? "", s.workloadName ?? ""],
         };
         if (s.kind === "pod") podList.push(v);
@@ -604,6 +686,23 @@ export function buildLogTokenSpec(): TokenSpec {
       const pod2 = fuzzyFilter(query, podList, (x) => `${x.title} ${x.subtitle ?? ""}`);
       const wl2 = fuzzyFilter(query, wlList, (x) => `${x.title} ${x.subtitle ?? ""}`);
       return [...pod2, ...wl2];
+    },
+    resolveValue: (raw) => {
+      const s = sessions.value.find((item) => item.id === raw);
+      if (!s) return null;
+      const label = logSessionLabel(s);
+      const isCurrent = currentSessionId.value === s.id;
+      return {
+        value: s.id,
+        title: label,
+        subtitle: `${s.envName} · ${s.namespace}`,
+        hint: isCurrent ? "当前" : undefined,
+        icon: "📜",
+        domain: s.kind === "pod" ? "log:pod" : "log:workload",
+        section: s.kind === "pod" ? "Pod 日志" : "Workload 日志",
+        pinned: isCurrent,
+        order: isCurrent ? 0 : 10,
+      };
     },
   };
 }
@@ -628,10 +727,12 @@ export function createLogTokenActionsProvider(bridge: WorkbenchBridge) {
       title: isCurrent ? `前往日志：${label}` : `切换到日志：${label}`,
       subtitle: `${s.envName} · ${s.namespace}`,
       section: "日志动作",
+      domain: "log:actions",
       category: "nav",
       icon: "📜",
       keywords: ["focus", "switch", "切换", "聚焦", "前往"],
       weight: 50,
+      order: 0,
       run: () => {
         setCurrentSession(s.id);
         bridge.setTab("logCenter");
@@ -643,10 +744,12 @@ export function createLogTokenActionsProvider(bridge: WorkbenchBridge) {
       title: `关闭日志：${label}`,
       subtitle: s.envName,
       section: "日志动作",
+      domain: "log:actions",
       category: "action",
       icon: "✕",
       keywords: ["close", "关闭"],
       weight: 20,
+      order: 10,
       run: () => closeSession(s.id),
     });
 

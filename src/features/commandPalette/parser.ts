@@ -45,18 +45,22 @@ export function writeKeySelection(symbol: TokenSymbol, key: string): string {
 }
 
 /** 将 draft + 选中的 value 候选合并为一个完整 chip 文本，用于 commit。 */
-export function commitDraftToToken(draft: Draft, pickedValue: string | null): Token | null {
+export function commitDraftToToken(
+  draft: Draft,
+  pickedValue: string | null,
+  label?: string,
+): Token | null {
   if (draft.mode !== "valuing" || draft.symbol === undefined || draft.keyBuffer === undefined) return null;
   const value = pickedValue ?? (draft.value ?? "").trim();
   if (!value) return null;
-  return { symbol: draft.symbol, key: draft.keyBuffer, value };
+  return { symbol: draft.symbol, key: draft.keyBuffer, value: { raw: value, label: label ?? value } };
 }
 
 /** 序列化 Token 数组用于调试 / 展示。 */
 export function stringifyTokens(tokens: Token[]): string {
   return tokens
     .map((t) =>
-      t.symbol === ">" && t.key === "" ? `${t.symbol}${t.value}` : `${t.symbol}${t.key}=${t.value}`,
+      t.symbol === ">" && t.key === "" ? `${t.symbol}${t.value.raw}` : `${t.symbol}${t.key}=${t.value.raw}`,
     )
     .join(" ");
 }

@@ -217,10 +217,13 @@ const tabCommandsProvider = computed<CommandItem[]>(() =>
       subtitle: disabledReason ?? undefined,
       hint: currentTab.value === m.id ? "当前" : undefined,
       section: "导航",
+      domain: "nav:tabs",
       category: "nav",
       icon: tabIconMap[m.id],
       keywords: m.keywords,
+      pinned: currentTab.value === m.id,
       weight: disabledReason ? -8 : currentTab.value === m.id ? 0 : 6,
+      order: currentTab.value === m.id ? 0 : 10,
       availableWhen: () => !disabledReason,
       run: () => setTab(m.id),
     } satisfies CommandItem;
@@ -243,11 +246,13 @@ const globalActionsProvider = computed<CommandItem[]>(() => {
     id: "action:open-terminal-current-env",
     title: curEnv ? `打开 ${curEnv.display_name} 的主机终端` : "打开当前环境的主机终端",
     section: "快速动作",
+    domain: "action:global",
     category: "action",
     icon: "🖥️",
     keywords: ["terminal", "host", "shell", "终端"],
     availableWhen: () => canAccessShell.value && Boolean(curEnv),
     weight: 4,
+    order: 0,
     run: () => {
       if (!curEnv) return;
       useShellStore().pendingOpen.value = {
@@ -263,9 +268,11 @@ const globalActionsProvider = computed<CommandItem[]>(() => {
     id: "action:reload-envs",
     title: "刷新环境列表",
     section: "快速动作",
+    domain: "action:global",
     category: "action",
     icon: "↻",
     keywords: ["reload", "refresh", "刷新"],
+    order: 10,
     run: () => {
       void loadEnvironments();
     },
