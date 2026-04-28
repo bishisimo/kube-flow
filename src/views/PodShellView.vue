@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { NAlert, NButton, NEmpty, NScrollbar, NSelect, NSpace, NTag } from "naive-ui";
+import { NAlert, NButton, NEmpty, NScrollbar, NSelect, NSpace, NTag, NTooltip } from "naive-ui";
 import { kfSpace } from "../kf";
 
 defineOptions({ name: "PodShellView" });
@@ -20,6 +20,7 @@ import { isConnectionError, useConnectionStore } from "../stores/connection";
 import { useStrongholdAuthStore } from "../stores/strongholdAuth";
 import { useAppSettingsStore } from "../stores/appSettings";
 import PodShellTerminal from "../components/PodShellTerminal.vue";
+import { buildCompactRailItems } from "../utils/compactRail";
 
 const {
   sessions,
@@ -138,6 +139,19 @@ const visibleTerminalSessions = computed(() => {
   });
   return sorted.slice(0, limit);
 });
+const compactSessionItems = computed(() =>
+  buildCompactRailItems(
+    sessions.value.map((session) => ({
+      id: session.id,
+      label:
+        session.kind === "host"
+          ? session.envName
+          : session.podName || session.workloadName || "Pod",
+      context: session.kind === "host" ? session.hostLabel || session.envName : session.container || session.envName,
+      fallback: session.kind === "host" ? "Host" : "Pod",
+    }))
+  )
+);
 
 function sessionBadge(session: (typeof sessions.value)[number]): string {
   return session.kind === "host" ? "主机" : "Pod";
@@ -146,6 +160,14 @@ function sessionBadge(session: (typeof sessions.value)[number]): string {
 function sessionLabel(session: (typeof sessions.value)[number]): string {
   if (session.kind === "host") return session.hostLabel || `${session.envName} 主机`;
   return `${session.podName || "-"}${session.container ? ` (${session.container})` : ""}`;
+}
+
+function sessionStatusLabel(session: (typeof sessions.value)[number]): string {
+  if (session.status === "reconnecting") return "重连中";
+  if (session.status === "connecting") return "连接中";
+  if (session.status === "connected") return "已连接";
+  if (session.status === "error") return "错误";
+  return "已断开";
 }
 
 async function handleStrongholdLocked(message: string, onConfirmed: () => void): Promise<boolean> {
@@ -772,6 +794,34 @@ onUnmounted(() => {
         <span>{{ sessionRailCollapsed ? "»" : "«" }}</span>
         <span v-if="!sessionRailCollapsed">会话</span>
       </NButton>
+      <div v-if="sessionRailCollapsed" class="session-rail-compact">
+        <NScrollbar class="session-scroll" trigger="hover">
+          <div v-if="sessions.length" class="compact-session-list">
+            <NTooltip v-for="session in sessions" :key="session.id" placement="right" :show-arrow="false">
+              <template #trigger>
+                <button
+                  type="button"
+                  class="compact-session-item"
+                  :class="[
+                    currentSessionId === session.id ? 'active' : '',
+                    session.kind === 'host' ? 'host' : 'pod',
+                  ]"
+                  @click="setCurrent(session.id)"
+                >
+                  <span class="compact-session-label">
+                    {{ compactSessionItems[session.id]?.shortLabel ?? sessionLabel(session) }}
+                  </span>
+                </button>
+              </template>
+              <div class="compact-session-tip">
+                <div>{{ session.envName }}</div>
+                <div>{{ sessionLabel(session) }}</div>
+              </div>
+            </NTooltip>
+          </div>
+          <div v-else class="compact-session-empty">暂无</div>
+        </NScrollbar>
+      </div>
       <div v-if="!sessionRailCollapsed" class="session-rail-body">
         <div class="quick-open-card">
           <div class="quick-open-title">打开指定环境终端</div>
@@ -813,19 +863,7 @@ onUnmounted(() => {
                   >{{ sessionBadge(session) }}</NTag>
                   <span class="session-item-main">
                     <span class="session-item-name" :title="sessionLabel(session)">{{ sessionLabel(session) }}</span>
-                    <span class="session-item-meta">
-                      {{
-                        session.status === "reconnecting"
-                          ? "重连中"
-                          : session.status === "connecting"
-                            ? "连接中"
-                            : session.status === "connected"
-                              ? "已连接"
-                              : session.status === "error"
-                                ? "错误"
-                                : "已断开"
-                      }}
-                    </span>
+                    <span class="session-item-meta">{{ sessionStatusLabel(session) }}</span>
                   </span>
                 </NButton>
                 <NButton text class="session-item-close" @click.stop="closeSession(session.id)">×</NButton>
@@ -1019,10 +1057,76 @@ onUnmounted(() => {
   overflow: hidden;
   padding: 1rem;
 }
+.session-rail-compact {
+  flex: 1;
+  min-height: 0;
+}
 .session-scroll {
   flex: 1;
   min-height: 0;
   margin-top: 1rem;
+}
+.compact-session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.75rem 0.35rem;
+}
+.compact-session-item {
+  position: relative;
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--kf-border);
+  border-radius: 10px;
+  background: var(--kf-surface-strong);
+  color: var(--kf-text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.35rem 0.2rem;
+  cursor: pointer;
+}
+.compact-session-item.host {
+  color: var(--kf-warning);
+}
+.compact-session-item.pod {
+  color: var(--kf-success);
+}
+.compact-session-item.active {
+  border-color: color-mix(in srgb, var(--kf-primary) 40%, var(--kf-border));
+  background: linear-gradient(135deg, var(--kf-surface-strong) 0%, var(--kf-primary-soft) 100%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--kf-primary) 10%, transparent);
+}
+.compact-session-item.active::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--kf-primary);
+}
+.compact-session-label {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+.compact-session-tip {
+  display: flex;
+  flex-direction: column;
+  gap: 0.18rem;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+.compact-session-empty {
+  padding: 0.75rem 0.25rem;
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--kf-text-secondary);
 }
 .quick-open-select-naive {
   flex: 1;

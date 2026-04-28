@@ -1,4 +1,4 @@
-import { onMounted, onUnmounted, watch, type ComputedRef, type Ref } from "vue";
+import { onUnmounted, watch, type ComputedRef, type Ref } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import {
   kubeStartWatch,
@@ -13,6 +13,16 @@ import { WORKBENCH_ALL_NAMESPACES_SENTINEL } from "../constants";
 import { extractErrorMessage } from "../../../utils/errorMessage";
 import { handleAuthRetry, type StrongholdAuthLike, type SshAuthLike } from "../utils/handleAuthRetry";
 import type { WorkbenchWatchView } from "./useWorkbenchWatch";
+
+type ResourceWatchUpdatePayload = {
+  envId?: string;
+  watchToken?: string;
+  kind?: string;
+  items?: unknown[];
+  error?: string;
+};
+
+const WATCH_FIRST_PACKET_FALLBACK_MS = 8000;
 
 export type UseWorkbenchResourceWatchOptions = {
   currentId: Ref<string | null>;
@@ -68,11 +78,87 @@ export type UseWorkbenchResourceWatchOptions = {
  */
 export function useWorkbenchResourceWatch(o: UseWorkbenchResourceWatchOptions) {
   let unlistenWatch: (() => void) | null = null;
+  let watchListenerReady: Promise<void> | null = null;
+  let firstPacketFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+  let disposed = false;
 
-  function applyWatch() {
+  function clearFirstPacketFallback() {
+    if (firstPacketFallbackTimer) {
+      clearTimeout(firstPacketFallbackTimer);
+      firstPacketFallbackTimer = null;
+    }
+  }
+
+  function handleWatchUpdate(payload: ResourceWatchUpdatePayload | null | undefined) {
+    if (!payload) return;
+    if (o.selectedCustomTarget.value) return;
+    const envId = payload.envId;
+    if (!envId) return;
+    if (payload.watchToken !== o.activeWatchTokens.value[envId]) return;
+    clearFirstPacketFallback();
+    if (payload?.error) {
+      if (envId === o.currentId.value) {
+        o.listError.value = payload.error;
+        o.listLoading.value = false;
+        o.envSwitching.value = false;
+        if (isConnectionError(payload.error)) o.setDisconnected(envId, payload.error);
+      }
+      return;
+    }
+    const kind = payload?.kind;
+    const items = payload?.items ?? [];
+    if (!kind) return;
+    const watchView = o.activeWatchViews.value[envId];
+    if (!watchView) return;
+    const resourceKind = watchView.kind;
+    const namespace = watchView.namespace;
+    const labelSel = watchView.labelSelector;
+    if (resourceKind === "namespaces") {
+      o.namespaceCache.set(envId, [...(items as NamespaceItem[])]);
+    }
+    o.cacheCurrentView(envId, resourceKind, namespace, labelSel, items);
+    if (
+      envId !== o.currentId.value ||
+      resourceKind !== o.selectedKind.value ||
+      namespace !==
+        (o.selectedKind.value === "namespaces" ||
+        getWorkbenchResourceDescriptor(o.selectedKind.value).capabilities.clusterScoped
+          ? null
+          : (o.selectedNamespace.value ?? WORKBENCH_ALL_NAMESPACES_SENTINEL)) ||
+      labelSel !== (o.labelSelector.value.trim() || null)
+    )
+      return;
+    o.listError.value = null;
+    o.listLoading.value = false;
+    o.envSwitching.value = false;
+    o.clearResourceCollections();
+    const cachedNamespaces = o.namespaceCache.get(envId);
+    if (cachedNamespaces) {
+      o.namespaceOptions.value = [...cachedNamespaces];
+    }
+    o.setResourceItems(resourceKind, items);
+  }
+
+  function ensureWatchListener(): Promise<void> {
+    if (!watchListenerReady) {
+      watchListenerReady = listen<ResourceWatchUpdatePayload>("resource-watch-update", (ev) => {
+        handleWatchUpdate(ev.payload);
+      }).then((unlisten) => {
+        if (disposed) {
+          unlisten();
+          return;
+        }
+        unlistenWatch = unlisten;
+      });
+    }
+    return watchListenerReady;
+  }
+
+  async function applyWatch() {
     const id = o.currentId.value;
     if (!id) return;
     if (o.selectedCustomTarget.value) {
+      clearFirstPacketFallback();
       kubeStopWatch(id).catch((e) => console.warn("[watch] stop failed:", e));
       void o.loadList();
       return;
@@ -93,10 +179,33 @@ export function useWorkbenchResourceWatch(o: UseWorkbenchResourceWatchOptions) {
     o.listError.value = null;
     o.envSwitching.value = false;
     if (!o.namespaceCache.has(id)) void o.refreshNamespaceOptions();
+    try {
+      await ensureWatchListener();
+    } catch (e) {
+      if (o.isStaleView(id, sessionId)) return;
+      o.listError.value = extractErrorMessage(e);
+      o.listLoading.value = false;
+      o.envSwitching.value = false;
+      return;
+    }
+    if (o.isStaleView(id, sessionId) || o.activeWatchTokens.value[id] !== watchToken) return;
     kubeStopWatch(id).catch((e) => console.warn("[watch] stop failed:", e));
     if (o.watchEnabled.value && descriptor.capabilities.supportsWatch) {
+      clearFirstPacketFallback();
+      if (!hasCache) {
+        firstPacketFallbackTimer = setTimeout(() => {
+          if (
+            o.currentId.value === id &&
+            o.activeWatchTokens.value[id] === watchToken &&
+            o.listLoading.value
+          ) {
+            void o.loadList();
+          }
+        }, WATCH_FIRST_PACKET_FALLBACK_MS);
+      }
       kubeStartWatch(id, o.selectedKind.value, ns, labelSel, watchToken).catch(async (e) => {
         if (o.isStaleView(id, sessionId)) return;
+        clearFirstPacketFallback();
         const msg = extractErrorMessage(e);
         const authHandled = await handleAuthRetry({
           message: msg,
@@ -113,68 +222,16 @@ export function useWorkbenchResourceWatch(o: UseWorkbenchResourceWatchOptions) {
         }
         o.clearWatchToken(id);
         o.listError.value = msg;
+        o.listLoading.value = false;
+        o.envSwitching.value = false;
         if (isConnectionError(msg)) o.setDisconnected(id, msg);
       });
     }
   }
 
-  onMounted(async () => {
-    unlistenWatch = await listen<{
-      envId?: string;
-      watchToken?: string;
-      kind?: string;
-      items?: unknown[];
-      error?: string;
-    }>("resource-watch-update", (ev) => {
-      const payload = ev.payload;
-      if (!payload) return;
-      if (o.selectedCustomTarget.value) return;
-      const envId = payload.envId;
-      if (!envId) return;
-      if (payload.watchToken !== o.activeWatchTokens.value[envId]) return;
-      if (payload?.error) {
-        if (envId === o.currentId.value) {
-          o.listError.value = payload.error;
-          if (isConnectionError(payload.error)) o.setDisconnected(envId, payload.error);
-        }
-        return;
-      }
-      const kind = payload?.kind;
-      const items = payload?.items ?? [];
-      if (!kind) return;
-      const watchView = o.activeWatchViews.value[envId];
-      if (!watchView) return;
-      const resourceKind = watchView.kind;
-      const namespace = watchView.namespace;
-      const labelSel = watchView.labelSelector;
-      if (resourceKind === "namespaces") {
-        o.namespaceCache.set(envId, [...(items as NamespaceItem[])]);
-      }
-      o.cacheCurrentView(envId, resourceKind, namespace, labelSel, items);
-      if (
-        envId !== o.currentId.value ||
-        resourceKind !== o.selectedKind.value ||
-        namespace !==
-          (o.selectedKind.value === "namespaces" ||
-          getWorkbenchResourceDescriptor(o.selectedKind.value).capabilities.clusterScoped
-            ? null
-            : (o.selectedNamespace.value ?? WORKBENCH_ALL_NAMESPACES_SENTINEL)) ||
-        labelSel !== (o.labelSelector.value.trim() || null)
-      )
-        return;
-      o.listError.value = null;
-      o.listLoading.value = false;
-      o.envSwitching.value = false;
-      o.clearResourceCollections();
-      const cachedNamespaces = o.namespaceCache.get(envId);
-      if (cachedNamespaces) {
-        o.namespaceOptions.value = [...cachedNamespaces];
-      }
-      o.setResourceItems(resourceKind, items);
-    });
-  });
-
   onUnmounted(() => {
+    disposed = true;
+    clearFirstPacketFallback();
     unlistenWatch?.();
     unlistenWatch = null;
     for (const env of o.openedEnvs.value) {

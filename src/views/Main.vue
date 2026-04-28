@@ -1673,9 +1673,8 @@ const {
       v-if="openedEnvs.length"
       bordered
       :width="236"
-      :collapsed-width="44"
-      show-trigger="arrow-circle"
-      collapse-mode="transform"
+      :collapsed-width="52"
+      collapse-mode="width"
       :collapsed="envBarCollapsed"
       content-style="height: 100%; overflow: hidden;"
       @update:collapsed="setEnvBarCollapsed"
@@ -1684,6 +1683,7 @@ const {
         :collapsed="envBarCollapsed"
         :on-reconnect="handleReconnect"
         :on-open-terminal="openEnvironmentTerminal"
+        @toggle-collapsed="setEnvBarCollapsed(!envBarCollapsed)"
       />
     </NLayoutSider>
     <div v-if="openedEnvs.length" class="content">

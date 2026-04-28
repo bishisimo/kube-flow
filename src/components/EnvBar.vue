@@ -7,12 +7,16 @@ import { kubeGetTunnelLocalPort } from "../api/kube";
 import { envListSshTunnels } from "../api/env";
 import type { SshTunnel } from "../api/env";
 import { effectiveContext } from "../api/env";
+import { buildCompactRailItems } from "../utils/compactRail";
 
 const props = defineProps<{
   /** 透传自 NLayoutSider，用于内部文案随折叠态隐藏；折叠动画由 sider 驱动 */
   collapsed: boolean;
   onReconnect?: (envId: string) => void;
   onOpenTerminal?: (envId: string) => void;
+}>();
+const emit = defineEmits<{
+  (e: "toggle-collapsed"): void;
 }>();
 
 const {
@@ -24,6 +28,16 @@ const {
 const { getState, getError } = useConnectionStore();
 
 const hasOpened = computed(() => openedEnvs.value.length > 0);
+const compactEnvItems = computed(() =>
+  buildCompactRailItems(
+    openedEnvs.value.map((env) => ({
+      id: env.id,
+      label: env.display_name,
+      context: effectiveContext(env as never) ?? "",
+      fallback: "Env",
+    }))
+  )
+);
 
 /** SSH 隧道 id -> 隧道配置（含 ssh_host） */
 const tunnelsById = ref<Record<string, SshTunnel>>({});
@@ -137,9 +151,43 @@ onUnmounted(() => {
 <template>
   <aside class="env-bar">
     <div class="header">
-      <span class="title" :class="{ 'title-hidden': collapsed }">已打开环境</span>
+      <NButton quaternary class="rail-toggle" :class="{ collapsed }" @click="emit('toggle-collapsed')">
+        <span>{{ collapsed ? "»" : "«" }}</span>
+        <span v-if="!collapsed">已打开环境</span>
+      </NButton>
     </div>
-    <div class="env-content" :class="{ 'env-content-hidden': collapsed }">
+    <div v-if="collapsed" class="env-compact-content">
+      <NScrollbar class="list-scroll" trigger="none">
+        <div v-if="hasOpened" class="compact-list">
+          <NTooltip v-for="e in openedEnvs" :key="e.id" placement="right" :show-arrow="false">
+            <template #trigger>
+              <button
+                type="button"
+                class="compact-item"
+                :class="{ active: currentId === e.id }"
+                @click="setCurrent(e.id)"
+              >
+                <span class="compact-item-label">{{ compactEnvItems[e.id]?.shortLabel ?? e.display_name }}</span>
+                <span class="compact-item-dot">
+                  <NBadge
+                    dot
+                    :type="statusBadgeType(e.id)"
+                    :processing="statusIsConnecting(e.id)"
+                    :aria-label="statusLabel(e.id)"
+                  />
+                </span>
+              </button>
+            </template>
+            <div class="env-status-tip">
+              <div>{{ e.display_name }}</div>
+              <div v-for="line in hoverLines(e)" :key="line">{{ line }}</div>
+            </div>
+          </NTooltip>
+        </div>
+        <p v-else class="empty empty-compact">暂无</p>
+      </NScrollbar>
+    </div>
+    <div v-else class="env-content" :class="{ 'env-content-hidden': collapsed }">
       <NScrollbar class="list-scroll" trigger="none" x-scrollable>
         <ul v-if="hasOpened" class="list">
           <li
@@ -232,31 +280,44 @@ onUnmounted(() => {
   overflow: hidden;
 }
 .header {
-  padding: 0.58rem 0.75rem;
+  padding: 0;
   display: flex;
   align-items: center;
-  gap: 0.5rem;
   user-select: none;
   border-bottom: 1px solid var(--kf-border, #e0e0e0);
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(248, 250, 252, 0.88));
   min-height: 42px;
   flex-shrink: 0;
 }
-.title {
-  font-size: 0.875rem;
-  font-weight: 650;
+.rail-toggle {
+  width: 100%;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.65rem;
+  padding: 0.58rem 0.75rem;
   color: var(--kf-text-primary, #0f172a);
-  white-space: nowrap;
-  transition: opacity 0.14s ease, transform 0.14s ease;
+  font-size: 0.875rem;
+  font-weight: 700;
 }
-.title-hidden {
-  opacity: 0;
-  transform: translateX(-4px);
+.rail-toggle:deep(.n-button__content) {
+  width: 100%;
+  justify-content: center;
+  gap: 0.65rem;
+}
+.rail-toggle.collapsed {
+  justify-content: center;
+  padding: 0;
 }
 .env-content {
   flex: 1;
   min-height: 0;
   transition: opacity 0.14s ease, transform 0.14s ease;
+}
+.env-compact-content {
+  flex: 1;
+  min-height: 0;
 }
 .env-content-hidden {
   opacity: 0;
@@ -274,6 +335,63 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 0.52rem;
+}
+.compact-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.62rem 0.38rem;
+}
+.compact-item {
+  position: relative;
+  width: 100%;
+  min-height: 38px;
+  padding: 0.42rem 0.32rem 0.32rem;
+  border: 1px solid var(--kf-border, #d9e2ec);
+  border-radius: 10px;
+  background: #ffffff;
+  color: var(--kf-text-primary, #0f172a);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.compact-item:hover {
+  border-color: var(--kf-border-strong, #cbd5e1);
+  background: var(--kf-bg-soft, #f8fafc);
+}
+.compact-item.active {
+  border-color: var(--kf-primary, #2563eb);
+  background:
+    linear-gradient(135deg, rgba(37, 99, 235, 0.14), rgba(14, 165, 233, 0.06)),
+    #eff6ff;
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.08);
+}
+.compact-item.active::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--kf-primary, #2563eb);
+}
+.compact-item-label {
+  max-width: calc(100% - 4px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.72rem;
+  line-height: 1.05;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+.compact-item-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: inline-flex;
 }
 .item-shell {
   list-style: none;
@@ -435,5 +553,10 @@ onUnmounted(() => {
   margin: 0;
   font-size: 0.875rem;
   color: #666;
+}
+.empty-compact {
+  padding: 0.75rem 0.25rem;
+  text-align: center;
+  font-size: 0.75rem;
 }
 </style>

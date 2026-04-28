@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { NButton, NEmpty, NPopover, NScrollbar, NSpace, NTabs, NTabPane, NTag } from "naive-ui";
+import { NButton, NEmpty, NPopover, NScrollbar, NSpace, NTabs, NTabPane, NTag, NTooltip } from "naive-ui";
 import { kfSpace } from "../kf";
 
 defineOptions({ name: "LogCenterView" });
@@ -10,6 +10,7 @@ import WorkloadLogPanel from "../components/WorkloadLogPanel.vue";
 import { useLogCenterStore } from "../stores/logCenter";
 import { useAppSettingsStore } from "../stores/appSettings";
 import { setLogStreamActiveLimit, touchLogStreamSession } from "../stores/logStreamManager";
+import { buildCompactRailItems } from "../utils/compactRail";
 
 const {
   sessions,
@@ -75,6 +76,16 @@ const compareSession = computed(() => {
 });
 
 const compareEnabled = computed(() => Boolean(currentSession.value && compareSession.value));
+const compactSessionItems = computed(() =>
+  buildCompactRailItems(
+    sessions.value.map((session) => ({
+      id: session.id,
+      label: sessionLabel(session),
+      context: session.envName,
+      fallback: session.kind === "pod" ? "Pod" : "Work",
+    }))
+  )
+);
 
 function sessionBadge(session: (typeof sessions.value)[number]) {
   return session.kind === "pod" ? "Pod" : "Workload";
@@ -195,6 +206,35 @@ onBeforeUnmount(() => {
         <span>{{ sessionRailCollapsed ? "»" : "«" }}</span>
         <span v-if="!sessionRailCollapsed">日志会话</span>
       </NButton>
+      <div v-if="sessionRailCollapsed" class="session-rail-compact">
+        <NScrollbar class="session-scroll" trigger="hover">
+          <div v-if="sessions.length" class="compact-session-list">
+            <NTooltip v-for="session in sessions" :key="session.id" placement="right" :show-arrow="false">
+              <template #trigger>
+                <button
+                  type="button"
+                  class="compact-session-item"
+                  :class="[
+                    currentSessionId === session.id ? 'active' : '',
+                    session.kind === 'pod' ? 'pod' : 'workload',
+                  ]"
+                  @click="setCurrentSession(session.id)"
+                >
+                  <span class="compact-session-label">
+                    {{ compactSessionItems[session.id]?.shortLabel ?? sessionLabel(session) }}
+                  </span>
+                </button>
+              </template>
+              <div class="compact-session-tip">
+                <div>{{ session.envName }}</div>
+                <div>{{ sessionLabel(session) }}</div>
+                <div>{{ session.namespace }}</div>
+              </div>
+            </NTooltip>
+          </div>
+          <div v-else class="compact-session-empty">暂无</div>
+        </NScrollbar>
+      </div>
       <div v-if="!sessionRailCollapsed" class="session-rail-body">
         <NTabs v-model:value="activePane" type="segment" size="small" animated class="log-mode-tabs">
           <NTabPane name="resource" tab="资源日志">
@@ -422,6 +462,10 @@ onBeforeUnmount(() => {
   padding: 0.75rem 0.9rem 1rem;
   overflow: hidden;
 }
+.session-rail-compact {
+  flex: 1;
+  min-height: 0;
+}
 .log-mode-tabs {
   flex: 1;
   min-height: 0;
@@ -445,6 +489,68 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   max-height: calc(100vh - 12rem);
+}
+.compact-session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.75rem 0.35rem;
+}
+.compact-session-item {
+  position: relative;
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--kf-border);
+  border-radius: 10px;
+  background: var(--kf-surface-strong);
+  color: var(--kf-text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.35rem 0.2rem;
+  cursor: pointer;
+}
+.compact-session-item.pod {
+  color: var(--kf-success);
+}
+.compact-session-item.workload {
+  color: var(--kf-warning);
+}
+.compact-session-item.active {
+  border-color: color-mix(in srgb, var(--kf-primary) 40%, var(--kf-border));
+  background: linear-gradient(135deg, var(--kf-surface-strong) 0%, var(--kf-primary-soft) 100%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--kf-primary) 10%, transparent);
+}
+.compact-session-item.active::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--kf-primary);
+}
+.compact-session-label {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+.compact-session-tip {
+  display: flex;
+  flex-direction: column;
+  gap: 0.18rem;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+.compact-session-empty {
+  padding: 0.75rem 0.25rem;
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--kf-text-secondary);
 }
 .session-empty-text {
   margin: 0.5rem 0 0;
