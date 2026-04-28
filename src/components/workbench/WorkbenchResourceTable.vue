@@ -386,8 +386,17 @@ function onUpdateCheckedRowKeys(keys: DataTableRowKey[]) {
   >
   <section class="wb-list-card">
     <header class="wb-list-header">
-      <span class="wb-list-title">资源列表</span>
-      <span class="wb-list-badge" :title="`${tableRows.length} 条`">{{ tableRows.length }}</span>
+      <div class="wb-list-heading">
+        <span class="wb-list-kicker">RESOURCE MATRIX</span>
+        <span class="wb-list-title">资源列表</span>
+      </div>
+      <div class="wb-list-meta">
+        <span class="wb-live-chip">
+          <span class="wb-live-dot" aria-hidden="true" />
+          实时视图
+        </span>
+        <span class="wb-list-badge" :title="`${tableRows.length} 条`">{{ tableRows.length }}</span>
+      </div>
     </header>
     <div class="wb-table-scroll">
       <NDataTable
@@ -457,40 +466,57 @@ function onUpdateCheckedRowKeys(keys: DataTableRowKey[]) {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: 0.65rem 1rem 1rem;
-  background: var(--wb-canvas);
+  padding: 0.7rem 1rem 1rem;
+  background:
+    radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--kf-primary) 10%, transparent), transparent 34%),
+    linear-gradient(180deg, color-mix(in srgb, var(--wb-canvas) 88%, #f8fbff), var(--wb-canvas));
 }
 .wb-list-header {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-  padding: 0.55rem 0.75rem 0.35rem;
+  justify-content: space-between;
+  gap: 0.85rem;
+  padding: 0.62rem 0.8rem 0.5rem;
   border-bottom: none;
   min-width: 0;
   position: relative;
 }
 .wb-list-header::after {
   content: "";
-  flex-basis: 100%;
-  order: 99;
+  position: absolute;
+  left: 0.8rem;
+  right: 0.8rem;
+  bottom: -0.12rem;
   height: 2px;
-  margin: 0.4rem 0.75rem 0;
   border-radius: 999px;
   background: linear-gradient(
     90deg,
-    color-mix(in srgb, var(--wb-accent-warm) 78%, transparent) 0%,
-    color-mix(in srgb, var(--kf-warning) 72%, transparent) 46%,
-    color-mix(in srgb, var(--wb-accent-forest) 68%, transparent) 100%
+    color-mix(in srgb, var(--kf-primary) 88%, transparent) 0%,
+    color-mix(in srgb, var(--wb-accent-forest) 72%, transparent) 48%,
+    transparent 100%
   );
-  opacity: 0.95;
+  opacity: 0.82;
+  box-shadow: 0 0 22px color-mix(in srgb, var(--kf-primary) 20%, transparent);
+}
+.wb-list-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 0.12rem;
+  min-width: 0;
+}
+.wb-list-kicker {
+  font-size: 0.62rem;
+  line-height: 1;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  color: color-mix(in srgb, var(--kf-primary) 74%, var(--wb-text-secondary));
 }
 .wb-list-title {
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;
-  font-size: 1rem;
-  font-weight: 650;
+  font-size: 1.04rem;
+  font-weight: 750;
   letter-spacing: -0.02em;
   color: var(--wb-text-primary);
 }
@@ -500,26 +526,56 @@ function onUpdateCheckedRowKeys(keys: DataTableRowKey[]) {
   height: 1.05em;
   border-radius: 4px;
   flex-shrink: 0;
-  background: linear-gradient(180deg, var(--wb-accent-forest) 0%, var(--wb-accent-spring) 100%);
-  box-shadow: 0 0 16px color-mix(in srgb, var(--wb-accent-spring) 22%, transparent);
+  background: linear-gradient(180deg, var(--kf-primary) 0%, var(--wb-accent-spring) 100%);
+  box-shadow: 0 0 16px color-mix(in srgb, var(--kf-primary) 28%, transparent);
+}
+.wb-list-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+.wb-live-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.38rem;
+  min-height: 1.7rem;
+  padding: 0 0.62rem;
+  border: 1px solid color-mix(in srgb, var(--kf-primary) 20%, var(--wb-line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--kf-primary) 7%, var(--wb-panel-elevated));
+  color: color-mix(in srgb, var(--kf-primary) 72%, var(--wb-text-primary));
+  font-size: 0.72rem;
+  font-weight: 750;
+}
+.wb-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--wb-accent-spring);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--wb-accent-spring) 14%, transparent),
+    0 0 16px color-mix(in srgb, var(--wb-accent-spring) 55%, transparent);
+  animation: wb-live-pulse 1.8s ease-in-out infinite;
 }
 .wb-list-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   min-width: 1.65rem;
-  padding: 0.08rem 0.4rem;
+  min-height: 1.7rem;
+  padding: 0 0.5rem;
   border-radius: 999px;
   font-size: 0.72rem;
   font-weight: 700;
-  color: var(--wb-chip-text);
+  color: color-mix(in srgb, var(--kf-primary) 68%, var(--wb-chip-text));
   background: linear-gradient(
     135deg,
-    var(--wb-warm-soft),
-    color-mix(in srgb, var(--kf-warning) 8%, var(--kf-mix-surface))
+    color-mix(in srgb, var(--kf-primary) 10%, var(--kf-mix-surface)),
+    color-mix(in srgb, var(--wb-accent-forest) 7%, var(--kf-mix-surface))
   );
-  border: 1px solid color-mix(in srgb, var(--wb-accent-warm) 28%, var(--wb-line));
-  box-shadow: 0 1px 0 color-mix(in srgb, var(--kf-mix-surface) 75%, transparent);
+  border: 1px solid color-mix(in srgb, var(--kf-primary) 18%, var(--wb-line));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #ffffff 72%, transparent);
 }
 .wb-table-scroll {
   flex: 1;
@@ -528,54 +584,91 @@ function onUpdateCheckedRowKeys(keys: DataTableRowKey[]) {
   flex-direction: column;
 }
 .wb-data-table {
-  --n-border-radius: 12px;
+  --n-border-radius: 16px;
   width: 100%;
   flex: 1;
   min-height: 0;
 }
 .wb-data-table:deep(.n-data-table-wrapper) {
-  border-radius: 0 0 12px 12px;
-  background: var(--wb-panel-elevated);
-  border: 1px solid var(--wb-table-border);
+  position: relative;
+  overflow: hidden;
+  border-radius: 16px;
+  background:
+    linear-gradient(var(--wb-panel-elevated), var(--wb-panel-elevated)) padding-box,
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--kf-primary) 34%, transparent),
+      color-mix(in srgb, var(--wb-accent-forest) 18%, transparent),
+      color-mix(in srgb, var(--wb-line) 80%, transparent)
+    ) border-box;
+  border: 1px solid transparent;
   box-shadow:
-    0 1px 3px rgba(28, 25, 23, 0.07),
-    0 18px 38px color-mix(in srgb, var(--wb-accent-forest) 7%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--wb-accent-warm) 7%, transparent);
+    0 1px 3px rgba(15, 23, 42, 0.06),
+    0 22px 46px color-mix(in srgb, var(--kf-primary) 8%, transparent),
+    0 0 0 1px color-mix(in srgb, #ffffff 56%, transparent) inset;
+}
+.wb-data-table:deep(.n-data-table-wrapper)::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--kf-primary) 7%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--kf-primary) 5%, transparent) 1px, transparent 1px);
+  background-size: 28px 28px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.44), transparent 58%);
+  opacity: 0.7;
+  z-index: 1;
+}
+.wb-data-table:deep(.n-data-table-base-table) {
+  position: relative;
+  z-index: 2;
 }
 .wb-data-table:deep(.n-data-table-base-table-header) {
   position: sticky;
   top: 0;
-  z-index: 2;
-  box-shadow: 0 1px 0 var(--wb-line-strong);
+  z-index: 3;
+  box-shadow:
+    0 1px 0 var(--wb-line-strong),
+    0 10px 22px color-mix(in srgb, var(--kf-primary) 5%, transparent);
 }
 .wb-data-table:deep(.n-data-table-th) {
-  font-weight: 600;
-  font-size: 0.75rem;
-  letter-spacing: 0.01em;
-  color: var(--wb-table-heading-text);
-  background: var(--wb-table-header);
-  border-bottom: 2px solid color-mix(in srgb, var(--kf-primary) 24%, var(--wb-line-strong));
+  font-weight: 800;
+  font-size: 0.69rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--kf-primary) 58%, var(--wb-table-heading-text));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--kf-primary) 8%, var(--wb-table-header)), var(--wb-table-header));
+  border-bottom: 1px solid color-mix(in srgb, var(--kf-primary) 24%, var(--wb-line-strong));
   border-right: none;
   border-left: none;
-  padding: 11px 16px;
-  transition: background 0.12s ease;
+  padding: 12px 16px;
+  transition: background 0.16s ease, color 0.16s ease;
 }
 .wb-data-table:deep(.n-data-table-td) {
-  background: var(--wb-table-body);
-  border-bottom: 1px solid var(--wb-line);
+  background: color-mix(in srgb, var(--wb-table-body) 94%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--wb-line) 72%, transparent);
   border-right: none;
   border-left: none;
-  padding: 11px 16px;
-  transition: background 0.12s ease;
+  padding: 12px 16px;
+  transition: background 0.16s ease, box-shadow 0.16s ease, color 0.16s ease;
 }
 .wb-data-table:deep(
   .n-data-table-base-table-body .n-data-table-tr:not(.wb-row-active):not(.wb-row-keyboard-focus):hover .n-data-table-td
 ) {
-  background: var(--wb-row-hover);
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--kf-primary) 8%, transparent), transparent 38%),
+    var(--wb-row-hover);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #ffffff 68%, transparent);
 }
 .wb-data-table:deep(.n-data-table-tr.wb-row-keyboard-focus .n-data-table-td) {
-  background: color-mix(in srgb, var(--wb-accent-spring) 14%, var(--wb-table-body));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--wb-accent-forest) 35%, transparent);
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--kf-primary) 14%, transparent), transparent 42%),
+    color-mix(in srgb, var(--wb-accent-spring) 10%, var(--wb-table-body));
+  box-shadow:
+    inset 3px 0 0 var(--kf-primary),
+    inset 0 0 0 1px color-mix(in srgb, var(--kf-primary) 26%, transparent);
 }
 .wb-data-table:deep(.wb-col-emphasis) {
   font-weight: 600;
@@ -587,11 +680,14 @@ function onUpdateCheckedRowKeys(keys: DataTableRowKey[]) {
 }
 .wb-data-table:deep(.n-data-table-tr.wb-row-active .n-data-table-td) {
   background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--wb-row-selected) 72%, var(--wb-teal-soft)),
-    var(--wb-row-selected)
+    90deg,
+    color-mix(in srgb, var(--kf-primary) 15%, var(--wb-row-selected)),
+    var(--wb-row-selected) 54%,
+    color-mix(in srgb, var(--wb-accent-forest) 8%, var(--wb-row-selected))
   );
-  box-shadow: inset 3px 0 0 var(--wb-accent-forest);
+  box-shadow:
+    inset 3px 0 0 var(--kf-primary),
+    inset 0 0 0 1px color-mix(in srgb, var(--kf-primary) 15%, transparent);
 }
 .wb-data-table:deep(.n-data-table-tr.wb-row-armed .n-data-table-td) {
   background: linear-gradient(
@@ -619,19 +715,18 @@ function onUpdateCheckedRowKeys(keys: DataTableRowKey[]) {
   max-width: 100%;
 }
 .wb-primary-dot {
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
   border-radius: 999px;
   margin-top: 0.32rem;
   background: linear-gradient(
     145deg,
-    var(--wb-accent-warm) 0%,
-    var(--kf-warning) 48%,
-    var(--wb-accent-forest) 100%
+    var(--kf-primary) 0%,
+    var(--wb-accent-spring) 100%
   );
   box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--wb-accent-forest) 28%, transparent),
-    0 0 14px color-mix(in srgb, var(--wb-accent-warm) 16%, transparent);
+    0 0 0 1px color-mix(in srgb, var(--kf-primary) 28%, transparent),
+    0 0 14px color-mix(in srgb, var(--kf-primary) 22%, transparent);
   flex-shrink: 0;
 }
 .wb-primary-title {
@@ -684,5 +779,16 @@ function onUpdateCheckedRowKeys(keys: DataTableRowKey[]) {
 .wb-empty-actions :deep(.n-button) {
   --n-height: 30px;
   --n-border-radius: 9px;
+}
+@keyframes wb-live-pulse {
+  0%,
+  100% {
+    opacity: 0.72;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
 }
 </style>
