@@ -28,6 +28,7 @@ import {
   type NodeTerminalStrategy,
 } from "../../stores/nodeTerminalStrategy";
 import { extractErrorMessage } from "../../utils/errorMessage";
+import { strongholdAdjacentModalTrapFocusEnabled } from "../../stores/strongholdAuth";
 import { useEnvCredential } from "../../features/env/useEnvCredential";
 import EnvCredentialPanel from "./EnvCredentialPanel.vue";
 
@@ -174,6 +175,7 @@ async function submit() {
     :mask-closable="!loading"
     :close-on-esc="!loading"
     :auto-focus="false"
+    :trap-focus="strongholdAdjacentModalTrapFocusEnabled"
     @update:show="(v: boolean) => emit('update:visible', v)"
   >
     <div v-if="env" class="body">

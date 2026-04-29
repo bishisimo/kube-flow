@@ -15,7 +15,7 @@ import {
   type KubeContextInfo,
 } from "../../api/env";
 import { credentialSave } from "../../api/credential";
-import { useStrongholdAuthStore } from "../../stores/strongholdAuth";
+import { strongholdAdjacentModalTrapFocusEnabled, useStrongholdAuthStore } from "../../stores/strongholdAuth";
 import { extractErrorMessage } from "../../utils/errorMessage";
 import EnvTagInput from "./EnvTagInput.vue";
 
@@ -230,6 +230,7 @@ async function submit() {
     :mask-closable="!createLoading"
     :close-on-esc="!createLoading"
     :auto-focus="false"
+    :trap-focus="strongholdAdjacentModalTrapFocusEnabled"
     @update:show="(v: boolean) => emit('update:visible', v)"
   >
     <NTabs v-model:value="newType" type="segment" size="medium" animated>

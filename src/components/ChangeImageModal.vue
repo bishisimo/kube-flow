@@ -317,9 +317,10 @@ watch(
   white-space: nowrap;
 }
 .edit-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 62fr 38fr;
   gap: 0.6rem;
-  flex-wrap: wrap;
+  align-items: end;
 }
 .edit-col {
   display: flex;
@@ -328,10 +329,10 @@ watch(
   min-width: 0;
 }
 .edit-col-name {
-  flex: 1 1 220px;
+  min-width: 0;
 }
 .edit-col-tag {
-  flex: 0 0 160px;
+  min-width: 0;
 }
 .edit-label {
   font-size: 0.72rem;

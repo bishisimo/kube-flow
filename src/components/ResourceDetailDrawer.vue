@@ -32,7 +32,7 @@ import {
   type ResourceSnapshotItem,
 } from "../stores/resourceSnapshots";
 import { ensureAutoSnapshotSettingLoaded } from "../stores/appSettings";
-import { useStrongholdAuthStore } from "../stores/strongholdAuth";
+import { strongholdAdjacentModalTrapFocusEnabled, useStrongholdAuthStore } from "../stores/strongholdAuth";
 import type { SelectedResource } from "../features/workbench/contracts";
 import { createStorage } from "../utils/storage";
 
@@ -508,6 +508,7 @@ watch(
     :default-width="DRAWER_DEFAULT"
     :mask-closable="true"
     :auto-focus="false"
+    :trap-focus="strongholdAdjacentModalTrapFocusEnabled"
     :block-scroll="false"
     @update:show="onDrawerShowUpdate"
     @update:width="onDrawerWidthUpdate"

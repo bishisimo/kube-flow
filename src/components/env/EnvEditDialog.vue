@@ -16,6 +16,7 @@ import {
 } from "../../api/env";
 import { kubeRemoveClient } from "../../api/kube";
 import { extractErrorMessage } from "../../utils/errorMessage";
+import { strongholdAdjacentModalTrapFocusEnabled } from "../../stores/strongholdAuth";
 import { useEnvCredential } from "../../features/env/useEnvCredential";
 import EnvTagInput from "./EnvTagInput.vue";
 import EnvCredentialPanel from "./EnvCredentialPanel.vue";
@@ -185,6 +186,7 @@ function onContextChange(value: string) {
     :mask-closable="!editLoading"
     :close-on-esc="!editLoading"
     :auto-focus="false"
+    :trap-focus="strongholdAdjacentModalTrapFocusEnabled"
     @update:show="(v: boolean) => emit('update:visible', v)"
   >
     <div v-if="env" class="form-body">

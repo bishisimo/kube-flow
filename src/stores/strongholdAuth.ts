@@ -1,4 +1,4 @@
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { strongholdUnlock } from "../api/credential";
 import { extractErrorMessage } from "../utils/errorMessage";
 import { useStrongholdStatusStore } from "./strongholdStatus";
@@ -10,6 +10,12 @@ export interface StrongholdUnlockRequest {
 }
 
 const pending = ref<StrongholdUnlockRequest | null>(null);
+
+/**
+ * 仍为打开状态的父级 NModal / NDrawer 上绑定 `:trap-focus`：
+ * Stronghold 解锁层通过 Teleport 挂在 body，若父层保持焦点陷阱，无法在解锁输入框中输入。
+ */
+export const strongholdAdjacentModalTrapFocusEnabled = computed(() => pending.value === null);
 const loading = ref(false);
 const error = ref<string | null>(null);
 const { setStrongholdStatus } = useStrongholdStatusStore();
