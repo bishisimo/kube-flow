@@ -369,9 +369,9 @@ function commitOnSpace(e: KeyboardEvent) {
   max-height: min(72vh, 580px);
   display: flex;
   flex-direction: column;
-  background: #ffffff;
+  background: var(--kf-surface-strong);
   border-radius: 14px;
-  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.28), 0 0 0 1px rgba(15, 23, 42, 0.06);
+  box-shadow: var(--kf-shadow-md), 0 0 0 1px color-mix(in srgb, var(--kf-text-primary) 10%, transparent);
   overflow: hidden;
 }
 .cmdk-search {
@@ -387,19 +387,19 @@ function commitOnSpace(e: KeyboardEvent) {
   font-size: 0.72rem;
   padding: 0.18rem 0.5rem;
   border-radius: 6px;
-  background: rgba(100, 116, 139, 0.12);
-  color: #475569;
+  background: color-mix(in srgb, var(--kf-text-secondary) 18%, transparent);
+  color: var(--kf-text-secondary);
   font-weight: 600;
   white-space: nowrap;
   flex-shrink: 0;
 }
 .cmdk-scope[data-mode="keying"] {
-  background: rgba(168, 85, 247, 0.14);
+  background: color-mix(in srgb, #7c3aed 18%, transparent);
   color: #7c3aed;
 }
 .cmdk-scope[data-mode="valuing"] {
-  background: rgba(16, 185, 129, 0.14);
-  color: #059669;
+  background: color-mix(in srgb, var(--kf-success) 18%, transparent);
+  color: var(--kf-success);
 }
 .cmdk-field {
   flex: 1;
@@ -421,18 +421,18 @@ function commitOnSpace(e: KeyboardEvent) {
   padding: 0.14rem 0.2rem 0.14rem 0.45rem;
   border-radius: 6px;
   font-size: 0.78rem;
-  background: rgba(37, 99, 235, 0.1);
-  color: #1d4ed8;
+  background: color-mix(in srgb, var(--kf-primary) 16%, transparent);
+  color: var(--kf-primary);
   line-height: 1.2;
   white-space: nowrap;
   max-width: 260px;
 }
 .cmdk-chip[data-sym="#"] {
-  background: rgba(234, 88, 12, 0.12);
-  color: #c2410c;
+  background: color-mix(in srgb, var(--kf-warning) 20%, transparent);
+  color: var(--kf-warning);
 }
 .cmdk-chip[data-sym=">"] {
-  background: rgba(124, 58, 237, 0.12);
+  background: color-mix(in srgb, #7c3aed 20%, transparent);
   color: #6d28d9;
 }
 .cmdk-chip-key { font-weight: 600; }
@@ -454,7 +454,7 @@ function commitOnSpace(e: KeyboardEvent) {
   font-size: 0.85rem;
   line-height: 1;
 }
-.cmdk-chip-x:hover { opacity: 1; background: rgba(15, 23, 42, 0.08); }
+.cmdk-chip-x:hover { opacity: 1; background: color-mix(in srgb, var(--kf-text-primary) 12%, transparent); }
 .cmdk-input {
   flex: 1 1 120px;
   min-width: 120px;
@@ -470,18 +470,18 @@ function commitOnSpace(e: KeyboardEvent) {
   padding: 0.06rem 0.28rem;
   margin: 0 0.06rem;
   border-radius: 4px;
-  border: 1px solid rgba(148, 163, 184, 0.35);
-  color: #64748b;
-  background: #f8fafc;
+  border: 1px solid color-mix(in srgb, var(--kf-text-secondary) 36%, transparent);
+  color: var(--kf-text-secondary);
+  background: var(--kf-bg-soft);
 }
 .cmdk-kbd {
   font-size: 0.7rem;
   font-family: inherit;
   padding: 0.1rem 0.35rem;
   border-radius: 4px;
-  border: 1px solid rgba(148, 163, 184, 0.35);
-  color: #64748b;
-  background: #f8fafc;
+  border: 1px solid color-mix(in srgb, var(--kf-text-secondary) 36%, transparent);
+  color: var(--kf-text-secondary);
+  background: var(--kf-bg-soft);
   flex-shrink: 0;
 }
 .cmdk-list {
@@ -497,7 +497,7 @@ function commitOnSpace(e: KeyboardEvent) {
 }
 .cmdk-group-title {
   font-size: 0.68rem;
-  color: #94a3b8;
+  color: var(--kf-text-muted);
   padding: 0.55rem 0.7rem 0.15rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -513,7 +513,17 @@ function commitOnSpace(e: KeyboardEvent) {
   user-select: none;
 }
 .cmdk-item[data-active="true"] {
-  background: rgba(37, 99, 235, 0.1);
+  background: color-mix(in srgb, var(--kf-primary) 24%, var(--kf-surface-strong));
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--kf-primary) 80%, white);
+}
+.cmdk-item[data-active="true"] .cmdk-item-title {
+  color: var(--kf-text-primary);
+  font-weight: 600;
+}
+.cmdk-item[data-active="true"] .cmdk-item-subtitle,
+.cmdk-item[data-active="true"] .cmdk-item-hint,
+.cmdk-item[data-active="true"] .cmdk-item-icon {
+  color: color-mix(in srgb, var(--kf-text-primary) 84%, var(--kf-text-secondary));
 }
 .cmdk-item-icon {
   width: 22px;
@@ -522,32 +532,32 @@ function commitOnSpace(e: KeyboardEvent) {
   align-items: center;
   justify-content: center;
   font-size: 0.95rem;
-  color: #475569;
+  color: var(--kf-text-secondary);
   flex-shrink: 0;
 }
 .cmdk-item-body { flex: 1; min-width: 0; }
 .cmdk-item-title {
   font-size: 0.88rem;
-  color: #0f172a;
+  color: var(--kf-text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .cmdk-item-subtitle {
   font-size: 0.72rem;
-  color: #64748b;
+  color: var(--kf-text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   margin-top: 1px;
 }
-.cmdk-hit { color: #2563eb; font-weight: 600; }
+.cmdk-hit { color: var(--kf-primary); font-weight: 600; }
 .cmdk-item-hint {
   font-size: 0.7rem;
-  color: #94a3b8;
+  color: var(--kf-text-muted);
   padding: 0.08rem 0.4rem;
   border-radius: 4px;
-  background: rgba(148, 163, 184, 0.12);
+  background: color-mix(in srgb, var(--kf-text-secondary) 16%, transparent);
   flex-shrink: 0;
 }
 .cmdk-empty {
@@ -559,7 +569,7 @@ function commitOnSpace(e: KeyboardEvent) {
   gap: 0.5rem;
   padding: 2.2rem 1rem;
   min-height: 0;
-  color: #64748b;
+  color: var(--kf-text-secondary);
   font-size: 0.85rem;
 }
 .cmdk-empty-emoji { font-size: 1.6rem; opacity: 0.65; }
@@ -569,7 +579,7 @@ function commitOnSpace(e: KeyboardEvent) {
   gap: 0.6rem;
   padding: 0.5rem 0.75rem;
   border-top: 1px solid var(--kf-border, rgba(148, 163, 184, 0.22));
-  background: rgba(37, 99, 235, 0.06);
+  background: color-mix(in srgb, var(--kf-primary) 10%, transparent);
   flex-shrink: 0;
   min-height: 3.25rem;
   box-sizing: border-box;
@@ -581,15 +591,15 @@ function commitOnSpace(e: KeyboardEvent) {
   align-items: center;
   justify-content: center;
   font-size: 0.95rem;
-  color: #1d4ed8;
-  background: rgba(37, 99, 235, 0.12);
+  color: var(--kf-primary);
+  background: color-mix(in srgb, var(--kf-primary) 18%, transparent);
   border-radius: 6px;
   flex-shrink: 0;
 }
 .cmdk-plan-body { flex: 1; min-width: 0; }
 .cmdk-plan-title {
   font-size: 0.85rem;
-  color: #0f172a;
+  color: var(--kf-text-primary);
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
@@ -597,7 +607,7 @@ function commitOnSpace(e: KeyboardEvent) {
 }
 .cmdk-plan-sub {
   font-size: 0.72rem;
-  color: #64748b;
+  color: var(--kf-text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -609,9 +619,9 @@ function commitOnSpace(e: KeyboardEvent) {
   gap: 0.9rem;
   padding: 0.4rem 0.75rem;
   border-top: 1px solid var(--kf-border, rgba(148, 163, 184, 0.22));
-  background: #f8fafc;
+  background: var(--kf-bg-soft);
   font-size: 0.72rem;
-  color: #64748b;
+  color: var(--kf-text-secondary);
   flex-shrink: 0;
 }
 .cmdk-hint-group { display: inline-flex; align-items: center; gap: 0.3rem; }
@@ -620,10 +630,17 @@ function commitOnSpace(e: KeyboardEvent) {
   font-size: 0.68rem;
   padding: 0.06rem 0.32rem;
   border-radius: 4px;
-  border: 1px solid rgba(148, 163, 184, 0.35);
-  background: #ffffff;
-  color: #475569;
+  border: 1px solid color-mix(in srgb, var(--kf-text-secondary) 36%, transparent);
+  background: var(--kf-surface-strong);
+  color: var(--kf-text-secondary);
 }
-.cmdk-hint-muted { color: #94a3b8; }
+.cmdk-hint-muted { color: var(--kf-text-muted); }
 .cmdk-hint-spacer { flex: 1; }
+
+:global(:root[data-kf-chrome="dark"]) .cmdk-panel {
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.52), 0 0 0 1px color-mix(in srgb, var(--kf-text-secondary) 22%, transparent);
+}
+:global(:root[data-kf-chrome="dark"]) .cmdk-hit {
+  color: color-mix(in srgb, var(--kf-primary) 72%, white);
+}
 </style>

@@ -172,7 +172,6 @@ defineExpose({
           <div ref="nsMenuRef" class="combobox-menu">
             <div class="combobox-panel-head">
               <div class="combobox-panel-title">选择命名空间</div>
-              <div class="combobox-panel-subtitle">当前资源范围会基于这里切换</div>
             </div>
             <div class="combobox-search">
               <NInput
@@ -206,7 +205,6 @@ defineExpose({
               >
                 <span class="combobox-item-main">
                   <span class="combobox-item-title">{{ n.name }}</span>
-                  <span class="combobox-item-subtitle">收藏的命名空间</span>
                 </span>
                 <span class="combobox-item-trailing">
                   <span class="combobox-item-check">{{ selectedNamespace === n.name ? "✓" : "" }}</span>
@@ -218,30 +216,21 @@ defineExpose({
             </template>
             <template v-if="namespaceRecent.length > 0">
               <div class="combobox-group-label">最近</div>
-              <NButton
-                v-for="n in namespaceRecent"
-                :key="`recent-${n.name}`"
-                text
-                class="combobox-item combobox-item-with-action combobox-item-recent"
-                :class="{ active: selectedNamespace === n.name }"
-                @click="emit('select-namespace', n.name)"
-              >
-                <span class="combobox-item-main">
-                  <span class="combobox-item-title">{{ n.name }}</span>
-                  <span class="combobox-item-subtitle">最近访问</span>
-                </span>
-                <span class="combobox-item-trailing">
-                  <span class="combobox-item-check">{{ selectedNamespace === n.name ? "✓" : "" }}</span>
-                  <span
-                    class="ns-star"
-                    :class="{ active: favoriteNamespaces.has(n.name) }"
-                    :title="favoriteNamespaces.has(n.name) ? '取消收藏' : '收藏'"
-                    @click.stop="emit('toggle-favorite-namespace', n.name)"
+              <div class="recent-namespace-panel">
+                <div class="recent-namespace-list">
+                  <NButton
+                    v-for="n in namespaceRecent"
+                    :key="`recent-${n.name}`"
+                    size="small"
+                    quaternary
+                    class="recent-namespace-pill"
+                    :class="{ active: selectedNamespace === n.name }"
+                    @click="emit('select-namespace', n.name)"
                   >
-                    ★
-                  </span>
-                </span>
-              </NButton>
+                    {{ n.name }}
+                  </NButton>
+                </div>
+              </div>
             </template>
             <div class="combobox-group-label">全部</div>
             <NButton
@@ -298,9 +287,6 @@ defineExpose({
           <div ref="kindMenuRef" class="combobox-menu">
             <div class="combobox-panel-head">
               <div class="combobox-panel-title">选择资源类型</div>
-              <div class="combobox-panel-subtitle">
-                无输入时仅列出内置类型；单字可匹配扩展资源短名；两字起可搜 Kind。扩展结果最多 10 条。点击 ★ 收藏。
-              </div>
             </div>
             <div class="combobox-search">
               <NInput
@@ -336,9 +322,15 @@ defineExpose({
               >
                 <span class="combobox-item-main">
                   <span class="combobox-item-title">{{ row.title }}</span>
-                  <span class="combobox-item-subtitle">{{ row.subtitle }}</span>
                 </span>
                 <span class="combobox-item-trailing combobox-item-trailing-kind">
+                  <span
+                    class="kind-origin-icon"
+                    :class="row.entry.kind === 'builtin' ? 'builtin' : 'extension'"
+                    :title="row.entry.kind === 'builtin' ? '内置资源类型' : '自定义资源类型（CRD）'"
+                  >
+                    {{ row.entry.kind === "builtin" ? "●" : "○" }}
+                  </span>
                   <span class="combobox-item-check">
                     {{
                       row.entry.kind === "builtin"
@@ -867,7 +859,23 @@ defineExpose({
   display: inline-flex;
   align-items: center;
   flex-shrink: 0;
-  gap: 0.25rem;
+  gap: 0.3rem;
+}
+.kind-origin-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  min-width: 1rem;
+  font-size: 0.68rem;
+  line-height: 1;
+  opacity: 0.9;
+}
+.kind-origin-icon.builtin {
+  color: color-mix(in srgb, var(--kf-primary) 80%, var(--kf-text-primary));
+}
+.kind-origin-icon.extension {
+  color: color-mix(in srgb, var(--kf-info) 80%, var(--kf-text-primary));
 }
 .combobox-item-trailing-kind .combobox-item-check {
   width: 1rem;
@@ -933,24 +941,24 @@ defineExpose({
   background: var(--wb-row-stripe, var(--kf-bg-soft));
 }
 .combobox-item-favorite {
-  background: rgba(255, 247, 237, 0.72);
+  background: color-mix(in srgb, var(--kf-warning) 14%, var(--kf-surface-strong));
 }
 .combobox-item-favorite:hover {
-  background: rgba(255, 237, 213, 0.92);
+  background: color-mix(in srgb, var(--kf-warning) 24%, var(--kf-surface-strong));
 }
 .combobox-item-recent {
-  background: rgba(236, 254, 255, 0.78);
+  background: color-mix(in srgb, var(--kf-info) 14%, var(--kf-surface-strong));
 }
 .combobox-item-recent:hover {
-  background: rgba(165, 243, 252, 0.86);
+  background: color-mix(in srgb, var(--kf-info) 24%, var(--kf-surface-strong));
 }
 .combobox-item:focus-visible {
   outline: none;
-  box-shadow: inset 0 0 0 2px rgba(37, 99, 235, 0.32);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--kf-primary) 42%, transparent);
 }
 .combobox-item.active {
-  background: rgba(37, 99, 235, 0.14);
-  color: var(--kf-primary);
+  background: color-mix(in srgb, var(--kf-primary) 24%, var(--kf-surface-strong));
+  color: var(--kf-text-primary);
   font-weight: 600;
 }
 .combobox-group-label {
@@ -967,7 +975,7 @@ defineExpose({
   margin: 0 0.35rem 0.45rem;
   padding: 0.45rem 0.5rem 0.5rem;
   border-radius: var(--wb-ctrl-radius);
-  background: rgba(236, 254, 255, 0.78);
+  background: color-mix(in srgb, var(--kf-info) 14%, var(--kf-surface-strong));
   box-sizing: border-box;
 }
 .recent-kind-list {
@@ -977,8 +985,8 @@ defineExpose({
   gap: 0.3rem;
 }
 .recent-kind-pill {
-  border: 1px solid rgba(103, 232, 249, 0.45);
-  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid color-mix(in srgb, var(--kf-info) 38%, var(--kf-border));
+  background: color-mix(in srgb, var(--kf-surface-strong) 82%, var(--kf-info-soft));
   color: var(--wb-text-primary, #0f172a);
   border-radius: var(--wb-ctrl-radius);
   padding: 0.2rem 0.6rem;
@@ -987,8 +995,8 @@ defineExpose({
   cursor: pointer;
 }
 .recent-kind-pill:hover {
-  background: rgba(165, 243, 252, 0.86);
-  border-color: rgba(34, 211, 238, 0.55);
+  background: color-mix(in srgb, var(--kf-info) 24%, var(--kf-surface-strong));
+  border-color: color-mix(in srgb, var(--kf-info) 55%, var(--kf-border));
   color: var(--wb-text-primary, #0f172a);
 }
 .recent-kind-pill:focus-visible {
@@ -997,9 +1005,49 @@ defineExpose({
 }
 .recent-kind-pill.active {
   /* 与 .combobox-item.active 一致，表示当前已选 */
-  background: rgba(37, 99, 235, 0.14);
-  color: var(--kf-primary);
-  border-color: color-mix(in srgb, var(--kf-primary) 38%, var(--kf-border));
+  background: color-mix(in srgb, var(--kf-primary) 24%, var(--kf-surface-strong));
+  color: var(--kf-text-primary);
+  border-color: color-mix(in srgb, var(--kf-primary) 58%, var(--kf-border));
+  font-weight: 600;
+}
+.recent-namespace-panel {
+  margin: 0 0.35rem 0.45rem;
+  padding: 0.45rem 0.5rem 0.5rem;
+  border-radius: var(--wb-ctrl-radius);
+  background: color-mix(in srgb, var(--kf-info) 14%, var(--kf-surface-strong));
+  box-sizing: border-box;
+}
+.recent-namespace-list {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+.recent-namespace-pill {
+  border: 1px solid color-mix(in srgb, var(--kf-info) 38%, var(--kf-border));
+  background: color-mix(in srgb, var(--kf-surface-strong) 82%, var(--kf-info-soft));
+  color: var(--wb-text-primary, #0f172a);
+  border-radius: var(--wb-ctrl-radius);
+  padding: 0.2rem 0.6rem;
+  font-size: 0.75rem;
+  line-height: 1.2;
+  cursor: pointer;
+}
+.recent-namespace-pill:hover {
+  background: color-mix(in srgb, var(--kf-info) 24%, var(--kf-surface-strong));
+  border-color: color-mix(in srgb, var(--kf-info) 55%, var(--kf-border));
+  color: var(--wb-text-primary, #0f172a);
+}
+.recent-namespace-list :deep(.recent-namespace-pill.n-button) {
+  height: auto !important;
+  min-height: unset !important;
+  line-height: 1.2;
+  font-size: 0.75rem;
+}
+.recent-namespace-pill.active {
+  background: color-mix(in srgb, var(--kf-primary) 24%, var(--kf-surface-strong));
+  color: var(--kf-text-primary);
+  border-color: color-mix(in srgb, var(--kf-primary) 58%, var(--kf-border));
   font-weight: 600;
 }
 .combobox-group-label:first-of-type {

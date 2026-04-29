@@ -83,14 +83,14 @@ function onKeydown(event: KeyboardEvent) {
   gap: 0.4rem;
   min-height: 34px;
   padding: 4px 8px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--kf-border);
   border-radius: 10px;
-  background: #fff;
+  background: var(--kf-surface-strong);
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 .env-tag-input:focus-within {
-  border-color: #2563eb;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+  border-color: var(--kf-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--kf-primary) 18%, transparent);
 }
 .env-tag-input.disabled {
   opacity: 0.6;

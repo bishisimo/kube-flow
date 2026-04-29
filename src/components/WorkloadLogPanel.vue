@@ -235,4 +235,13 @@ const containerNOptions = computed(() => {
   display: flex;
   flex-direction: column;
 }
+
+:global(:root[data-kf-chrome="dark"]) .workload-log-panel .target-bar {
+  background: color-mix(in srgb, var(--kf-surface-strong) 90%, var(--kf-bg-soft));
+}
+
+:global(:root[data-kf-chrome="dark"]) .workload-log-panel .error-banner {
+  background: color-mix(in srgb, var(--kf-danger) 18%, var(--kf-surface-strong));
+  color: color-mix(in srgb, var(--kf-danger) 86%, var(--kf-text-primary));
+}
 </style>

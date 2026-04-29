@@ -371,6 +371,7 @@ const sortBy = ref<string>("creationTime");
 const sortOrder = ref<"asc" | "desc">("desc");
 const viewSessionId = ref(0);
 const latestListRequestId = ref(0);
+let applyWatchExecutor: (() => void) | null = null;
 
 const { tableColumns, tableRows } = useWorkbenchTableModel({
   selectedKind,
@@ -523,6 +524,22 @@ const { loadList } = useWorkbenchLoadList({
   strongholdAuth,
   sshAuth,
 });
+
+/**
+ * 列表刷新统一入口：开启 Watch 且当前资源支持时优先走 Watch 首包流程，
+ * 其余场景回退到一次性列表拉取，避免同一轮视图切换触发双通道加载。
+ */
+function requestListReload() {
+  if (
+    watchEnabled.value &&
+    !selectedCustomTarget.value &&
+    getWorkbenchResourceDescriptor(selectedKind.value).capabilities.supportsWatch
+  ) {
+    applyWatchExecutor?.();
+    return;
+  }
+  void loadList();
+}
 
 function onDocClick(e: MouseEvent) {
   const target = e.target as Node;
@@ -698,7 +715,7 @@ const { navigateTo } = useWorkbenchNavigation({
   selectedRowKeys,
   batchDeleteMode,
   drillFrom,
-  loadList,
+  requestListReload,
 });
 
 const {
@@ -1306,7 +1323,7 @@ async function onDeleteConfirm() {
   deleteConfirmVisible.value = false;
   selectedRowKeys.value = new Set();
   batchDeleteMode.value = false;
-  loadList();
+  requestListReload();
 }
 
 /** 与 WorkbenchResourceTable 中 Naive DataTable 受控勾选同步。 */
@@ -1364,7 +1381,7 @@ async function handleReconnect(envId: string) {
   await kubeRemoveClient(envId);
   setConnecting(envId);
   if (currentId.value === envId) {
-    loadList();
+    requestListReload();
   }
 }
 
@@ -1636,6 +1653,7 @@ const { applyWatch } = useWorkbenchResourceWatch({
   setConnecting,
   setDisconnected,
 });
+applyWatchExecutor = applyWatch;
 
 const {
   supportsIpFilter,
@@ -1680,7 +1698,7 @@ const {
       :collapsed-width="52"
       collapse-mode="width"
       :collapsed="envBarCollapsed"
-      content-style="height: 100%; overflow: hidden;"
+      content-style="height: 100%; overflow: hidden; background: var(--kf-surface);"
       @update:collapsed="setEnvBarCollapsed"
     >
       <EnvBar
@@ -1754,7 +1772,7 @@ const {
           @select-kind="selectKindAndClearDrill"
           @select-custom-kind="selectCustomKindOption"
           @toggle-favorite-kind="onToggleFavoriteKindEntry"
-          @refresh="loadList"
+          @refresh="requestListReload"
           @enter-batch-delete="enterBatchDeleteMode"
           @exit-batch-delete="exitBatchDeleteMode"
           @open-batch-delete-confirm="openBatchDeleteConfirm"

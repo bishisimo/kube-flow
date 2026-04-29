@@ -162,6 +162,19 @@ const menuOptions = computed<WBOption[]>(() => {
   return opts;
 });
 
+const dropdownThemeOverrides = {
+  color: "var(--kf-surface-strong)",
+  borderColor: "var(--kf-border-strong)",
+  boxShadow: "0 16px 40px color-mix(in srgb, #000000 42%, transparent)",
+  dividerColor: "color-mix(in srgb, var(--kf-border) 85%, transparent)",
+  optionColorHover: "color-mix(in srgb, var(--kf-primary) 18%, var(--kf-surface-strong))",
+  optionColorPending: "color-mix(in srgb, var(--kf-primary) 22%, var(--kf-surface-strong))",
+  optionColorActive: "color-mix(in srgb, var(--kf-primary) 24%, var(--kf-surface-strong))",
+  optionTextColor: "var(--kf-text-primary)",
+  optionTextColorHover: "var(--kf-text-primary)",
+  optionTextColorActive: "var(--kf-text-primary)",
+};
+
 function onSelect(_key: string | number, option: DropdownOption) {
   const o = option as WBOption;
   if (o.disabled) return;
@@ -196,6 +209,7 @@ function renderLabel(option: DropdownOption) {
     :show-arrow="false"
     placement="bottom-start"
     size="medium"
+    :theme-overrides="dropdownThemeOverrides"
     :render-label="renderLabel"
     :on-clickoutside="onClickoutside"
     :keyboard="true"
@@ -228,31 +242,31 @@ function renderLabel(option: DropdownOption) {
   font-size: 0.66rem;
   font-weight: 650;
   letter-spacing: 0.02em;
-  background: #e2e8f0;
-  color: #475569;
+  background: color-mix(in srgb, var(--kf-text-secondary) 18%, var(--kf-surface-strong));
+  color: var(--kf-text-secondary);
   flex-shrink: 0;
 }
-.wb-act-tail-navi { background: #dbeafe; color: #1d4ed8; }
-.wb-act-tail-run { background: #cffafe; color: #0e7490; }
-.wb-act-tail-flow { background: #ede9fe; color: #5b21b6; }
-.wb-act-tail-danger { background: #fee2e2; color: #b91c1c; }
-.wb-act-row-danger .wb-act-main { color: #b91c1c; }
-.wb-act-row-danger-armed .wb-act-main { color: #b91c1c; font-weight: 650; }
+.wb-act-tail-navi { background: color-mix(in srgb, var(--kf-primary) 16%, var(--kf-surface-strong)); color: var(--kf-primary); }
+.wb-act-tail-run { background: color-mix(in srgb, var(--kf-info) 18%, var(--kf-surface-strong)); color: var(--kf-info); }
+.wb-act-tail-flow { background: color-mix(in srgb, #8b5cf6 18%, var(--kf-surface-strong)); color: color-mix(in srgb, #8b5cf6 82%, var(--kf-text-primary)); }
+.wb-act-tail-danger { background: color-mix(in srgb, var(--kf-danger) 16%, var(--kf-surface-strong)); color: var(--kf-danger); }
+.wb-act-row-danger .wb-act-main { color: var(--kf-danger); }
+.wb-act-row-danger-armed .wb-act-main { color: var(--kf-danger); font-weight: 650; }
 .wb-act-header {
   padding: 0.45rem 0.6rem 0.5rem;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
+  border-bottom: 1px solid var(--kf-border);
   margin-bottom: 0.18rem;
 }
 .wb-act-title {
   font-size: 0.78rem;
   font-weight: 700;
-  color: #0f172a;
+  color: var(--kf-text-primary);
   letter-spacing: 0.02em;
 }
 .wb-act-target {
   margin-top: 0.18rem;
   font-size: 0.7rem;
-  color: #64748b;
+  color: var(--kf-text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -264,10 +278,10 @@ function renderLabel(option: DropdownOption) {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: #94a3b8;
+  color: var(--kf-text-muted);
 }
-.wb-act-group-navi { color: #1d4ed8; }
-.wb-act-group-run { color: #0e7490; }
-.wb-act-group-flow { color: #5b21b6; }
-.wb-act-group-danger { color: #dc2626; }
+.wb-act-group-navi { color: var(--kf-primary); }
+.wb-act-group-run { color: var(--kf-info); }
+.wb-act-group-flow { color: color-mix(in srgb, #8b5cf6 82%, var(--kf-text-primary)); }
+.wb-act-group-danger { color: var(--kf-danger); }
 </style>

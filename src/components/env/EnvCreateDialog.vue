@@ -225,6 +225,7 @@ async function submit() {
   <NModal
     :show="visible"
     preset="card"
+    class="env-modal"
     title="新建环境"
     style="width: 520px; max-width: calc(100vw - 32px);"
     :mask-closable="!createLoading"
@@ -356,7 +357,7 @@ async function submit() {
 .field-label {
   font-size: 0.8125rem;
   font-weight: 500;
-  color: #475569;
+  color: var(--kf-text-secondary);
 }
 .field-row {
   display: flex;
@@ -369,7 +370,7 @@ async function submit() {
 .form-hint {
   margin: 0;
   font-size: 0.75rem;
-  color: #94a3b8;
+  color: var(--kf-text-muted);
   line-height: 1.5;
 }
 .form-error {
@@ -379,5 +380,13 @@ async function submit() {
   display: flex;
   justify-content: flex-end;
   gap: 0.5rem;
+}
+
+:global(.env-modal.n-modal) {
+  --n-color: var(--kf-surface-strong);
+  --n-border-color: var(--kf-border);
+  --n-title-text-color: var(--kf-text-primary);
+  --n-text-color: var(--kf-text-primary);
+  --n-box-shadow: var(--kf-shadow-md);
 }
 </style>

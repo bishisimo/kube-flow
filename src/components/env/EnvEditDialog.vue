@@ -181,6 +181,7 @@ function onContextChange(value: string) {
   <NModal
     :show="visible"
     preset="card"
+    class="env-modal"
     title="编辑环境"
     style="width: 520px; max-width: calc(100vw - 32px);"
     :mask-closable="!editLoading"
@@ -268,7 +269,7 @@ function onContextChange(value: string) {
 .field-label {
   font-size: 0.8125rem;
   font-weight: 500;
-  color: #475569;
+  color: var(--kf-text-secondary);
 }
 .form-error {
   margin-top: 0.6rem;
@@ -282,5 +283,13 @@ function onContextChange(value: string) {
 .footer-right {
   display: flex;
   gap: 0.5rem;
+}
+
+:global(.env-modal.n-modal) {
+  --n-color: var(--kf-surface-strong);
+  --n-border-color: var(--kf-border);
+  --n-title-text-color: var(--kf-text-primary);
+  --n-text-color: var(--kf-text-primary);
+  --n-box-shadow: var(--kf-shadow-md);
 }
 </style>

@@ -169,7 +169,7 @@ function onStrongholdCancel() {
   --kf-bg-soft: #0b1220;
   --kf-bg-elevated: #1e293b;
   --kf-primary: #3b82f6;
-  --kf-primary-soft: rgba(59, 130, 246, 0.18);
+  --kf-primary-soft: rgba(59, 130, 246, 0.28);
   --kf-success-soft: rgba(16, 185, 129, 0.14);
   --kf-warning-soft: rgba(245, 158, 11, 0.14);
   --kf-danger-soft: rgba(248, 113, 113, 0.14);
@@ -217,8 +217,8 @@ function onStrongholdCancel() {
   );
   --wb-row-selected: color-mix(
     in srgb,
-    var(--wb-accent-forest) 22%,
-    color-mix(in srgb, var(--wb-accent-spring) 9%, #134e4a)
+    var(--wb-accent-forest) 32%,
+    color-mix(in srgb, var(--wb-accent-spring) 14%, #134e4a)
   );
   --kf-embed-t-canvas: #0f172a;
   --kf-embed-t-slate: #1e293b;
@@ -247,5 +247,24 @@ body, #app {
     radial-gradient(ellipse 68% 50% at 88% -6%, color-mix(in srgb, var(--wb-accent-warm) 12%, transparent), transparent 46%),
     radial-gradient(ellipse 58% 42% at 6% 4%, color-mix(in srgb, var(--wb-accent-forest) 10%, transparent), transparent 40%),
     radial-gradient(circle at 18% 0%, #0f1a18 0%, #0b1218 45%, #0a0f14 100%);
+}
+
+/* 深色下统一提升选中态对比：避免默认深蓝实底导致文字发糊 */
+:root[data-kf-chrome="dark"] .n-base-select-option.n-base-select-option--selected,
+:root[data-kf-chrome="dark"] .n-base-select-option.n-base-select-option--pending {
+  background: color-mix(in srgb, var(--kf-primary) 34%, var(--kf-surface-strong)) !important;
+  color: var(--kf-text-primary) !important;
+}
+:root[data-kf-chrome="dark"] .n-base-selection .n-base-selection-label,
+:root[data-kf-chrome="dark"] .n-base-select-option .n-base-select-option__content {
+  color: var(--kf-text-primary);
+}
+:root[data-kf-chrome="dark"] .n-menu .n-menu-item--selected .n-menu-item-content {
+  background: color-mix(in srgb, var(--kf-primary) 30%, transparent);
+  border-radius: 8px;
+}
+:root[data-kf-chrome="dark"] .n-menu .n-menu-item--selected .n-menu-item-content-header,
+:root[data-kf-chrome="dark"] .n-menu .n-menu-item--selected .n-menu-item-content .n-icon {
+  color: var(--kf-text-primary) !important;
 }
 </style>

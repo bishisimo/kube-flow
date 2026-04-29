@@ -1120,4 +1120,52 @@ onBeforeUnmount(() => {
     flex-direction: column;
   }
 }
+
+:global(:root[data-kf-chrome="dark"]) .log-center {
+  background:
+    radial-gradient(circle at top left, color-mix(in srgb, var(--kf-primary) 10%, transparent), transparent 30%),
+    linear-gradient(180deg, var(--kf-bg-soft) 0%, var(--kf-bg-base) 100%);
+}
+
+:global(:root[data-kf-chrome="dark"]) .log-center .session-rail {
+  background: color-mix(in srgb, var(--kf-surface) 92%, var(--kf-bg-base));
+}
+
+:global(:root[data-kf-chrome="dark"]) .log-center .session-item,
+:global(:root[data-kf-chrome="dark"]) .log-center .compact-session-item {
+  background: var(--kf-surface-strong);
+  border-color: var(--kf-border);
+}
+
+:global(:root[data-kf-chrome="dark"]) .log-center .session-item.active,
+:global(:root[data-kf-chrome="dark"]) .log-center .compact-session-item.active {
+  border-color: color-mix(in srgb, var(--kf-primary) 55%, var(--kf-border));
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--kf-primary) 22%, var(--kf-surface-strong)) 0%,
+    color-mix(in srgb, var(--kf-surface-strong) 96%, var(--kf-bg-soft)) 100%
+  );
+  box-shadow: 0 10px 22px color-mix(in srgb, var(--kf-primary) 24%, transparent);
+}
+
+:global(:root[data-kf-chrome="dark"]) .log-center .context-bar {
+  background: color-mix(in srgb, var(--kf-surface-strong) 86%, transparent);
+}
+
+:global(:root[data-kf-chrome="dark"]) .log-center .log-stage.compare .log-pane {
+  background: color-mix(in srgb, var(--kf-surface-strong) 94%, var(--kf-bg-base));
+  border-color: var(--kf-border);
+}
+
+:global(:root[data-kf-chrome="dark"]) .log-center .log-pane-head {
+  background: color-mix(in srgb, var(--kf-bg-soft) 86%, var(--kf-surface-strong));
+  border-color: var(--kf-border);
+}
+
+:global(:root[data-kf-chrome="dark"]) .log-center .session-empty,
+:global(:root[data-kf-chrome="dark"]) .log-center .compare-empty {
+  background: var(--kf-bg-soft);
+  border-color: var(--kf-border);
+  color: var(--kf-text-secondary);
+}
 </style>

@@ -181,6 +181,7 @@ onBeforeUnmount(stopAutoRefresh);
           @click="toggleRealtime"
         >{{ realtimeEnabled ? "关闭实时" : "开启实时" }}</NButton>
         <NButton
+          type="primary"
           :loading="loading"
           :disabled="clearing"
           @click="refresh"
@@ -228,15 +229,15 @@ onBeforeUnmount(stopAutoRefresh);
   align-items: center;
   justify-content: space-between;
   padding: 0.75rem 1rem;
-  border-bottom: 1px solid #e2e8f0;
-  background: #fff;
+  border-bottom: 1px solid var(--kf-border);
+  background: var(--kf-surface-strong);
   flex-shrink: 0;
 }
 .title {
   margin: 0;
   font-size: 1rem;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--kf-text-primary);
 }
 .actions {
   display: flex;
@@ -255,7 +256,7 @@ onBeforeUnmount(stopAutoRefresh);
   font-family: ui-monospace, monospace;
   font-size: 0.8125rem;
   line-height: 1.5;
-  background: #f8fafc;
+  background: var(--kf-bg-soft);
   min-height: 120px;
 }
 .log-line {
@@ -264,20 +265,20 @@ onBeforeUnmount(stopAutoRefresh);
   padding: 0.1rem 0;
 }
 .log-level-error {
-  color: #dc2626;
+  color: var(--kf-danger);
   font-weight: 500;
 }
 .log-level-warn {
-  color: #d97706;
+  color: var(--kf-warning);
 }
 .log-level-info {
-  color: #334155;
+  color: var(--kf-text-primary);
 }
 .log-level-debug {
-  color: #64748b;
+  color: var(--kf-text-secondary);
 }
 .log-level-off {
-  color: #94a3b8;
+  color: var(--kf-text-muted);
 }
 .log-empty {
   padding: 2rem 0;

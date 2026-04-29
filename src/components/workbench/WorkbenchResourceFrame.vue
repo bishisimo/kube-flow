@@ -55,7 +55,7 @@ const emit = defineEmits<{
     <div v-else-if="listLoading" class="loading-state">
       <div class="loading-state-head">
         <NSpace v-bind="kfSpace.inlineStatus" class="loading-state-title">
-          <NSpin size="small" stroke="#2563eb" :stroke-width="18" />
+          <NSpin size="small" :stroke="`var(--kf-primary)`" :stroke-width="18" />
           <span>
             {{ envSwitching ? `正在切换到 ${envSwitchingName || "目标环境"}` : "加载中…" }}
           </span>
@@ -116,9 +116,13 @@ const emit = defineEmits<{
 .connection-stepper {
   margin: 0.55rem 1rem 0;
   padding: 0.75rem 0.9rem;
-  background: linear-gradient(180deg, #f0f9ff, #f8fbff);
-  color: #075985;
-  border: 1px solid #bae6fd;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--kf-info) 20%, var(--kf-surface-strong)),
+    color-mix(in srgb, var(--kf-info) 10%, var(--kf-bg-soft))
+  );
+  color: var(--kf-text-primary);
+  border: 1px solid color-mix(in srgb, var(--kf-info) 45%, var(--kf-border));
   border-radius: 12px;
   font-size: 0.875rem;
 }
@@ -128,7 +132,7 @@ const emit = defineEmits<{
 .stepper-detail {
   margin-top: 0.25rem;
   font-size: 0.8125rem;
-  opacity: 0.9;
+  color: var(--kf-text-secondary);
 }
 .loading-state {
   display: flex;

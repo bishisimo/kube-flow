@@ -17,8 +17,16 @@ const emit = defineEmits<{
 
 const hasTags = computed(() => props.tags.length > 0);
 
-const activeColor = { color: "#eff6ff", textColor: "#2563eb", borderColor: "#2563eb" } as const;
-const idleColor = { color: "#ffffff", textColor: "#475569", borderColor: "#e2e8f0" } as const;
+const activeColor = {
+  color: "color-mix(in srgb, var(--kf-primary) 16%, var(--kf-surface-strong))",
+  textColor: "var(--kf-primary)",
+  borderColor: "color-mix(in srgb, var(--kf-primary) 52%, var(--kf-border))",
+} as const;
+const idleColor = {
+  color: "var(--kf-surface-strong)",
+  textColor: "var(--kf-text-secondary)",
+  borderColor: "var(--kf-border)",
+} as const;
 </script>
 
 <template>
@@ -41,7 +49,11 @@ const idleColor = { color: "#ffffff", textColor: "#475569", borderColor: "#e2e8f
         size="small"
         round
         class="filter-tag clear"
-        :color="{ color: '#ffffff', textColor: '#64748b', borderColor: '#cbd5e1' }"
+        :color="{
+          color: 'var(--kf-surface-strong)',
+          textColor: 'var(--kf-text-secondary)',
+          borderColor: 'color-mix(in srgb, var(--kf-text-secondary) 40%, var(--kf-border))',
+        }"
         @click="emit('clear')"
       >
         清除
@@ -60,7 +72,7 @@ const idleColor = { color: "#ffffff", textColor: "#475569", borderColor: "#e2e8f
 }
 .filter-label {
   font-size: 0.8125rem;
-  color: #64748b;
+  color: var(--kf-text-secondary);
   flex-shrink: 0;
 }
 .filter-tags {
@@ -74,7 +86,7 @@ const idleColor = { color: "#ffffff", textColor: "#475569", borderColor: "#e2e8f
   transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 .filter-tag:hover {
-  filter: brightness(0.98);
+  filter: brightness(0.97);
 }
 .filter-tag.clear {
   border-style: dashed !important;

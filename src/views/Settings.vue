@@ -58,7 +58,7 @@ import {
 } from "../api/config";
 import { useAppSettingsStore } from "../stores/appSettings";
 import { useEnvStore } from "../stores/env";
-import { appChromeScheme, APP_CHROME_OPTIONS } from "../stores/appChromeTheme";
+import { appChromeScheme, setAppChromeScheme, APP_CHROME_OPTIONS } from "../stores/appChromeTheme";
 import SettingsSecurityPanel from "../components/settings/SettingsSecurityPanel.vue";
 
 type CategoryId = "appearance" | "workspace" | "debug" | "ssh" | "security";
@@ -579,9 +579,10 @@ const menuOptions = computed<MenuOption[]>(() =>
         <NCard title="界面主题" size="small" class="settings-card" :bordered="true">
           <p class="card-desc">主窗口、列表与对话框的明暗。与下方「代码主题」（YAML/Monaco 高亮）相互独立。</p>
           <NSelect
-            v-model:value="appChromeScheme"
+            :value="appChromeScheme"
             :options="APP_CHROME_OPTIONS"
             class="theme-select-naive"
+            @update:value="setAppChromeScheme"
           />
         </NCard>
         <NCard title="代码主题" size="small" class="settings-card" :bordered="true">

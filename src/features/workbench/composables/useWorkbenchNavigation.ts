@@ -28,7 +28,7 @@ export function useWorkbenchNavigation(opts: {
   selectedRowKeys: Ref<Set<string>>;
   batchDeleteMode: Ref<boolean>;
   drillFrom: Ref<DrillSource | null>;
-  loadList: () => void;
+  requestListReload: () => void;
 }) {
   function navigateTo(nav: NavigateOptions) {
     if (nav.kind !== undefined) opts.selectedKind.value = nav.kind;
@@ -43,7 +43,7 @@ export function useWorkbenchNavigation(opts: {
     opts.selectedRowKeys.value = new Set();
     opts.batchDeleteMode.value = false;
     if (nav.closeDrawer !== false) opts.detailDrawerVisible.value = false;
-    if (nav.reload !== false) opts.loadList();
+    if (nav.reload !== false) opts.requestListReload();
   }
 
   return { navigateTo };

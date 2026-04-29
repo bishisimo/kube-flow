@@ -27,11 +27,20 @@ const sourceLabel = computed(() => (isSsh.value ? "SSH" : "本地"));
 
 const sourceTagColor = computed(() =>
   isSsh.value
-    ? { color: "#ffedd5", textColor: "#c2410c" }
-    : { color: "#dbeafe", textColor: "#1d4ed8" }
+    ? {
+        color: "color-mix(in srgb, var(--kf-warning) 18%, var(--kf-surface-strong))",
+        textColor: "color-mix(in srgb, var(--kf-warning) 78%, var(--kf-text-primary))",
+      }
+    : {
+        color: "color-mix(in srgb, var(--kf-info) 18%, var(--kf-surface-strong))",
+        textColor: "color-mix(in srgb, var(--kf-info) 80%, var(--kf-text-primary))",
+      }
 );
 
-const userTagColor = { color: "#dcfce7", textColor: "#166534" } as const;
+const userTagColor = {
+  color: "color-mix(in srgb, var(--kf-success) 18%, var(--kf-surface-strong))",
+  textColor: "color-mix(in srgb, var(--kf-success) 78%, var(--kf-text-primary))",
+} as const;
 </script>
 
 <template>
@@ -94,16 +103,16 @@ const userTagColor = { color: "#dcfce7", textColor: "#166534" } as const;
 .env-card {
   display: flex;
   flex-direction: column;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--kf-border);
   border-radius: 12px;
   padding: 1.25rem;
-  background: #fff;
+  background: var(--kf-surface-strong);
   cursor: pointer;
   transition: box-shadow 0.2s, border-color 0.2s, transform 0.15s;
 }
 .env-card:hover {
-  border-color: #c7d2fe;
-  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.08);
+  border-color: color-mix(in srgb, var(--kf-primary) 42%, var(--kf-border));
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--kf-primary) 20%, transparent);
   transform: translateY(-1px);
 }
 .card-header {
@@ -123,7 +132,7 @@ const userTagColor = { color: "#dcfce7", textColor: "#166534" } as const;
   margin: 0;
   font-size: 1rem;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--kf-text-primary);
   letter-spacing: -0.01em;
   line-height: 1.4;
   flex: 1;
@@ -156,7 +165,7 @@ const userTagColor = { color: "#dcfce7", textColor: "#166534" } as const;
 .card-meta {
   margin: 0;
   font-size: 0.8125rem;
-  color: #64748b;
+  color: var(--kf-text-secondary);
   line-height: 1.45;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -164,15 +173,15 @@ const userTagColor = { color: "#dcfce7", textColor: "#166534" } as const;
 }
 .card-meta.count {
   font-size: 0.75rem;
-  color: #94a3b8;
+  color: var(--kf-text-muted);
 }
 .card-meta.strategy.enabled {
-  color: #166534;
+  color: var(--kf-success);
 }
 .card-actions {
   margin-top: auto;
   padding-top: 1rem;
-  border-top: 1px solid #f1f5f9;
+  border-top: 1px solid var(--kf-border);
   display: flex;
   gap: 0.6rem;
   flex-wrap: wrap;
@@ -194,31 +203,31 @@ const userTagColor = { color: "#dcfce7", textColor: "#166534" } as const;
   --n-border-focus: 1px solid transparent;
 }
 .act-terminal {
-  --n-color: #eef4ff;
-  --n-color-hover: #dbeafe;
-  --n-color-pressed: #dbeafe;
-  --n-color-focus: #dbeafe;
-  --n-text-color: #1d4ed8;
-  --n-text-color-hover: #1e40af;
-  --n-text-color-pressed: #1e40af;
-  --n-text-color-focus: #1e40af;
-  --n-border: 1px solid #c7d7fe;
-  --n-border-hover: 1px solid #93c5fd;
-  --n-border-pressed: 1px solid #93c5fd;
-  --n-border-focus: 1px solid #93c5fd;
+  --n-color: color-mix(in srgb, var(--kf-info) 16%, var(--kf-surface-strong));
+  --n-color-hover: color-mix(in srgb, var(--kf-info) 24%, var(--kf-surface-strong));
+  --n-color-pressed: color-mix(in srgb, var(--kf-info) 26%, var(--kf-surface-strong));
+  --n-color-focus: color-mix(in srgb, var(--kf-info) 24%, var(--kf-surface-strong));
+  --n-text-color: color-mix(in srgb, var(--kf-info) 82%, var(--kf-text-primary));
+  --n-text-color-hover: color-mix(in srgb, var(--kf-info) 88%, var(--kf-text-primary));
+  --n-text-color-pressed: color-mix(in srgb, var(--kf-info) 88%, var(--kf-text-primary));
+  --n-text-color-focus: color-mix(in srgb, var(--kf-info) 88%, var(--kf-text-primary));
+  --n-border: 1px solid color-mix(in srgb, var(--kf-info) 40%, var(--kf-border));
+  --n-border-hover: 1px solid color-mix(in srgb, var(--kf-info) 52%, var(--kf-border));
+  --n-border-pressed: 1px solid color-mix(in srgb, var(--kf-info) 52%, var(--kf-border));
+  --n-border-focus: 1px solid color-mix(in srgb, var(--kf-info) 52%, var(--kf-border));
 }
 .act-strategy {
-  --n-color: #f8fafc;
-  --n-color-hover: #eef2ff;
-  --n-color-pressed: #e0e7ff;
-  --n-color-focus: #eef2ff;
-  --n-text-color: #334155;
-  --n-text-color-hover: #4338ca;
-  --n-text-color-pressed: #4338ca;
-  --n-text-color-focus: #4338ca;
-  --n-border: 1px solid #e2e8f0;
-  --n-border-hover: 1px solid #c7d2fe;
-  --n-border-pressed: 1px solid #c7d2fe;
-  --n-border-focus: 1px solid #c7d2fe;
+  --n-color: color-mix(in srgb, var(--kf-bg-soft) 84%, var(--kf-surface-strong));
+  --n-color-hover: color-mix(in srgb, var(--kf-primary) 14%, var(--kf-surface-strong));
+  --n-color-pressed: color-mix(in srgb, var(--kf-primary) 18%, var(--kf-surface-strong));
+  --n-color-focus: color-mix(in srgb, var(--kf-primary) 14%, var(--kf-surface-strong));
+  --n-text-color: var(--kf-text-primary);
+  --n-text-color-hover: color-mix(in srgb, var(--kf-primary) 82%, var(--kf-text-primary));
+  --n-text-color-pressed: color-mix(in srgb, var(--kf-primary) 82%, var(--kf-text-primary));
+  --n-text-color-focus: color-mix(in srgb, var(--kf-primary) 82%, var(--kf-text-primary));
+  --n-border: 1px solid var(--kf-border);
+  --n-border-hover: 1px solid color-mix(in srgb, var(--kf-primary) 46%, var(--kf-border));
+  --n-border-pressed: 1px solid color-mix(in srgb, var(--kf-primary) 46%, var(--kf-border));
+  --n-border-focus: 1px solid color-mix(in srgb, var(--kf-primary) 46%, var(--kf-border));
 }
 </style>

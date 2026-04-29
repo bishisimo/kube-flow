@@ -104,7 +104,7 @@ async function remove() {
   padding: 0.75rem 0.85rem;
   border-radius: 10px;
   border: 1px solid var(--kf-border, #e2e8f0);
-  background: #f8fafc;
+  background: var(--kf-bg-soft);
 }
 .cred-header {
   display: flex;
@@ -114,12 +114,12 @@ async function remove() {
 .cred-title {
   font-size: 0.8125rem;
   font-weight: 600;
-  color: #374151;
+  color: var(--kf-text-primary);
 }
 .cred-desc {
   margin: 0.35rem 0 0.6rem;
   font-size: 0.75rem;
-  color: #64748b;
+  color: var(--kf-text-secondary);
   line-height: 1.5;
 }
 .cred-actions,
