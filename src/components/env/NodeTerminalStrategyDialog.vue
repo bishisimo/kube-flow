@@ -45,6 +45,7 @@ const emit = defineEmits<{
 const STEP_TYPE_OPTIONS: Array<{ label: string; value: NodeTerminalStepType }> = [
   { label: "switch_user", value: "switch_user" },
   { label: "ssh", value: "ssh" },
+  { label: "kind_node_exec", value: "kind_node_exec" },
 ];
 
 function defaultStrategy(envId: string): NodeTerminalStrategy {
@@ -108,9 +109,11 @@ watch(
 );
 
 function stepHint(type: NodeTerminalStepType): string {
-  return type === "switch_user"
-    ? "切换到目标用户后继续执行后续步骤。"
-    : "使用指定用户连接到节点地址模板解析出的目标主机。";
+  if (type === "switch_user") return "切换到目标用户后继续执行后续步骤。";
+  if (type === "kind_node_exec") {
+    return "在当前主机执行 docker exec 进入 kind node 容器，user 作为容器内执行用户。";
+  }
+  return "使用指定用户连接到节点地址模板解析出的目标主机。";
 }
 
 function updateField<K extends keyof NodeTerminalStrategy>(key: K, value: NodeTerminalStrategy[K]) {
@@ -190,7 +193,7 @@ async function submit() {
         启用节点终端切换策略
       </NCheckbox>
       <p class="hint">
-        按步骤编排节点终端进入流程。当前支持 <code>switch_user</code> 和 <code>ssh</code> 两种步骤，后续也可以继续扩展更多带凭证的步骤。
+        按步骤编排节点终端进入流程。当前支持 <code>switch_user</code>、<code>ssh</code>、<code>kind_node_exec</code> 三种步骤。
       </p>
 
       <label class="form-field">
@@ -228,7 +231,13 @@ async function submit() {
                 />
                 <NInput
                   :value="step.user"
-                  :placeholder="step.type === 'switch_user' ? '目标用户，例如 root / deploy' : 'SSH 用户，例如 root'"
+                  :placeholder="
+                    step.type === 'switch_user'
+                      ? '目标用户，例如 root / deploy'
+                      : step.type === 'kind_node_exec'
+                        ? '容器内用户，例如 root'
+                        : 'SSH 用户，例如 root'
+                  "
                   @update:value="(v: string) => updateStep(step.id, { user: v })"
                 />
               </NInputGroup>

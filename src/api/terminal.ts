@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export type NodeTerminalStepType = "ssh" | "switch_user";
+export type NodeTerminalStepType = "ssh" | "switch_user" | "kind_node_exec";
 export type PodDebugNamespace = "net" | "pid" | "mnt" | "uts" | "ipc";
 
 export interface NodeTerminalStep {

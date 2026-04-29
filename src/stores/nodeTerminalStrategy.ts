@@ -105,7 +105,7 @@ function renderTemplate(template: string, vars: Record<string, string>): string 
 function sanitizeSteps(steps: NodeTerminalStepConfig[] | undefined): NodeTerminalStepConfig[] {
   const normalized = (steps ?? [])
     .map((step, index) => {
-      if (step.type !== "ssh" && step.type !== "switch_user") return null;
+      if (step.type !== "ssh" && step.type !== "switch_user" && step.type !== "kind_node_exec") return null;
       return {
         id: step.id || `step-${index}`,
         type: step.type,
@@ -121,7 +121,9 @@ function compilePreviewCommand(host: string, steps: NodeTerminalStepConfig[]): s
     .map((step) =>
       step.type === "ssh"
         ? `ssh ${step.user}@${host}`
-        : `sudo su - ${step.user}`
+        : step.type === "switch_user"
+          ? `sudo su - ${step.user}`
+          : `docker exec -it --user ${step.user} ${host} sh`
     )
     .join("\n")
     .trim();

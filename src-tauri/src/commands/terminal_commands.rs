@@ -1,7 +1,9 @@
 use crate::commands::kube_command_context::{err_str, load_app_settings, CommandResult};
+use crate::config::LogLevel;
 use crate::kube::session_store::{SessionHandle, SessionStore};
 use crate::config::ssh_config_get_host_config;
 use crate::credentials::{AuthMethod, CredentialKey, CredentialManager};
+use crate::debug_log::{self, DebugEntry};
 use crate::env::{EnvService, EnvironmentSource};
 use crate::kube::{resource_get, KubeClientStore};
 use serde::Deserialize;
@@ -19,6 +21,49 @@ const HOST_SHELL_CHUNK_EVENT: &str = "host-shell-chunk";
 const HOST_SHELL_END_EVENT: &str = "host-shell-end";
 const NODE_TERMINAL_SUDO_PROMPT: &str = "__KUBE_FLOW_SUDO_PROMPT__";
 
+#[derive(Debug, Clone)]
+struct HostShellLogMeta {
+    stream_id: String,
+    source: &'static str,
+    bootstrap_kind: Option<String>,
+    bootstrap_host: Option<String>,
+    bootstrap_step_count: usize,
+    has_pod_debug: bool,
+    pod_debug_target: Option<String>,
+}
+
+fn host_shell_detail(meta: &HostShellLogMeta) -> String {
+    let mut detail = vec![
+        format!("stream_id={}", meta.stream_id),
+        format!("source={}", meta.source),
+        format!("bootstrap_step_count={}", meta.bootstrap_step_count),
+        format!("has_pod_debug={}", if meta.has_pod_debug { "true" } else { "false" }),
+    ];
+    if let Some(kind) = meta.bootstrap_kind.as_ref().filter(|v| !v.is_empty()) {
+        detail.push(format!("bootstrap_kind={}", kind));
+    }
+    if let Some(host) = meta.bootstrap_host.as_ref().filter(|v| !v.is_empty()) {
+        detail.push(format!("bootstrap_host={}", host));
+    }
+    if let Some(target) = meta.pod_debug_target.as_ref().filter(|v| !v.is_empty()) {
+        detail.push(format!("pod_debug_target={}", target));
+    }
+    detail.join(" ")
+}
+
+fn log_host_shell(level: LogLevel, env_id: &str, result: &str, meta: &HostShellLogMeta, error: Option<&str>) {
+    debug_log::log_debug_entry(DebugEntry {
+        ts: chrono::Utc::now().to_rfc3339(),
+        level: level.as_str().to_string(),
+        resource: "host_shell".to_string(),
+        env_id: Some(env_id.to_string()),
+        result: Some(result.to_string()),
+        item_count: None,
+        error: error.map(ToString::to_string),
+        raw_sample: Some(host_shell_detail(meta)),
+    });
+}
+
 #[cfg(windows)]
 fn apply_no_window(cmd: &mut Command) {
     const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -35,6 +80,7 @@ use crate::ssh_askpass::SshAskpassGuard;
 pub enum NodeTerminalStepType {
     Ssh,
     SwitchUser,
+    KindNodeExec,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -251,6 +297,10 @@ fn compile_node_terminal_steps(
     if steps.is_empty() {
         return Err("节点终端策略至少需要一个步骤".to_string());
     }
+    let interactive_shell = "export TERM=\"xterm-256color\"; \
+export LANG=\"${LANG:-C.UTF-8}\"; \
+export LC_CTYPE=\"${LC_CTYPE:-$LANG}\"; \
+if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi";
 
     let compiled = steps
         .iter()
@@ -280,6 +330,14 @@ fn compile_node_terminal_steps(
                     )
                 } else {
                     format!("sudo -S -p {} su - {}", sudo_prompt, user)
+                }
+            }
+            NodeTerminalStepType::KindNodeExec => {
+                let base = format!("docker exec -it --user {} {}", user, host);
+                if let Some(next_cmd) = next {
+                    format!("{} sh -lc {}", base, shell_single_quote(&next_cmd))
+                } else {
+                    format!("{} sh -lc {}", base, shell_single_quote(interactive_shell))
                 }
             }
         };
@@ -540,11 +598,13 @@ async fn resolve_host_shell_automation(
 
 async fn run_host_shell_process(
     app: AppHandle,
+    env_id: String,
     stream_id: String,
     mut cmd: Command,
     _askpass_guard: Option<SshAskpassGuard>,
     automation: Option<HostShellAutomation>,
     store: Arc<HostShellStore>,
+    log_meta: HostShellLogMeta,
 ) {
     cmd.kill_on_drop(true);
 
@@ -647,7 +707,13 @@ async fn run_host_shell_process(
                         }
                         result = reader.read(&mut read_buf) => {
                             match result {
-                                Ok(0) => break None,
+                                Ok(0) => {
+                                    match child.wait().await {
+                                        Ok(exit) if exit.success() => break None,
+                                        Ok(exit) => break Some(format!("shell exited with status {}", exit)),
+                                        Err(e) => break Some(format!("shell wait failed: {}", e)),
+                                    }
+                                }
                                 Ok(n) => {
                                     let (output_chunk, password_input) = if let Some(state) = automation.as_mut() {
                                         state.process_output(&read_buf[..n])
@@ -709,7 +775,11 @@ async fn run_host_shell_process(
                                 Ok(0) => {
                                     stdout = None;
                                     if stderr.is_none() {
-                                        break None;
+                                        match child.wait().await {
+                                            Ok(exit) if exit.success() => break None,
+                                            Ok(exit) => break Some(format!("shell exited with status {}", exit)),
+                                            Err(e) => break Some(format!("shell wait failed: {}", e)),
+                                        }
                                     }
                                 }
                                 Ok(n) => {
@@ -745,7 +815,11 @@ async fn run_host_shell_process(
                                 Ok(0) => {
                                     stderr = None;
                                     if stdout.is_none() {
-                                        break None;
+                                        match child.wait().await {
+                                            Ok(exit) if exit.success() => break None,
+                                            Ok(exit) => break Some(format!("shell exited with status {}", exit)),
+                                            Err(e) => break Some(format!("shell wait failed: {}", e)),
+                                        }
                                     }
                                 }
                                 Ok(n) => {
@@ -806,6 +880,10 @@ async fn run_host_shell_process(
     };
 
     store.remove(&stream_id).await;
+    match end_error.as_deref() {
+        Some(err) => log_host_shell(LogLevel::Error, &env_id, "end", &log_meta, Some(err)),
+        None => log_host_shell(LogLevel::Info, &env_id, "end", &log_meta, None),
+    }
     let _ = app.emit(
         HOST_SHELL_END_EVENT,
         serde_json::json!({
@@ -834,6 +912,18 @@ pub async fn host_shell_start(
     let stream_id_clone = stream_id.clone();
     let app_handle = app.clone();
     let store_clone = store.inner().clone();
+    let bootstrap_kind = bootstrap.as_ref().map(|b| b.kind.clone());
+    let bootstrap_host = bootstrap.as_ref().map(|b| b.host.clone());
+    let bootstrap_step_count = bootstrap.as_ref().map(|b| b.steps.len()).unwrap_or(0);
+    let has_pod_debug = bootstrap
+        .as_ref()
+        .and_then(|b| b.pod_debug.as_ref())
+        .is_some();
+    let pod_debug_target = bootstrap.as_ref().and_then(|b| {
+        b.pod_debug
+            .as_ref()
+            .map(|pd| format!("{}/{}:{}", pd.namespace, pd.pod_name, pd.container))
+    });
     let automation = resolve_host_shell_automation(bootstrap, &manager, &kube_store, &env).await?;
     let bootstrap_command = automation.as_ref().map(|item| item.command.as_str());
 
@@ -850,8 +940,29 @@ pub async fn host_shell_start(
                 build_local_shell_command()
             };
             let automation_plan = automation.clone();
+            let env_id_for_task = env_id.clone();
+            let log_meta = HostShellLogMeta {
+                stream_id: stream_id.clone(),
+                source: "local_kubeconfig",
+                bootstrap_kind: bootstrap_kind.clone(),
+                bootstrap_host: bootstrap_host.clone(),
+                bootstrap_step_count,
+                has_pod_debug,
+                pod_debug_target: pod_debug_target.clone(),
+            };
+            log_host_shell(LogLevel::Info, &env_id, "start", &log_meta, None);
             tokio::spawn(async move {
-                run_host_shell_process(app_handle, stream_id_clone, cmd, None, automation_plan, store_clone).await;
+                run_host_shell_process(
+                    app_handle,
+                    env_id_for_task,
+                    stream_id_clone,
+                    cmd,
+                    None,
+                    automation_plan,
+                    store_clone,
+                    log_meta,
+                )
+                .await;
             });
         }
         EnvironmentSource::SshTunnel => {
@@ -864,14 +975,27 @@ pub async fn host_shell_start(
                 .ok_or_else(|| format!("未找到隧道配置: {}", tunnel_id))?;
             let (cmd, askpass_guard) =
                 build_remote_shell_command(&tunnel, &manager, bootstrap_command)?;
+            let env_id_for_task = env_id.clone();
+            let log_meta = HostShellLogMeta {
+                stream_id: stream_id.clone(),
+                source: "ssh_tunnel",
+                bootstrap_kind: bootstrap_kind.clone(),
+                bootstrap_host: bootstrap_host.clone(),
+                bootstrap_step_count,
+                has_pod_debug,
+                pod_debug_target: pod_debug_target.clone(),
+            };
+            log_host_shell(LogLevel::Info, &env_id, "start", &log_meta, None);
             tokio::spawn(async move {
                 run_host_shell_process(
                     app_handle,
+                    env_id_for_task,
                     stream_id_clone,
                     cmd,
                     askpass_guard,
                     automation,
                     store_clone,
+                    log_meta,
                 )
                 .await;
             });

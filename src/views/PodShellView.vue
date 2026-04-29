@@ -43,14 +43,9 @@ const podOptions = ref<PodItem[]>([]);
 const containerOptions = ref<string[]>([]);
 const switcherLoading = ref(false);
 const hostEntryEnvId = ref<string | null>(null);
-const reconnectAttemptMap = ref<Record<string, number>>({});
-const reconnectTimerMap = new Map<string, ReturnType<typeof setTimeout>>();
 const reconnectingSessionIds = new Set<string>();
 const suppressEndStreamIds = new Set<string>();
 const terminalActivationOrder = ref<string[]>([]);
-
-const RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000, 15000];
-const MAX_RECONNECT_ATTEMPTS = RECONNECT_DELAYS_MS.length;
 
 const groupedSessions = computed(() => {
   const groups = new Map<string, { envId: string; envName: string; items: typeof sessions.value }>();
@@ -202,15 +197,34 @@ function isNonRetryableTerminalError(message?: string): boolean {
   ].some((k) => m.includes(k));
 }
 
-function clearReconnectState(sessionId: string) {
-  const next = { ...reconnectAttemptMap.value };
-  delete next[sessionId];
-  reconnectAttemptMap.value = next;
-  const timer = reconnectTimerMap.get(sessionId);
-  if (timer) {
-    clearTimeout(timer);
-    reconnectTimerMap.delete(sessionId);
+function isMissingShellError(message?: string): boolean {
+  if (!message) return false;
+  const m = message.toLowerCase();
+  return (
+    m.includes("容器内未发现可用 shell") ||
+    m.includes("executable file not found") ||
+    m.includes("not found in $path") ||
+    m.includes("no such file or directory")
+  );
+}
+
+function buildTerminalUnavailableMessage(
+  session: (typeof sessions.value)[number],
+  reason?: string
+): string {
+  if (isMissingShellError(reason)) {
+    return "目标容器未提供可用 shell（/bin/sh）。请改用调试容器或节点终端。";
   }
+  if (reason && isConnectionError(reason)) {
+    return session.kind === "host"
+      ? "主机连接已中断，请排查网络/隧道后手动重连。"
+      : "集群连接已中断，请排查网络或 kube 连接后手动重连。";
+  }
+  if (reason) return reason;
+  return session.kind === "host" ? "主机 Shell 连接已断开，请手动重连。" : "Shell 连接已断开，请手动重连。";
+}
+
+function clearReconnectState(sessionId: string) {
   reconnectingSessionIds.delete(sessionId);
 }
 
@@ -256,7 +270,7 @@ async function startHostSessionStream(sessionId: string): Promise<boolean> {
     }
     updateSession(sessionId, {
       streamId: null,
-      status: "reconnecting",
+      status: "error",
       error: msg,
     });
     return false;
@@ -303,58 +317,13 @@ async function tryReconnectSession(sessionId: string, resetClient: boolean): Pro
     }
     updateSession(sessionId, {
       streamId: null,
-      status: "reconnecting",
+      status: "error",
       error: msg,
     });
     return false;
   } finally {
     reconnectingSessionIds.delete(sessionId);
   }
-}
-
-function scheduleReconnect(sessionId: string, reason?: string) {
-  const session = sessions.value.find((item) => item.id === sessionId);
-  if (!session || reconnectTimerMap.has(sessionId)) return;
-  if (isNonRetryableTerminalError(reason)) {
-    updateSession(sessionId, {
-      streamId: null,
-      status: "error",
-      error: reason ?? "终端启动失败",
-    });
-    clearReconnectState(sessionId);
-    return;
-  }
-  const attempt = (reconnectAttemptMap.value[sessionId] ?? 0) + 1;
-  reconnectAttemptMap.value = { ...reconnectAttemptMap.value, [sessionId]: attempt };
-  if (attempt > MAX_RECONNECT_ATTEMPTS) {
-    updateSession(sessionId, {
-      streamId: null,
-      status: "disconnected",
-      error: reason
-        ? `${reason}；已重试 ${MAX_RECONNECT_ATTEMPTS} 次，连接仍未恢复`
-        : `已重试 ${MAX_RECONNECT_ATTEMPTS} 次，连接仍未恢复`,
-    });
-    return;
-  }
-  const delay = RECONNECT_DELAYS_MS[Math.min(attempt - 1, RECONNECT_DELAYS_MS.length - 1)];
-  updateSession(sessionId, {
-    streamId: null,
-    status: "reconnecting",
-    error:
-      session.kind === "host"
-        ? `主机连接中断，${Math.round(delay / 1000)} 秒后进行第 ${attempt} 次重连`
-        : `连接中断，${Math.round(delay / 1000)} 秒后进行第 ${attempt} 次重连`,
-  });
-  const timer = setTimeout(async () => {
-    reconnectTimerMap.delete(sessionId);
-    const resetClient = isConnectionError(reason ?? "");
-    const ok = await tryReconnectSession(sessionId, resetClient);
-    if (!ok) {
-      const latest = sessions.value.find((item) => item.id === sessionId);
-      scheduleReconnect(sessionId, latest?.error ?? reason);
-    }
-  }, delay);
-  reconnectTimerMap.set(sessionId, timer);
 }
 
 async function openPodConnection(
@@ -480,7 +449,7 @@ async function openHostConnectionWithBootstrap(
       });
       return;
     }
-    updateSession(id, { status: "error", error: msg });
+    updateSession(id, { status: "disconnected", error: msg });
   }
 }
 
@@ -693,12 +662,12 @@ function onTerminalEnd(sessionId: string, payload: { streamId: string; error?: s
   if (payload.error && isConnectionError(payload.error)) {
     setDisconnected(session.envId, payload.error);
   }
+  const fallbackError = buildTerminalUnavailableMessage(session, payload.error);
   updateSession(sessionId, {
     streamId: null,
-    status: "reconnecting",
-    error: payload.error ?? (session.kind === "host" ? "主机 Shell 连接已断开" : "Shell 连接已断开"),
+    status: payload.error ? "error" : "disconnected",
+    error: fallbackError,
   });
-  scheduleReconnect(sessionId, payload.error);
 }
 
 async function reconnectSessionNow(sessionId: string) {
@@ -707,7 +676,12 @@ async function reconnectSessionNow(sessionId: string) {
   const ok = await tryReconnectSession(sessionId, true);
   if (!ok) {
     const latest = sessions.value.find((item) => item.id === sessionId);
-    scheduleReconnect(sessionId, latest?.error ?? "重连失败");
+    const session = latest ?? sessions.value.find((item) => item.id === sessionId);
+    updateSession(sessionId, {
+      streamId: null,
+      status: "error",
+      error: session ? buildTerminalUnavailableMessage(session, latest?.error) : "重连失败，请稍后重试。",
+    });
   }
 }
 
@@ -780,8 +754,6 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
-  for (const timer of reconnectTimerMap.values()) clearTimeout(timer);
-  reconnectTimerMap.clear();
   reconnectingSessionIds.clear();
   suppressEndStreamIds.clear();
 });

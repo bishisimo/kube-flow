@@ -2,6 +2,8 @@
 //! 通过 Tauri 事件推送 stdout，通过 invoke 接收 stdin 与 resize。
 
 use std::sync::Arc;
+use crate::config::LogLevel;
+use crate::debug_log::{self, DebugEntry};
 use futures::SinkExt;
 use kube::api::{Api, AttachParams};
 use kube::Client;
@@ -13,6 +15,47 @@ use crate::kube::session_store::{SessionHandle, SessionStore};
 
 const POD_EXEC_CHUNK_EVENT: &str = "pod-exec-chunk";
 const POD_EXEC_END_EVENT: &str = "pod-exec-end";
+
+fn log_pod_shell(
+    level: LogLevel,
+    result: &str,
+    stream_id: &str,
+    namespace: &str,
+    pod_name: &str,
+    container: Option<&str>,
+    error: Option<&str>,
+) {
+    let mut detail = format!(
+        "stream_id={} namespace={} pod={}",
+        stream_id, namespace, pod_name
+    );
+    if let Some(c) = container.filter(|v| !v.is_empty()) {
+        detail.push_str(&format!(" container={}", c));
+    }
+    debug_log::log_debug_entry(DebugEntry {
+        ts: chrono::Utc::now().to_rfc3339(),
+        level: level.as_str().to_string(),
+        resource: "pod_shell".to_string(),
+        env_id: None,
+        result: Some(result.to_string()),
+        item_count: None,
+        error: error.map(ToString::to_string),
+        raw_sample: Some(detail),
+    });
+}
+
+fn normalize_pod_exec_start_error(raw: String) -> String {
+    let lower = raw.to_lowercase();
+    if lower.contains("no such file or directory")
+        || lower.contains("executable file not found")
+        || lower.contains("not found in $path")
+        || lower.contains("container_linux.go")
+    {
+        return "容器内未发现可用 shell（/bin/sh）。该镜像可能为 distroless/极简镜像，请使用调试容器或节点终端。"
+            .to_string();
+    }
+    raw
+}
 
 /// 单个 exec 会话的可写端：stdin 与 resize 的发送通道。
 pub struct PodExecSession {
@@ -42,6 +85,15 @@ pub async fn run_pod_exec(
     container: Option<String>,
     store: Arc<PodExecStore>,
 ) {
+    log_pod_shell(
+        LogLevel::Info,
+        "start",
+        &stream_id,
+        &namespace,
+        &pod_name,
+        container.as_deref(),
+        None,
+    );
     let api: Api<Pod> = Api::namespaced(client, &namespace);
     let mut attach_params = AttachParams::interactive_tty()
         .stdin(true)
@@ -148,10 +200,30 @@ if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi"
                 Err(e) => Some(format!("exec task join failed: {}", e)),
             }
         }
-        Err(e) => Some(e.to_string()),
+        Err(e) => Some(normalize_pod_exec_start_error(e.to_string())),
     };
 
     store.remove(&stream_id_final).await;
+    match end_error.as_deref() {
+        Some(err) => log_pod_shell(
+            LogLevel::Error,
+            "end",
+            &stream_id_final,
+            &namespace,
+            &pod_name,
+            container.as_deref(),
+            Some(err),
+        ),
+        None => log_pod_shell(
+            LogLevel::Info,
+            "end",
+            &stream_id_final,
+            &namespace,
+            &pod_name,
+            container.as_deref(),
+            None,
+        ),
+    }
     let _ = app.emit(
         POD_EXEC_END_EVENT,
         serde_json::json!({
