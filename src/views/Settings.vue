@@ -457,8 +457,8 @@ const menuOptions = computed<MenuOption[]>(() =>
 
       <!-- 调试 -->
       <template v-if="activeCategory === 'debug'">
-        <NCard title="调试日志采集" size="small" class="settings-card" :bordered="true">
-          <p class="card-desc">日志级别决定写入 kube-flow-debug.log 的内容量，用于排查资源列表、连接与后端行为问题。</p>
+        <NCard title="应用日志采集" size="small" class="settings-card" :bordered="true">
+          <p class="card-desc">日志级别决定写入应用日志的内容量，用于排查资源列表、连接与后端行为问题。</p>
           <NSpace v-bind="kfSpace.buttonGroup">
             <NButton
               v-for="opt in LOG_LEVELS"
@@ -469,7 +469,7 @@ const menuOptions = computed<MenuOption[]>(() =>
               @click="saveLevel(opt.value)"
             >{{ opt.label }}</NButton>
           </NSpace>
-          <p class="card-desc" style="margin-top: 0.5rem">调试日志格式：仅作用于调试日志页，不影响 Pod 或 Workload 日志输出。</p>
+          <p class="card-desc" style="margin-top: 0.5rem">应用日志格式：仅作用于应用日志页，不影响 Pod 或 Workload 日志输出。</p>
           <NSpace v-bind="kfSpace.optionGroup" class="option-group">
             <div class="option-label">格式</div>
             <NSpace v-bind="kfSpace.buttonGroup">
@@ -486,7 +486,7 @@ const menuOptions = computed<MenuOption[]>(() =>
         </NCard>
 
         <NCard title="全局日志显示" size="small" class="settings-card" :bordered="true">
-          <p class="card-desc">这里的顺序会同时作用于日志中心里的资源日志和调试日志。</p>
+          <p class="card-desc">这里的顺序会同时作用于日志中心里的资源日志和应用日志。</p>
           <NSpace v-bind="kfSpace.optionGroup" class="option-group">
             <div class="option-label">顺序</div>
             <NSpace v-bind="kfSpace.buttonGroup">

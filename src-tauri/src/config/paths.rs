@@ -19,9 +19,15 @@ pub fn crd_display_config_path() -> Option<PathBuf> {
     app_data_dir().map(|p| p.join("crd-display.toml"))
 }
 
-/// 调试日志文件：`{app_data_dir}/kube-flow-debug.log`
+/// 调试日志目录：`{app_data_dir}/debug-logs`
+pub fn debug_logs_dir() -> Option<PathBuf> {
+    app_data_dir().map(|p| p.join("debug-logs"))
+}
+
+/// 默认调试日志文件：`{app_data_dir}/debug-logs/kube-flow-debug.log`
+/// 仅用于兼容与兜底；实际运行时优先使用“本次启动日志文件”。
 pub fn debug_log_path() -> Option<PathBuf> {
-    app_data_dir().map(|p| p.join("kube-flow-debug.log"))
+    debug_logs_dir().map(|p| p.join("kube-flow-debug.log"))
 }
 
 /// 应用设置（含日志级别）：`{app_data_dir}/app-settings.toml`

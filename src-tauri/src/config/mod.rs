@@ -6,7 +6,9 @@ mod crd_display;
 mod ssh_config;
 mod app_settings;
 
-pub use paths::{app_data_dir, app_settings_config_path, debug_log_path, ensure_app_data_dir, kube_flow_config_path};
+pub use paths::{
+    app_data_dir, app_settings_config_path, debug_log_path, debug_logs_dir, ensure_app_data_dir, kube_flow_config_path,
+};
 pub use app_settings::{
     AppSettingsConfig, GpuResourceRule, LogDisplayFormat, LogDisplayOrder, LogLevel, ResourceDeployStrategy, SecurityConfig,
 };

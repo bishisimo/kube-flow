@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from "vue";
+import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
 import { NAlert, NButton, NEmpty, NScrollbar } from "naive-ui";
 import {
+  logReadFile,
   logRead,
   logClear,
   logGetDisplaySettings,
@@ -11,7 +12,11 @@ import {
 import { useLogStore } from "../stores/log";
 import { extractErrorMessage } from "../utils/errorMessage";
 
-const props = defineProps<{ visible?: boolean }>();
+const props = defineProps<{
+  visible?: boolean;
+  selectedFileName?: string | null;
+  selectedIsCurrent?: boolean;
+}>();
 const { logRefreshTrigger } = useLogStore();
 const rawContent = ref("");
 const loading = ref(false);
@@ -19,6 +24,8 @@ const clearing = ref(false);
 const error = ref<string | null>(null);
 const displayOrder = ref<LogDisplayOrder>("asc");
 const displayFormat = ref<LogDisplayFormat>("json");
+const autoRefreshTimer = ref<number | null>(null);
+const realtimeEnabled = ref(false);
 
 interface LogLine {
   level: string;
@@ -80,8 +87,10 @@ async function refresh() {
   loading.value = true;
   error.value = null;
   try {
-    const [raw, settings] = await Promise.all([logRead(), logGetDisplaySettings()]);
-    rawContent.value = raw;
+    const settings = await logGetDisplaySettings();
+    rawContent.value = props.selectedFileName
+      ? await logReadFile(props.selectedFileName)
+      : await logRead();
     displayOrder.value = settings.order;
     displayFormat.value = settings.format;
   } catch (e) {
@@ -89,6 +98,28 @@ async function refresh() {
   } finally {
     loading.value = false;
   }
+}
+
+function stopAutoRefresh() {
+  if (autoRefreshTimer.value != null) {
+    window.clearInterval(autoRefreshTimer.value);
+    autoRefreshTimer.value = null;
+  }
+}
+
+function startAutoRefreshIfNeeded() {
+  stopAutoRefresh();
+  if (!(props.visible ?? true)) return;
+  if (!realtimeEnabled.value) return;
+  if (!props.selectedIsCurrent) return;
+  autoRefreshTimer.value = window.setInterval(() => {
+    void refresh();
+  }, 2000);
+}
+
+function toggleRealtime() {
+  realtimeEnabled.value = !realtimeEnabled.value;
+  startAutoRefreshIfNeeded();
 }
 
 async function clear() {
@@ -108,17 +139,47 @@ watch(logRefreshTrigger, refresh);
 watch(
   () => (props.visible ?? true),
   (visible) => {
-    if (visible) refresh();
+    if (visible) {
+      void refresh();
+    }
+    startAutoRefreshIfNeeded();
+  }
+);
+watch(
+  () => props.selectedFileName,
+  () => {
+    if (props.visible ?? true) {
+      void refresh();
+    }
+    startAutoRefreshIfNeeded();
+  }
+);
+watch(
+  () => props.selectedIsCurrent,
+  () => {
+    if (!props.selectedIsCurrent) {
+      realtimeEnabled.value = false;
+    }
+    startAutoRefreshIfNeeded();
   }
 );
 onMounted(refresh);
+onMounted(startAutoRefreshIfNeeded);
+onBeforeUnmount(stopAutoRefresh);
 </script>
 
 <template>
   <div class="log-view">
     <header class="toolbar">
-      <h2 class="title">调试日志</h2>
+      <h2 class="title">应用日志</h2>
       <div class="actions">
+        <NButton
+          size="small"
+          :type="realtimeEnabled ? 'primary' : 'default'"
+          :secondary="!realtimeEnabled"
+          :disabled="!props.selectedIsCurrent"
+          @click="toggleRealtime"
+        >{{ realtimeEnabled ? "关闭实时" : "开启实时" }}</NButton>
         <NButton
           :loading="loading"
           :disabled="clearing"
@@ -130,7 +191,7 @@ onMounted(refresh);
           :loading="clearing"
           :disabled="loading"
           @click="clear"
-        >{{ clearing ? "清除中…" : "清除" }}</NButton>
+        >{{ clearing ? "清除中…" : "清空当前" }}</NButton>
       </div>
     </header>
     <NAlert v-if="error" type="error" :show-icon="true" class="err-box">{{ error }}</NAlert>

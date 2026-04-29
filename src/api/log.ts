@@ -1,5 +1,5 @@
 /**
- * 调试日志相关 Tauri 命令封装。
+ * 应用日志相关 Tauri 命令封装。
  */
 import { invoke } from "@tauri-apps/api/core";
 
@@ -22,11 +22,28 @@ export async function logSetLevel(level: string): Promise<void> {
 }
 
 export async function logRead(): Promise<string> {
-  return invoke<string>("log_read");
+  return invoke<string>("log_read", { fileName: null });
+}
+
+export async function logReadFile(fileName: string): Promise<string> {
+  return invoke<string>("log_read", { fileName });
 }
 
 export async function logClear(): Promise<void> {
   return invoke("log_clear");
+}
+
+export interface DebugLogFileItem {
+  fileName: string;
+  isCurrent: boolean;
+}
+
+export async function logListFiles(): Promise<DebugLogFileItem[]> {
+  return invoke<DebugLogFileItem[]>("log_list_files");
+}
+
+export async function logDelete(fileName: string): Promise<void> {
+  return invoke("log_delete", { fileName });
 }
 
 export type LogDisplayOrder = "asc" | "desc";

@@ -16,6 +16,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             commands::setup_app_state(app)?;
+            let _ = crate::debug_log::init_current_debug_log_path();
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -49,8 +50,10 @@ pub fn run() {
             commands::log_commands::log_set_level,
             commands::log_commands::log_get_display_settings,
             commands::log_commands::log_set_display_settings,
+            commands::log_commands::log_list_files,
             commands::log_commands::log_read,
             commands::log_commands::log_clear,
+            commands::log_commands::log_delete,
             commands::env_commands::env_list,
             commands::env_commands::env_add,
             commands::env_commands::env_update,

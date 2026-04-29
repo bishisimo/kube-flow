@@ -11,6 +11,8 @@ import { useLogCenterStore } from "../stores/logCenter";
 import { useAppSettingsStore } from "../stores/appSettings";
 import { setLogStreamActiveLimit, touchLogStreamSession } from "../stores/logStreamManager";
 import { buildCompactRailItems } from "../utils/compactRail";
+import { logDelete, logListFiles, type DebugLogFileItem } from "../api/log";
+import { extractErrorMessage } from "../utils/errorMessage";
 
 const {
   sessions,
@@ -29,6 +31,14 @@ const sessionRailCollapsed = ref(false);
 const compareSessionMap = ref<Record<string, string>>({});
 const comparePickerOpen = ref(false);
 const comparePickerRef = ref<HTMLElement | null>(null);
+const appLogFiles = ref<DebugLogFileItem[]>([]);
+const appLogSelectedFileName = ref<string | null>(null);
+const appLogLoading = ref(false);
+const appLogDeleting = ref<string | null>(null);
+const appLogError = ref<string | null>(null);
+const selectedAppLogFile = computed(() =>
+  appLogFiles.value.find((item) => item.fileName === appLogSelectedFileName.value) ?? null
+);
 
 const groupedSessions = computed(() => {
   const groups = new Map<string, { envId: string; envName: string; items: typeof sessions.value }>();
@@ -157,6 +167,50 @@ function handleDocumentClick(event: MouseEvent) {
   }
 }
 
+function syncSelectedAppLogFile(files: DebugLogFileItem[]) {
+  if (
+    appLogSelectedFileName.value &&
+    files.some((item) => item.fileName === appLogSelectedFileName.value)
+  ) {
+    return;
+  }
+  appLogSelectedFileName.value =
+    files.find((item) => item.isCurrent)?.fileName ?? files[0]?.fileName ?? null;
+}
+
+async function refreshAppLogFiles() {
+  appLogLoading.value = true;
+  appLogError.value = null;
+  try {
+    const files = await logListFiles();
+    appLogFiles.value = files;
+    syncSelectedAppLogFile(files);
+  } catch (e) {
+    appLogError.value = extractErrorMessage(e);
+  } finally {
+    appLogLoading.value = false;
+  }
+}
+
+function selectAppLogFile(fileName: string) {
+  appLogSelectedFileName.value = fileName;
+}
+
+async function removeAppLogFile(fileName: string) {
+  const target = appLogFiles.value.find((item) => item.fileName === fileName);
+  if (!target || target.isCurrent) return;
+  appLogDeleting.value = fileName;
+  appLogError.value = null;
+  try {
+    await logDelete(fileName);
+    await refreshAppLogFiles();
+  } catch (e) {
+    appLogError.value = extractErrorMessage(e);
+  } finally {
+    appLogDeleting.value = null;
+  }
+}
+
 watch(pendingLogOpen, (pending) => {
   if (pending) handlePendingOpen();
 });
@@ -187,11 +241,20 @@ watch(
   },
   { immediate: true }
 );
+watch(
+  () => activePane.value,
+  (pane) => {
+    if (pane === "debug") {
+      void refreshAppLogFiles();
+    }
+  }
+);
 
 onMounted(() => {
   void ensureAppSettingsLoaded();
   if (pendingLogOpen.value) handlePendingOpen();
   window.addEventListener("click", handleDocumentClick);
+  void refreshAppLogFiles();
 });
 
 onBeforeUnmount(() => {
@@ -271,8 +334,41 @@ onBeforeUnmount(() => {
               />
             </NScrollbar>
           </NTabPane>
-          <NTabPane name="debug" tab="调试日志">
-            <p class="session-empty session-empty-text">调试日志用于查看 kube-flow 自身的后台行为与排障记录。</p>
+          <NTabPane name="debug" tab="应用日志">
+            <NScrollbar class="session-scroll" trigger="hover">
+              <div v-if="appLogFiles.length" class="session-groups">
+                <div
+                  v-for="item in appLogFiles"
+                  :key="item.fileName"
+                  class="session-item"
+                  :class="{ active: appLogSelectedFileName === item.fileName }"
+                >
+                  <NButton quaternary class="session-item-main-button" @click="selectAppLogFile(item.fileName)">
+                    <NTag
+                      size="small"
+                      round
+                      :bordered="false"
+                      :class="item.isCurrent ? 'badge-pod' : 'badge-workload'"
+                    >{{ item.isCurrent ? "当前" : "历史" }}</NTag>
+                    <span class="session-item-main">
+                      <span class="session-item-name" :title="item.fileName">{{ item.fileName }}</span>
+                    </span>
+                  </NButton>
+                  <NButton
+                    text
+                    class="session-item-close"
+                    :disabled="item.isCurrent || appLogDeleting === item.fileName"
+                    @click="removeAppLogFile(item.fileName)"
+                  >{{ appLogDeleting === item.fileName ? "…" : "×" }}</NButton>
+                </div>
+              </div>
+              <NEmpty
+                v-else-if="!appLogLoading"
+                class="session-empty"
+                description="暂无应用日志文件。"
+              />
+              <p v-if="appLogError" class="session-empty session-empty-text">{{ appLogError }}</p>
+            </NScrollbar>
           </NTabPane>
         </NTabs>
       </div>
@@ -280,7 +376,11 @@ onBeforeUnmount(() => {
 
     <main class="log-main">
       <section v-if="activePane === 'debug'" class="log-stage debug-stage">
-        <LogView :visible="true" />
+        <LogView
+          :visible="true"
+          :selected-file-name="appLogSelectedFileName"
+          :selected-is-current="Boolean(selectedAppLogFile?.isCurrent)"
+        />
       </section>
 
       <template v-else>

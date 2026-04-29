@@ -90,7 +90,6 @@ const containerSelectOptions = () => props.containerOptions.map((name) => ({ lab
 <template>
   <BaseModal :visible="visible" title="进入容器调试环境" width="760px" @close="emit('close')">
       <div class="pod-debug-modal" role="dialog" aria-label="进入容器调试环境">
-        <h3 class="sync-orchestrator-title">进入容器调试环境</h3>
         <p class="sync-orchestrator-desc">
           先通过节点终端策略进入 Pod 所在主机，再按你勾选的 namespace 组合执行 `nsenter`。这样可以保留主机工具，同时进入目标容器的关键隔离空间。
         </p>
