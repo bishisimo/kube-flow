@@ -33,11 +33,7 @@ import {
 import { useOrchestratorImportPreview } from "../features/orchestrator/useOrchestratorImportPreview";
 import { useEnvStore } from "../stores/env";
 import { useYamlMonacoTheme } from "../stores/yamlTheme";
-import {
-  useOrchestratorStore,
-  type OrchestratorImportBatch,
-  type OrchestratorManifest,
-} from "../stores/orchestrator";
+import { useOrchestratorStore, type OrchestratorManifest } from "../stores/orchestrator";
 import OrchestratorPackageView from "../components/orchestrator/OrchestratorPackageView.vue";
 import OrchestratorCopyDialog from "../components/orchestrator/OrchestratorCopyDialog.vue";
 import OrchestratorDiffModal from "../components/orchestrator/OrchestratorDiffModal.vue";
@@ -82,7 +78,6 @@ const APPLY_ORDER: Record<string, number> = {
 const { environments, currentId } = useEnvStore();
 const {
   manifests,
-  importBatches,
   orchestratorFocusTarget,
   saveManifestYaml,
   setManifestIdentity,
@@ -93,14 +88,10 @@ const {
 const { monacoTheme } = useYamlMonacoTheme();
 
 const activeView = ref<"resources" | "packages">("resources");
-const resourceGroupView = ref<"component" | "file" | "batch">("component");
 const selectedEnvId = ref<string>("");
 const selectedComponent = ref<string>("");
-const selectedSourceFile = ref<string>("");
-const selectedBatchId = ref<string>("");
 const selectedManifestId = ref<string>("");
 const editYaml = ref("");
-const componentFilterKeyword = ref("");
 const validationErrors = ref<string[]>([]);
 const validationWarnings = ref<string[]>([]);
 const opMessage = ref<string | null>(null);
@@ -153,68 +144,21 @@ const componentItems = computed(() =>
     count: manifestsByEnv.value.filter((m) => m.component === name).length,
   }))
 );
-const sourceFileItems = computed(() => {
-  const fileMap = new Map<string, number>();
-  for (const manifest of manifestsByEnv.value) {
-    const fileName = manifest.source_file_name?.trim();
-    if (!fileName) continue;
-    fileMap.set(fileName, (fileMap.get(fileName) ?? 0) + 1);
-  }
-  return Array.from(fileMap.entries())
-    .map(([name, count]) => ({ name, count }))
-    .sort((a, b) => a.name.localeCompare(b.name));
-});
-const batchItems = computed(() =>
-  importBatches.value
-    .filter((batch) => batch.env_id === selectedEnvId.value)
-    .map((batch) => ({
-      id: batch.id,
-      name: batch.name,
-      count: batch.resource_count,
-      batch,
-    }))
-);
 
-const filteredComponentItems = computed(() => {
-  const keyword = componentFilterKeyword.value.trim().toLowerCase();
-  if (!keyword) return componentItems.value;
-  return componentItems.value.filter((item) => item.name.toLowerCase().includes(keyword));
-});
-const filteredSourceFileItems = computed(() =>
-  sourceFileItems.value.filter((entry) =>
-    entry.name.toLowerCase().includes(componentFilterKeyword.value.trim().toLowerCase())
-  )
+const componentSelectOptions = computed(() =>
+  componentItems.value.map((item) => ({
+    label: `${item.name}（${item.count}）`,
+    value: item.name,
+  }))
 );
-const filteredBatchItems = computed(() =>
-  batchItems.value.filter((entry) =>
-    entry.name.toLowerCase().includes(componentFilterKeyword.value.trim().toLowerCase())
-  )
+const selectedComponentResourceCount = computed(
+  () => componentItems.value.find((c) => c.name === selectedComponent.value)?.count ?? 0
 );
 
 const manifestsByComponent = computed(() =>
   manifestsByEnv.value.filter((m) => m.component === selectedComponent.value)
 );
-const manifestsBySourceFile = computed(() =>
-  manifestsByEnv.value.filter((m) => (m.source_file_name ?? "") === selectedSourceFile.value)
-);
-const manifestsByBatch = computed(() =>
-  manifestsByEnv.value.filter((m) => (m.source_batch_id ?? "") === selectedBatchId.value)
-);
-const selectedImportBatch = computed<OrchestratorImportBatch | null>(
-  () => importBatches.value.find((batch) => batch.id === selectedBatchId.value) ?? null
-);
-const activeGroupLabel = computed(() => {
-  if (resourceGroupView.value === "file") return selectedSourceFile.value;
-  if (resourceGroupView.value === "batch") {
-    return selectedImportBatch.value?.name ?? "";
-  }
-  return selectedComponent.value;
-});
-const manifestsInActiveGroup = computed(() => {
-  if (resourceGroupView.value === "file") return manifestsBySourceFile.value;
-  if (resourceGroupView.value === "batch") return manifestsByBatch.value;
-  return manifestsByComponent.value;
-});
+const activeGroupLabel = computed(() => selectedComponent.value);
 const componentOptionsForAssign = computed(() =>
   components.value.filter((name) => name !== selectedManifest.value?.component)
 );
@@ -222,7 +166,7 @@ const componentAssignSelectOptions = computed(() =>
   componentOptionsForAssign.value.map((name) => ({ label: name, value: name }))
 );
 const manifestDraftCount = computed(() =>
-  manifestsInActiveGroup.value.filter((m) => manifestDraftCache.value[m.id] && manifestDraftCache.value[m.id] !== m.yaml).length
+  manifestsByComponent.value.filter((m) => manifestDraftCache.value[m.id] && manifestDraftCache.value[m.id] !== m.yaml).length
 );
 const selectedManifest = computed<OrchestratorManifest | null>(
   () => manifests.value.find((m) => m.id === selectedManifestId.value) ?? null
@@ -271,7 +215,7 @@ const componentApplyPlan = computed(() => {
   });
 });
 const canOpenCopyDialog = computed(
-  () => Boolean(selectedEnvId.value && selectedComponent.value && environments.value.length > 1 && resourceGroupView.value === "component")
+  () => Boolean(selectedEnvId.value && selectedComponent.value && environments.value.length > 1)
 );
 const {
   importLoading,
@@ -318,7 +262,6 @@ const {
   selectedEnvId,
   selectedComponent,
   selectedManifestId,
-  resourceGroupView,
   selectedManifest,
   componentApplyPlan,
   editYaml,
@@ -363,16 +306,6 @@ const {
 function onSelectComponent(componentName: string) {
   if (!componentName || componentName === selectedComponent.value) return;
   selectedComponent.value = componentName;
-}
-
-function onSelectSourceFile(fileName: string) {
-  if (!fileName || fileName === selectedSourceFile.value) return;
-  selectedSourceFile.value = fileName;
-}
-
-function onSelectBatch(batchId: string) {
-  if (!batchId || batchId === selectedBatchId.value) return;
-  selectedBatchId.value = batchId;
 }
 
 function onSelectManifest(manifestId: string) {
@@ -537,10 +470,6 @@ async function onConfirmImport() {
       }
     );
     selectedComponent.value = component;
-    if (result.batchId) {
-      selectedBatchId.value = result.batchId;
-    }
-    if (resources[0]?.source_file_name) selectedSourceFile.value = resources[0].source_file_name;
     if (result.manifestIds.length > 0) {
       onSelectManifest(result.manifestIds[0]);
     }
@@ -675,24 +604,11 @@ watch(
 );
 
 watch(
-  () => [
-    selectedEnvId.value,
-    components.value.join("|"),
-    sourceFileItems.value.map((item) => item.name).join("|"),
-    batchItems.value.map((item) => item.id).join("|"),
-  ] as const,
+  () => [selectedEnvId.value, components.value.join("|")] as const,
   () => {
     if (!components.value.length) selectedComponent.value = "";
     else if (!selectedComponent.value || !components.value.includes(selectedComponent.value)) {
       selectedComponent.value = components.value[0];
-    }
-    if (!sourceFileItems.value.length) selectedSourceFile.value = "";
-    else if (!selectedSourceFile.value || !sourceFileItems.value.some((item) => item.name === selectedSourceFile.value)) {
-      selectedSourceFile.value = sourceFileItems.value[0].name;
-    }
-    if (!batchItems.value.length) selectedBatchId.value = "";
-    else if (!selectedBatchId.value || !batchItems.value.some((item) => item.id === selectedBatchId.value)) {
-      selectedBatchId.value = batchItems.value[0].id;
     }
     diffRows.value = [];
     diffVisible.value = false;
@@ -716,29 +632,23 @@ watch(
 );
 
 watch(
-  () => [
-    resourceGroupView.value,
-    selectedComponent.value,
-    selectedSourceFile.value,
-    selectedBatchId.value,
-    manifestsInActiveGroup.value.map((m) => m.id).join(","),
-  ] as const,
+  () => [selectedComponent.value, manifestsByComponent.value.map((m) => m.id).join(",")] as const,
   () => {
-    if (!manifestsInActiveGroup.value.length) {
+    if (!manifestsByComponent.value.length) {
       selectedManifestId.value = "";
       editYaml.value = "";
       return;
     }
-    const rememberedId =
-      resourceGroupView.value === "component"
-        ? selectedManifestByComponent.value[selectedComponent.value]
-        : "";
-    if (rememberedId && manifestsInActiveGroup.value.some((m) => m.id === rememberedId)) {
+    const rememberedId = selectedManifestByComponent.value[selectedComponent.value];
+    if (rememberedId && manifestsByComponent.value.some((m) => m.id === rememberedId)) {
       selectedManifestId.value = rememberedId;
-    } else if (!selectedManifestId.value || !manifestsInActiveGroup.value.some((m) => m.id === selectedManifestId.value)) {
-      selectedManifestId.value = manifestsInActiveGroup.value[0].id;
+    } else if (
+      !selectedManifestId.value ||
+      !manifestsByComponent.value.some((m) => m.id === selectedManifestId.value)
+    ) {
+      selectedManifestId.value = manifestsByComponent.value[0].id;
     }
-    if (resourceGroupView.value === "component" && selectedComponent.value && selectedManifestId.value) {
+    if (selectedComponent.value && selectedManifestId.value) {
       selectedManifestByComponent.value[selectedComponent.value] = selectedManifestId.value;
     }
     diffRows.value = [];
@@ -812,7 +722,7 @@ function validateCurrent(): boolean {
   }
   if (validationErrors.value.length > 0) return false;
 
-  validationWarnings.value = extractRefWarningsFromInventory(editYaml.value, manifestsInActiveGroup.value);
+  validationWarnings.value = extractRefWarningsFromInventory(editYaml.value, manifestsByComponent.value);
   return true;
 }
 
@@ -880,7 +790,7 @@ function onViewHistory(item: ManifestHistoryItem) {
             {{
               createYamlActive
                 ? "当前正在编辑新建草稿"
-                : `${resourceGroupView === "component" ? "组件" : resourceGroupView === "file" ? "文件" : "批次"}：${activeGroupLabel || "-"}（${manifestsInActiveGroup.length} 资源）`
+                : `组件：${activeGroupLabel || "-"}（${manifestsByComponent.length} 资源）`
             }}
           </span>
         </div>
@@ -922,164 +832,107 @@ function onViewHistory(item: ManifestHistoryItem) {
                 filterable
                 class="env-select-naive"
               />
-              <span class="env-select-hint">已选择的环境即当前操作环境</span>
             </label>
           </div>
           <div v-if="!selectedEnvId" class="empty">请先选择环境</div>
           <template v-else>
-            <div class="component-switcher-head">
-              <span>资源视图</span>
-              <small v-if="manifestDraftCount > 0">未保存草稿 {{ manifestDraftCount }}</small>
-            </div>
-            <NSpace v-bind="kfSpace.groupViewSwitch" class="group-view-switch">
-              <NButton
-                size="tiny"
-                :type="resourceGroupView === 'component' ? 'primary' : 'default'"
-                :secondary="resourceGroupView !== 'component'"
-                @click="resourceGroupView = 'component'"
-              >组件</NButton>
-              <NButton
-                size="tiny"
-                :type="resourceGroupView === 'file' ? 'primary' : 'default'"
-                :secondary="resourceGroupView !== 'file'"
-                @click="resourceGroupView = 'file'"
-              >文件</NButton>
-              <NButton
-                size="tiny"
-                :type="resourceGroupView === 'batch' ? 'primary' : 'default'"
-                :secondary="resourceGroupView !== 'batch'"
-                @click="resourceGroupView = 'batch'"
-              >批次</NButton>
-            </NSpace>
-            <NInput
-              v-model:value="componentFilterKeyword"
-              size="small"
-              clearable
-              class="component-search"
-              :placeholder="resourceGroupView === 'component' ? '搜索组件名称' : resourceGroupView === 'file' ? '搜索文件名' : '搜索批次名称'"
-            />
-            <div class="component-list">
-              <div
-                v-if="resourceGroupView === 'component'"
-                v-for="item in filteredComponentItems"
-                :key="item.name"
-                class="component-item"
-                :class="{ active: selectedComponent === item.name }"
-              >
+            <section class="orch-sidebar-tier orch-sidebar-tier--component" aria-labelledby="orch-sidebar-component-heading">
+              <div id="orch-sidebar-component-heading" class="env-select-card env-select-card-sidebar">
+                <div class="component-select-toolbar">
+                  <span class="env-select-label">当前组件</span>
+                  <small v-if="manifestDraftCount > 0" class="orch-sidebar-tier-meta">未保存草稿 {{ manifestDraftCount }}</small>
+                </div>
+                <label class="env-select-main">
+                  <NSelect
+                    v-model:value="selectedComponent"
+                    :options="componentSelectOptions"
+                    placeholder="选择组件"
+                    filterable
+                    :disabled="!componentSelectOptions.length"
+                    class="env-select-naive"
+                  />
+                </label>
+                <div v-if="selectedEnvId && !componentSelectOptions.length" class="empty orch-empty-inline">
+                  当前环境暂无组件，请先新建或导入资源。
+                </div>
+              </div>
+            </section>
+
+            <section class="orch-sidebar-tier orch-sidebar-tier--resources" aria-labelledby="orch-sidebar-resources-heading">
+              <div id="orch-sidebar-resources-heading" class="orch-sidebar-tier-head">
+                <div class="orch-sidebar-tier-head-main">
+                  <span class="orch-sidebar-tier-label">资源</span>
+                  <span class="orch-sidebar-tier-count">{{ manifestsByComponent.length }}</span>
+                </div>
                 <NButton
-                  quaternary
-                  class="component-item-main-button"
-                  @click="onSelectComponent(item.name)"
-                >
-                  <span class="component-item-name">{{ item.name }}</span>
-                  <div class="component-item-actions">
-                    <small>{{ item.count }}</small>
-                  </div>
-                </NButton>
-                <NButton
+                  v-if="selectedComponent && selectedComponentResourceCount > 0"
                   text
                   type="error"
-                  class="component-item-close"
-                  title="删除应用组件"
-                  aria-label="删除应用组件"
-                  @click="openDeleteComponentDialog(item.name, item.count)"
+                  size="small"
+                  class="orch-delete-component-icon-btn"
+                  title="删除该应用组件分组及其下的全部编排资源"
+                  aria-label="删除应用组件及其全部编排资源"
+                  @click="openDeleteComponentDialog(selectedComponent, selectedComponentResourceCount)"
                 >
-                  ×
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <polyline points="3 6 5 6 21 6" />
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                    <line x1="10" y1="11" x2="10" y2="17" />
+                    <line x1="14" y1="11" x2="14" y2="17" />
+                  </svg>
                 </NButton>
               </div>
-              <div
-                v-else-if="resourceGroupView === 'file'"
-                v-for="item in filteredSourceFileItems"
-                :key="item.name"
-                class="component-item"
-                :class="{ active: selectedSourceFile === item.name }"
-              >
-                <NButton
-                  quaternary
-                  class="component-item-main-button component-item-main-button--solo"
-                  @click="onSelectSourceFile(item.name)"
+              <div class="resource-list-panel">
+                <div
+                  v-for="m in manifestsByComponent"
+                  :key="m.id"
+                  class="item"
+                  :class="{ active: selectedManifestId === m.id }"
                 >
-                  <span class="component-item-name">{{ item.name }}</span>
-                  <div class="component-item-actions">
-                    <small>{{ item.count }}</small>
-                  </div>
-                </NButton>
+                  <NButton
+                    quaternary
+                    class="resource-item-main"
+                    @click="onSelectManifest(m.id)"
+                  >
+                    <div class="item-title">
+                      <span class="item-kind">{{ m.resource_kind }}</span>
+                    </div>
+                    <div class="item-name-row">
+                      <strong class="item-name">{{ m.resource_name }}</strong>
+                      <strong v-if="hasManifestDraft(m.id)" class="draft-tag">草稿</strong>
+                    </div>
+                    <div class="item-sub">
+                      <span>命名空间：{{ m.resource_namespace || "default" }}</span>
+                    </div>
+                    <div v-if="m.source_file_name" class="item-meta">
+                      <span>{{ m.source_file_name }}#{{ m.source_doc_index ?? 1 }}</span>
+                    </div>
+                  </NButton>
+                  <NButton
+                    text
+                    type="error"
+                    class="resource-item-close"
+                    title="删除资源"
+                    aria-label="删除资源"
+                    @click="openDeleteResourceDialog(m)"
+                  >
+                    ×
+                  </NButton>
+                </div>
+                <div v-if="!manifestsByComponent.length" class="empty empty--tier-muted">当前组件暂无资源</div>
               </div>
-              <div
-                v-else
-                v-for="item in filteredBatchItems"
-                :key="item.id"
-                class="component-item"
-                :class="{ active: selectedBatchId === item.id }"
-              >
-                <NButton
-                  quaternary
-                  class="component-item-main-button component-item-main-button--solo"
-                  @click="onSelectBatch(item.id)"
-                >
-                  <span class="component-item-name">{{ item.name }}</span>
-                  <div class="component-item-actions">
-                    <small>{{ item.count }}</small>
-                  </div>
-                </NButton>
-              </div>
-              <div
-                v-if="
-                  (resourceGroupView === 'component' && !filteredComponentItems.length) ||
-                  (resourceGroupView === 'file' && !filteredSourceFileItems.length) ||
-                  (resourceGroupView === 'batch' && !filteredBatchItems.length)
-                "
-                class="empty"
-              >
-                {{ resourceGroupView === "component" ? "没有匹配的组件" : resourceGroupView === "file" ? "没有匹配的文件" : "没有匹配的批次" }}
-              </div>
-            </div>
-
-          <div class="list-title">
-            <span>资源列表</span>
-            <small>{{ activeGroupLabel || "-" }}</small>
-          </div>
-          <div class="resource-list-panel">
-            <div
-              v-for="m in manifestsInActiveGroup"
-              :key="m.id"
-              class="item"
-              :class="{ active: selectedManifestId === m.id }"
-            >
-              <NButton
-                quaternary
-                class="resource-item-main"
-                @click="onSelectManifest(m.id)"
-              >
-                <div class="item-title">
-                  <span class="item-kind">{{ m.resource_kind }}</span>
-                </div>
-                <div class="item-name-row">
-                  <strong class="item-name">{{ m.resource_name }}</strong>
-                  <strong v-if="hasManifestDraft(m.id)" class="draft-tag">草稿</strong>
-                </div>
-                <div class="item-sub">
-                  <span>命名空间：{{ m.resource_namespace || "default" }}</span>
-                </div>
-                <div v-if="m.source_file_name" class="item-meta">
-                  <span>{{ m.source_file_name }}#{{ m.source_doc_index ?? 1 }}</span>
-                </div>
-              </NButton>
-              <NButton
-                text
-                type="error"
-                class="resource-item-close"
-                title="删除资源"
-                aria-label="删除资源"
-                @click="openDeleteResourceDialog(m)"
-              >
-                ×
-              </NButton>
-            </div>
-            <div v-if="!manifestsInActiveGroup.length" class="empty">
-              {{ resourceGroupView === "component" ? "当前组件暂无资源" : resourceGroupView === "file" ? "当前文件暂无资源" : "当前批次暂无资源" }}
-            </div>
-          </div>
+            </section>
           </template>
         </div>
       </aside>
@@ -1231,9 +1084,9 @@ function onViewHistory(item: ManifestHistoryItem) {
           <NSpace v-bind="kfSpace.editorEmptyActions" class="editor-empty-actions">
             <NButton type="primary" @click="openCreateYamlDialog">新建资源</NButton>
             <NButton
-              v-if="manifestsInActiveGroup.length"
+              v-if="manifestsByComponent.length"
               secondary
-              @click="onSelectManifest(manifestsInActiveGroup[0].id)"
+              @click="onSelectManifest(manifestsByComponent[0].id)"
             >打开第一个资源</NButton>
           </NSpace>
         </div>

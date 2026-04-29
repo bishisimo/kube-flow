@@ -25,7 +25,6 @@ export function useOrchestratorApplyFlow(params: {
   selectedEnvId: Ref<string>;
   selectedComponent: Ref<string>;
   selectedManifestId: Ref<string>;
-  resourceGroupView: Ref<"component" | "file" | "batch">;
   selectedManifest: ComputedRef<{ id: string } | null>;
   componentApplyPlan: ComputedRef<ComponentApplyPlanItem[]>;
   editYaml: Ref<string>;
@@ -57,13 +56,8 @@ export function useOrchestratorApplyFlow(params: {
   const componentApplyPhase = ref<"idle" | "applying" | "completed">("idle");
 
   const canApplyCurrent = computed(() => Boolean(params.selectedEnvId.value && params.selectedManifestId.value));
-  const canApplyComponent = computed(
-    () =>
-      Boolean(
-        params.selectedEnvId.value &&
-          params.selectedComponent.value &&
-          params.resourceGroupView.value === "component"
-      )
+  const canApplyComponent = computed(() =>
+    Boolean(params.selectedEnvId.value && params.selectedComponent.value)
   );
   const canOpenApplyDialog = computed(() => canApplyCurrent.value || canApplyComponent.value);
   const componentApplySummary = computed(() => {

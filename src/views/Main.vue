@@ -665,7 +665,9 @@ const syncOrchestratorDialogVisible = ref(false);
 const syncOrchestratorRelatedRefs = ref<SyncRelatedRef[]>([]);
 const syncOrchestratorLoadingRelated = ref(false);
 const syncOrchestratorRelatedError = ref<string | null>(null);
+const syncOrchestratorInitialResourceKind = ref("");
 const syncOrchestratorInitialResourceName = ref("");
+const syncOrchestratorInitialResourceNamespace = ref<string | null>(null);
 
 const orchestratorComponentsForCurrentEnv = computed(() => {
   const envId = currentId.value;
@@ -1192,7 +1194,9 @@ async function openSyncToOrchestratorDialog() {
   const envId = currentId.value;
   const r = selectedResource.value;
   if (!envId || !r) return;
+  syncOrchestratorInitialResourceKind.value = r.kind;
   syncOrchestratorInitialResourceName.value = r.name;
+  syncOrchestratorInitialResourceNamespace.value = r.namespace;
   syncOrchestratorDialogVisible.value = true;
   closeActionMenu();
   await loadSyncRelatedRefs(envId, r);
@@ -1856,7 +1860,9 @@ const {
       :related-refs="syncOrchestratorRelatedRefs"
       :loading-related="syncOrchestratorLoadingRelated"
       :related-error="syncOrchestratorRelatedError"
+      :initial-resource-kind="syncOrchestratorInitialResourceKind"
       :initial-resource-name="syncOrchestratorInitialResourceName"
+      :initial-resource-namespace="syncOrchestratorInitialResourceNamespace"
       @close="closeSyncToOrchestratorDialog"
       @sync="onSyncDialogConfirm"
     />

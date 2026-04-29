@@ -177,12 +177,6 @@ export const kfSpace = {
     align: "center" as const,
     size: 6,
   },
-  /** 组件/文件/批次切换 */
-  groupViewSwitch: {
-    align: "center" as const,
-    wrap: true,
-    size: 6,
-  },
   /** 编排侧栏元信息操作 */
   metaActions: {
     align: "center" as const,

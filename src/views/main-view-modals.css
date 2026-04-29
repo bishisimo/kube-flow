@@ -47,13 +47,66 @@
   font-size: 0.8rem;
   color: #b91c1c;
 }
-.sync-orchestrator-modal {
-  width: min(92vw, 520px);
-  background: #fff;
-  border-radius: 12px;
-  border: 1px solid #cbd5e1;
-  padding: 1rem;
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.15);
+/* 嵌入 BaseModal 的内容区：不再套第二层卡片，避免左上角挤压感 */
+.sync-orchestrator-body {
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.sync-primary-resource {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.45rem;
+  margin-bottom: 1rem;
+  padding: 0.95rem 1.05rem;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  background: linear-gradient(145deg, #f8fafc 0%, #f1f5f9 55%, #eef2ff 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75);
+}
+.sync-primary-resource-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+.sync-primary-resource-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.45rem 0.65rem;
+}
+.sync-primary-kind {
+  display: inline-block;
+  padding: 0.15rem 0.45rem;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: #3730a3;
+  background: rgba(99, 102, 241, 0.12);
+  border: 1px solid rgba(99, 102, 241, 0.22);
+}
+.sync-primary-name {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #0f172a;
+  word-break: break-word;
+}
+.sync-primary-ns {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.5rem;
+  font-size: 0.8rem;
+  color: #334155;
+}
+.sync-primary-ns-key {
+  font-weight: 600;
+  font-size: 0.72rem;
+  color: #94a3b8;
+  letter-spacing: 0.02em;
 }
 .sync-orchestrator-title {
   margin: 0 0 0.35rem;

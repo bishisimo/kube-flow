@@ -10,7 +10,9 @@ const props = defineProps<{
   relatedRefs: SyncRelatedRef[];
   loadingRelated: boolean;
   relatedError: string | null;
+  initialResourceKind: string;
   initialResourceName: string;
+  initialResourceNamespace: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -47,6 +49,13 @@ watch(
 
 const selectedCount = computed(() => selectedRefKeys.value.length);
 const totalCount = computed(() => props.relatedRefs.length);
+
+const primaryIsNamespaced = computed(
+  () =>
+    props.initialResourceNamespace !== null &&
+    props.initialResourceNamespace !== ""
+);
+
 const allSelected = computed(
   () => props.relatedRefs.length > 0 && selectedRefKeys.value.length === props.relatedRefs.length
 );
@@ -66,10 +75,26 @@ function onConfirm() {
 
 <template>
   <BaseModal :visible="visible" title="同步到编排中心" width="640px" @close="emit('close')">
-      <div class="sync-orchestrator-modal" role="dialog" aria-label="同步到编排中心">
-        <h3 class="sync-orchestrator-title">同步到编排中心</h3>
+      <div class="sync-orchestrator-body" role="dialog" aria-label="同步到编排中心">
+        <div class="sync-primary-resource" aria-live="polite">
+          <span class="sync-primary-resource-label">当前资源</span>
+          <div class="sync-primary-resource-main">
+            <span class="sync-primary-kind">{{ initialResourceKind }}</span>
+            <span class="sync-primary-name">{{ initialResourceName }}</span>
+          </div>
+          <div class="sync-primary-ns">
+            <template v-if="primaryIsNamespaced">
+              <span class="sync-primary-ns-key">命名空间</span>
+              {{ initialResourceNamespace }}
+            </template>
+            <template v-else>
+              <span class="sync-primary-ns-key">范围</span>
+              集群资源
+            </template>
+          </div>
+        </div>
         <p class="sync-orchestrator-desc">
-          选择将当前资源同步到哪个应用组件，可用于继续维护已有组件或新建组件。
+          选择将上述资源同步到哪个应用组件，可维护已有组件或新建组件。
         </p>
         <div class="sync-orchestrator-mode-row">
           <NRadioGroup v-model:value="mode" name="sync-mode">
