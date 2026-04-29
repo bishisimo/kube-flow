@@ -27,7 +27,7 @@ impl RelationExtractor for ServiceAccountExtractor {
             from: node_ref.clone(),
             to: ResourceRef::new("ServiceAccount", node_ref.namespace.clone(), sa_name),
             relation_type: RelationType::ServiceAccountRef,
-            label_selector: None,
+            label_selector: None, to_display: None,
         }]
     }
 }

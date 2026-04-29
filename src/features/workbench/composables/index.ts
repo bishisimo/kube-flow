@@ -2,6 +2,7 @@ export { useWorkbenchRecents, type UseWorkbenchRecentsOptions } from "./useWorkb
 export { useWorkbenchWatch, type WorkbenchWatchView } from "./useWorkbenchWatch";
 export { useWorkbenchListUi } from "./useWorkbenchListUi";
 export { useWorkbenchCustomResource } from "./useWorkbenchCustomResource";
+export { useWorkbenchFavoriteKinds, type FavoriteKindEntry } from "./useWorkbenchFavoriteKinds";
 export {
   useWorkbenchResourceCollections,
   type ResourceCacheEntry,

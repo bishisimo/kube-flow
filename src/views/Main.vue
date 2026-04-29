@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick, type Ref } from "vue";
+import { NLayout, NLayoutSider } from "naive-ui";
 
 defineOptions({ name: "Main" });
 import { extractErrorMessage } from "../utils/errorMessage";
 import { createStorage } from "../utils/storage";
-import { useEnvStore } from "../stores/env";
+import { useEnvStore, workbenchPendingNav, setEnvNamespaces } from "../stores/env";
 import EnvBar from "../components/EnvBar.vue";
 import WorkbenchBreadcrumb from "../components/workbench/WorkbenchBreadcrumb.vue";
 import WorkbenchToolbar from "../components/workbench/WorkbenchToolbar.vue";
@@ -14,11 +15,11 @@ import { RESOURCE_GROUPS, RESOURCE_KINDS_FLAT, type ResourceKind } from "../cons
 import { resourceKindMatchesSearch } from "../constants/resourceAliases";
 import {
   WORKBENCH_ACTION_MENU_OFFSET,
-  WORKBENCH_ACTION_MENU_VIEWPORT_GAP,
   WORKBENCH_ENV_BAR_COLLAPSED_KEY,
   WORKBENCH_NODE_ALLOC_REFRESH_MS,
   WORKBENCH_NODE_TERMINAL_RESOURCE_KINDS,
   WORKBENCH_SHELL_WORKLOAD_KINDS,
+  WORKBENCH_SORTABLE_KEYS,
   buildApiKindToIdMap,
   buildValidResourceKindSet,
   useWorkbenchCustomResource,
@@ -34,7 +35,13 @@ import {
   useWorkbenchListUi,
   useWorkbenchNavigation,
   useWorkbenchDrillNavigation,
+  useWorkbenchFavoriteKinds,
+  extensionStableKey,
+  type FavoriteKindEntry,
 } from "../features/workbench";
+import { useCommandPalette } from "../features/commandPalette";
+import { workbenchResourcePaletteAdapter } from "../stores/workbenchResourcePalette";
+import { buildResourcePaletteValueCandidates } from "../features/workbench/resourcePaletteActions";
 import ResourceDetailDrawer from "../components/ResourceDetailDrawer.vue";
 import ChangeImageModal from "../components/ChangeImageModal.vue";
 import DeleteConfirmModal from "../components/DeleteConfirmModal.vue";
@@ -78,7 +85,7 @@ const RESOURCE_KINDS = RESOURCE_KINDS_FLAT;
 const VALID_KINDS = buildValidResourceKindSet(RESOURCE_KINDS);
 const API_KIND_TO_ID = buildApiKindToIdMap(RESOURCE_KINDS);
 
-const { openedEnvs, currentEnv, currentId, touchEnv, loadEnvironments, getEnvViewState, setEnvViewState } = useEnvStore();
+const { openedEnvs, currentEnv, currentId, setCurrent, touchEnv, loadEnvironments, getEnvViewState, setEnvViewState } = useEnvStore();
 const {
   favoriteNamespaces,
   recentNamespaces,
@@ -89,6 +96,14 @@ const {
   hydrateFromStorage,
   loadRecentNamespacesForEnv,
 } = useWorkbenchRecents({ currentId, validKindIds: VALID_KINDS });
+const {
+  favoriteKindEntries,
+  hydrateFavoriteKinds,
+  isFavoriteBuiltin,
+  isFavoriteExtension,
+  toggleFavoriteBuiltin,
+  toggleFavoriteExtension,
+} = useWorkbenchFavoriteKinds({ validKindIds: VALID_KINDS });
 const {
   watchEnabled,
   activeWatchTokens,
@@ -210,6 +225,41 @@ function selectCustomKindOption(target: ResolvedAliasTarget) {
   navigateTo({ customTarget: target, nameFilter: "", drillFrom: null, closeDrawer: false });
 }
 
+function onToggleFavoriteKindEntry(entry: FavoriteKindEntry) {
+  if (entry.kind === "builtin") toggleFavoriteBuiltin(entry.id);
+  else toggleFavoriteExtension(entry.target);
+}
+
+const favoriteKindToolbarRows = computed(() =>
+  favoriteKindEntries.value.map((e) => {
+    if (e.kind === "builtin") {
+      const meta = RESOURCE_KINDS.find((k) => k.id === e.id);
+      return {
+        key: `b:${e.id}`,
+        entry: e,
+        title: meta?.label ?? e.id,
+        subtitle: "内置",
+      };
+    }
+    const t = e.target;
+    return {
+      key: `e:${extensionStableKey(t)}`,
+      entry: e,
+      title: t.kind,
+      subtitle: `${t.api_version} · ${t.plural}`,
+    };
+  })
+);
+
+const extensionFavoriteKeySet = computed(
+  () =>
+    new Set(
+      favoriteKindEntries.value
+        .filter((e): e is Extract<FavoriteKindEntry, { kind: "extension" }> => e.kind === "extension")
+        .map((e) => extensionStableKey(e.target))
+    )
+);
+
 /** 仅清除钻取上下文并刷新（面包屑点击 namespace 时） */
 function clearDrillAndReload() {
   navigateTo({ drillFrom: null, nameFilter: "", closeDrawer: false });
@@ -264,6 +314,12 @@ const {
   getState,
 });
 const workbenchToolbarRef = ref<InstanceType<typeof WorkbenchToolbar> | null>(null);
+const workbenchResourceTableRef = ref<InstanceType<typeof WorkbenchResourceTable> | null>(null);
+/** 资源列表键盘导航当前行（与 ActionMenu 的 active 行独立）。 */
+const keyboardFocusRowKey = ref<string | null>(null);
+/** 命令面板 ⌘Enter 导航后，待列表加载结束再聚焦表格壳层。 */
+const pendingListFocusAfterNav = ref(false);
+const paletteWorkbench = useCommandPalette();
 
 /** 子组件 expose 的模板 ref 在运行时为 Ref，类型侧可能已解包，这里统一取 DOM。 */
 function toolbarHTMLElement(
@@ -316,7 +372,7 @@ const sortOrder = ref<"asc" | "desc">("desc");
 const viewSessionId = ref(0);
 const latestListRequestId = ref(0);
 
-const { tableColumns, tableRows, onSortColumn } = useWorkbenchTableModel({
+const { tableColumns, tableRows } = useWorkbenchTableModel({
   selectedKind,
   selectedCustomTarget,
   nodeResourceUsageEnabled,
@@ -475,7 +531,6 @@ function onDocClick(e: MouseEvent) {
   const kindRoot = tb ? toolbarHTMLElement(tb, "kindDropdownRef") : null;
   if (nsDropdownOpen.value && nsRoot && !nsRoot.contains(target)) nsDropdownOpen.value = false;
   if (kindDropdownOpen.value && kindRoot && !kindRoot.contains(target)) kindDropdownOpen.value = false;
-  if (actionMenuVisible.value && actionMenuComponentRef.value?.menuEl && !actionMenuComponentRef.value.menuEl.contains(target)) closeActionMenu();
 }
 
 const filteredNamespaceOptions = computed(() => {
@@ -537,9 +592,10 @@ const customKindCandidates = computed(() => {
   const dedup = new Map<string, ResolvedAliasTarget>();
   for (const hit of customResourceHits.value) {
     const key = `${hit.api_version}/${hit.kind}/${hit.plural}`;
+    if (extensionFavoriteKeySet.value.has(extensionStableKey(hit))) continue;
     if (!dedup.has(key)) dedup.set(key, hit);
   }
-  return Array.from(dedup.values()).slice(0, 8);
+  return Array.from(dedup.values());
 });
 const nsSelectionDisabled = computed(() => {
   const target = selectedCustomTarget.value;
@@ -661,8 +717,15 @@ const {
 /** 操作菜单：点击行时显示，区分资源管理与资源钻取 */
 const actionMenuVisible = ref(false);
 const actionMenuPosition = ref({ x: 0, y: 0 });
-const actionMenuComponentRef = ref<{ menuEl: HTMLElement | null } | null>(null);
 const deleteActionArmed = ref(false);
+
+/** 当前被 ActionMenu 锁定的行 key，用于表格行高亮（与 getRowKey 规则保持一致）。 */
+const activeRowKey = computed<string | null>(() => {
+  if (!actionMenuVisible.value) return null;
+  const r = selectedResource.value;
+  if (!r) return null;
+  return r.namespace ? `${r.namespace}/${r.name}` : r.name;
+});
 
 function selectResourceFromRow(row: Record<string, unknown>): SelectedResourceRef | null {
   const name = row.name as string | undefined;
@@ -712,23 +775,133 @@ function getRowKey(row: Record<string, unknown>): string {
 }
 
 function onRowContextMenu(row: Record<string, unknown>, e: MouseEvent) {
+  const rk = getRowKey(row);
+  if (rk) keyboardFocusRowKey.value = rk;
   const resource = selectResourceFromRow(row);
   if (!resource) return;
   selectedResource.value = resource;
   deleteActionArmed.value = false;
-  actionMenuVisible.value = true;
+  actionMenuVisible.value = false;
   actionMenuPosition.value = {
     x: e.clientX + WORKBENCH_ACTION_MENU_OFFSET,
     y: e.clientY + WORKBENCH_ACTION_MENU_OFFSET,
   };
   nextTick(() => {
-    adjustActionMenuPosition();
+    actionMenuVisible.value = true;
   });
 }
 
 function onRowClick(row: Record<string, unknown>) {
+  const rk = getRowKey(row);
+  if (rk) keyboardFocusRowKey.value = rk;
   const resource = selectResourceFromRow(row);
   if (resource) openDetailDrawerForResource(resource);
+}
+
+function tableRowKeysInOrder(): string[] {
+  return tableRows.value.map((r) => getRowKey(r)).filter((k) => Boolean(k));
+}
+
+function currentKeyboardRow(): Record<string, unknown> | null {
+  const k = keyboardFocusRowKey.value;
+  if (!k) return null;
+  return tableRows.value.find((r) => getRowKey(r) === k) ?? null;
+}
+
+/** 命令面板「>」资源动作所针对的对象：优先键盘当前行，否则回退到详情抽屉等资源上下文。 */
+const resourceForPalette = computed((): SelectedResourceRef | null => {
+  const row = currentKeyboardRow();
+  if (row) {
+    const r = selectResourceFromRow(row);
+    if (r) return r;
+  }
+  return selectedResource.value;
+});
+
+function scrollKeyboardRowIntoView() {
+  const k = keyboardFocusRowKey.value;
+  if (!k) return;
+  const esc =
+    typeof CSS !== "undefined" && "escape" in CSS
+      ? CSS.escape(k)
+      : k.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  document.querySelector<HTMLElement>(`tr[data-wb-row="${esc}"]`)?.scrollIntoView({ block: "nearest" });
+}
+
+function moveKeyboardRow(delta: number) {
+  const keys = tableRowKeysInOrder();
+  if (!keys.length) return;
+  const cur = keyboardFocusRowKey.value;
+  let idx = cur ? keys.indexOf(cur) : -1;
+  if (idx < 0) idx = delta > 0 ? -1 : 0;
+  const next = Math.min(keys.length - 1, Math.max(0, idx + delta));
+  keyboardFocusRowKey.value = keys[next] ?? null;
+  nextTick(() => scrollKeyboardRowIntoView());
+}
+
+function onKeyboardEnterRow(row: Record<string, unknown>) {
+  if (batchDeleteMode.value) {
+    const key = getRowKey(row);
+    const next = new Set(selectedRowKeys.value);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    selectedRowKeys.value = next;
+    return;
+  }
+  const resource = selectResourceFromRow(row);
+  if (!resource) return;
+  selectedResource.value = resource;
+  if (WORKBENCH_SHELL_WORKLOAD_KINDS.has(resource.kind)) {
+    openPodShell();
+  } else {
+    openDetailDrawerForResource(resource);
+  }
+}
+
+function onResourceListShellKeydown(e: KeyboardEvent) {
+  if (e.isComposing) return;
+  const shell = resourceTableShellElement();
+  if (!shell || !shell.contains(e.target as Node)) return;
+  const t = e.target as HTMLElement | null;
+  if (t?.closest?.("input, textarea, select, button, a, [contenteditable=true]")) return;
+
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === "ArrowDown") moveKeyboardRow(1);
+    else moveKeyboardRow(-1);
+    return;
+  }
+
+  const mac = typeof navigator !== "undefined" && navigator.platform.toLowerCase().includes("mac");
+  const isMetaEnter = e.key === "Enter" && (mac ? e.metaKey : e.ctrlKey);
+  const row = currentKeyboardRow();
+  if (!row && (e.key === "Enter" || isMetaEnter)) return;
+
+  if (isMetaEnter) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (row) onKeyboardEnterRow(row);
+    return;
+  }
+  if (e.key === "Enter") {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!row) return;
+    const resource = selectResourceFromRow(row);
+    if (!resource) return;
+    selectedResource.value = resource;
+    paletteWorkbench.open();
+    nextTick(() => {
+      paletteWorkbench.draft.value = ">";
+    });
+  }
+}
+
+/** 表格壳层 DOM：仅在该元素上响应列表快捷键，避免误捕嵌套控件。 */
+function resourceTableShellElement(): HTMLElement | null {
+  const c = workbenchResourceTableRef.value as { tableShellRef?: HTMLElement | null } | null;
+  return c?.tableShellRef ?? null;
 }
 
 function openDetailDrawerForResource(resource: SelectedResourceRef, initialTab: string | null = null) {
@@ -746,23 +919,6 @@ function openNodeTaintsFromRow(row: Record<string, unknown>) {
 function closeActionMenu() {
   actionMenuVisible.value = false;
   deleteActionArmed.value = false;
-}
-
-function adjustActionMenuPosition() {
-  if (!actionMenuVisible.value || !actionMenuComponentRef.value?.menuEl) return;
-  const rect = actionMenuComponentRef.value.menuEl.getBoundingClientRect();
-  const maxX = Math.max(
-    WORKBENCH_ACTION_MENU_VIEWPORT_GAP,
-    window.innerWidth - rect.width - WORKBENCH_ACTION_MENU_VIEWPORT_GAP
-  );
-  const maxY = Math.max(
-    WORKBENCH_ACTION_MENU_VIEWPORT_GAP,
-    window.innerHeight - rect.height - WORKBENCH_ACTION_MENU_VIEWPORT_GAP
-  );
-  actionMenuPosition.value = {
-    x: Math.min(Math.max(WORKBENCH_ACTION_MENU_VIEWPORT_GAP, actionMenuPosition.value.x), maxX),
-    y: Math.min(Math.max(WORKBENCH_ACTION_MENU_VIEWPORT_GAP, actionMenuPosition.value.y), maxY),
-  };
 }
 
 function openResourceDetail() {
@@ -797,6 +953,31 @@ function openPodLogs() {
   closeActionMenu();
 }
 
+function paletteNodeTerminalDisabledReasonFor(resource: SelectedResourceRef): string {
+  if (!WORKBENCH_NODE_TERMINAL_RESOURCE_KINDS.has(resource.kind)) return "";
+  if (!currentId.value || !currentEnv.value) return "当前未定位到环境，无法打开节点终端。";
+  const strategy = getNodeTerminalStrategy(currentId.value);
+  if (!strategy?.enabled) {
+    return "当前环境还没有启用节点终端切换策略，请先到环境管理中的终端策略里配置。";
+  }
+  const nodeName =
+    resource.kind === "Node"
+      ? resource.name
+      : resource.kind === "Pod"
+        ? resource.nodeName?.trim() ?? ""
+        : "";
+  if (!nodeName) {
+    return resource.kind === "Pod"
+      ? "当前 Pod 尚未调度到节点，暂时无法打开所在节点终端。"
+      : "未找到节点信息，无法打开节点终端。";
+  }
+  return "";
+}
+
+function paletteNodeTerminalMenuLabelFor(resource: SelectedResourceRef): string {
+  return resource.kind === "Pod" ? "打开所在节点终端" : "打开节点终端";
+}
+
 const nodeTerminalTargetName = computed(() => {
   const resource = selectedResource.value;
   if (!resource) return "";
@@ -812,24 +993,14 @@ const nodeTerminalMenuLabel = computed(() => {
 
 const nodeTerminalDisabledReason = computed(() => {
   const resource = selectedResource.value;
-  if (!resource || !WORKBENCH_NODE_TERMINAL_RESOURCE_KINDS.has(resource.kind)) return "";
-  if (!currentId.value || !currentEnv.value) return "当前未定位到环境，无法打开节点终端。";
-  const strategy = getNodeTerminalStrategy(currentId.value);
-  if (!strategy?.enabled) {
-    return "当前环境还没有启用节点终端切换策略，请先到环境管理中的终端策略里配置。";
-  }
-  if (!nodeTerminalTargetName.value) {
-    return resource.kind === "Pod"
-      ? "当前 Pod 尚未调度到节点，暂时无法打开所在节点终端。"
-      : "未找到节点信息，无法打开节点终端。";
-  }
-  return "";
+  if (!resource) return "";
+  return paletteNodeTerminalDisabledReasonFor(resource);
 });
 
 const podDebugDisabledReason = computed(() => {
   const resource = selectedResource.value;
   if (!resource || resource.kind !== "Pod") return "";
-  return nodeTerminalDisabledReason.value;
+  return paletteNodeTerminalDisabledReasonFor(resource);
 });
 
 const canOpenPodDebug = computed(
@@ -1134,20 +1305,16 @@ async function onDeleteConfirm() {
   loadList();
 }
 
-function toggleRowSelection(row: Record<string, unknown>) {
-  const key = getRowKey(row);
-  if (!key) return;
-  const next = new Set(selectedRowKeys.value);
-  if (next.has(key)) next.delete(key);
-  else next.add(key);
-  selectedRowKeys.value = next;
+/** 与 WorkbenchResourceTable 中 Naive DataTable 受控勾选同步。 */
+function replaceSelectedRowKeys(keys: string[]) {
+  selectedRowKeys.value = new Set(keys);
 }
 
-function toggleSelectAll() {
-  const rows = tableRows.value as Record<string, unknown>[];
-  const keys = rows.map(getRowKey).filter(Boolean);
-  const allSelected = keys.length > 0 && keys.every((k) => selectedRowKeys.value.has(k));
-  selectedRowKeys.value = allSelected ? new Set() : new Set(keys);
+/** 远程排序：DataTable 表头触发，由 useWorkbenchTableModel 对行重排。 */
+function setWorkbenchSort(key: string, order: "asc" | "desc") {
+  if (!WORKBENCH_SORTABLE_KEYS.has(key)) return;
+  sortBy.value = key;
+  sortOrder.value = order;
 }
 
 function closeDetailDrawer() {
@@ -1189,23 +1356,6 @@ const effectiveNamespace = computed(() => {
 });
 
 
-function isSelectedRow(row: Record<string, unknown>): boolean {
-  if (!selectedResource.value) return false;
-  const resource = selectResourceFromRow(row);
-  if (!resource) return false;
-  const cur = selectedResource.value;
-  const dynMatch =
-    (!!resource.dynamic && !!cur.dynamic && resource.dynamic.api_version === cur.dynamic.api_version) ||
-    (!resource.dynamic && !cur.dynamic);
-  return (
-    dynMatch &&
-    resource.kind === cur.kind &&
-    resource.name === cur.name &&
-    resource.namespace === cur.namespace
-  );
-}
-
-
 async function handleReconnect(envId: string) {
   await kubeRemoveClient(envId);
   setConnecting(envId);
@@ -1218,21 +1368,73 @@ let unlistenConnection: (() => void) | null = null;
 
 onMounted(async () => {
   hydrateFromStorage();
+  hydrateFavoriteKinds();
   void ensureAppSettingsLoaded();
   const id = currentId.value;
   if (id) restoreEnvViewState(id);
   document.addEventListener("click", onDocClick);
-  window.addEventListener("resize", adjustActionMenuPosition);
-  window.addEventListener("scroll", adjustActionMenuPosition, true);
   unlistenConnection = await setupConnectionProgressListener();
+  workbenchResourcePaletteAdapter.value = {
+    getValueCandidates: () => {
+      const r = resourceForPalette.value;
+      if (!r) {
+        return buildResourcePaletteValueCandidates(null, null);
+      }
+      return buildResourcePaletteValueCandidates(r, {
+        nodeTerminalMenuLabel: paletteNodeTerminalMenuLabelFor(r),
+        nodeTerminalDisabledReason: paletteNodeTerminalDisabledReasonFor(r),
+        podDebugDisabledReason: r.kind === "Pod" ? paletteNodeTerminalDisabledReasonFor(r) : "",
+      });
+    },
+    runAction: (id: string) => {
+      if (id === "__please_select") return;
+      const r = resourceForPalette.value;
+      if (!r) return;
+      selectedResource.value = r;
+      switch (id) {
+        case "openDetail":
+          openResourceDetail();
+          break;
+        case "openTopology":
+          openTopology();
+          break;
+        case "openPodLogs":
+          openPodLogs();
+          break;
+        case "openPodShell":
+          openPodShell();
+          break;
+        case "openNodeTerminal":
+          void openNodeTerminalFromMenu();
+          break;
+        case "openPodDebug":
+          void openPodDebugModal();
+          break;
+        case "openEditConfig":
+          openEditConfig();
+          break;
+        case "openChangeImage":
+          openChangeImageModal();
+          break;
+        case "openSyncOrchestrator":
+          void openSyncToOrchestratorDialog();
+          break;
+        case "handleDelete":
+          deleteActionArmed.value = false;
+          openDeleteConfirm();
+          break;
+        default:
+          break;
+      }
+    },
+  };
 });
 
 onUnmounted(() => {
   document.removeEventListener("click", onDocClick);
-  window.removeEventListener("resize", adjustActionMenuPosition);
-  window.removeEventListener("scroll", adjustActionMenuPosition, true);
   unlistenConnection?.();
   stopNodeAllocationPolling();
+  workbenchResourcePaletteAdapter.value = null;
 });
 
 watch(selectedKind, () => {
@@ -1288,6 +1490,78 @@ watch(kindFilter, (q) => {
 watch([selectedNamespace, selectedKind], () => {
   const id = currentId.value;
   if (id) saveEnvViewState(id);
+});
+
+/** 把当前环境的命名空间列表同步到全局共享 store，供命令面板等只读消费。 */
+watch(
+  [currentId, namespaceOptions],
+  ([id, ns]) => {
+    if (!id) return;
+    setEnvNamespaces(id, ns.map((n) => n.name));
+  },
+  { immediate: true },
+);
+
+/**
+ * 命令面板发起的工作台跳转：先切环境（若需），再在下一 tick 应用 kind/namespace。
+ * immediate 用于处理 Main 首次挂载时 pendingNav 已被写入的情况（命令面板在其它 tab 触发）。
+ */
+watch(
+  workbenchPendingNav,
+  (nav) => {
+    if (!nav) return;
+    const pending = nav;
+    const wantListFocus = pending.focusResourceList === true;
+    workbenchPendingNav.value = null;
+    if (pending.envId && pending.envId !== currentId.value) {
+      setCurrent(pending.envId);
+    }
+    nextTick(() => {
+      if (wantListFocus) pendingListFocusAfterNav.value = true;
+      const nf = pending.nameFilter;
+      if (pending.customTarget) {
+        navigateTo({
+          customTarget: pending.customTarget,
+          namespace: pending.namespace ?? undefined,
+          nameFilter: nf ?? "",
+          drillFrom: null,
+        });
+        return;
+      }
+      const kindValid = pending.kind && VALID_KINDS.has(pending.kind);
+      if (kindValid) {
+        navigateTo({
+          kind: pending.kind as ResourceKind,
+          namespace: pending.namespace ?? undefined,
+          nameFilter: nf ?? "",
+          drillFrom: null,
+        });
+      } else if (pending.namespace !== undefined) {
+        navigateTo({ namespace: pending.namespace, nameFilter: nf ?? "", drillFrom: null });
+      } else if (nf !== undefined) {
+        navigateTo({ nameFilter: nf, drillFrom: null });
+      }
+    });
+  },
+  { immediate: true },
+);
+
+watch(
+  [pendingListFocusAfterNav, listLoading, tableRows],
+  async () => {
+    if (!pendingListFocusAfterNav.value || listLoading.value) return;
+    pendingListFocusAfterNav.value = false;
+    await nextTick();
+    const first = tableRows.value[0];
+    keyboardFocusRowKey.value = first ? getRowKey(first) : null;
+    workbenchResourceTableRef.value?.focusShell?.();
+  },
+  { flush: "post" },
+);
+
+watch([selectedKind, selectedNamespace, selectedCustomTarget], () => {
+  if (pendingListFocusAfterNav.value) return;
+  keyboardFocusRowKey.value = null;
 });
 
 watch(
@@ -1393,16 +1667,27 @@ const {
 </script>
 
 <template>
-  <div class="main-layout">
-    <template v-if="openedEnvs.length">
+  <div class="main-workbench-wrap">
+  <NLayout :has-sider="openedEnvs.length > 0" class="main-layout">
+    <NLayoutSider
+      v-if="openedEnvs.length"
+      bordered
+      :width="236"
+      :collapsed-width="52"
+      collapse-mode="width"
+      :collapsed="envBarCollapsed"
+      content-style="height: 100%; overflow: hidden;"
+      @update:collapsed="setEnvBarCollapsed"
+    >
       <EnvBar
         :collapsed="envBarCollapsed"
         :on-reconnect="handleReconnect"
         :on-open-terminal="openEnvironmentTerminal"
-        @toggle="setEnvBarCollapsed(!envBarCollapsed)"
+        @toggle-collapsed="setEnvBarCollapsed(!envBarCollapsed)"
       />
-      <div class="content">
-        <WorkbenchBreadcrumb
+    </NLayoutSider>
+    <div v-if="openedEnvs.length" class="content">
+      <WorkbenchBreadcrumb
           v-if="currentId"
           :drill-from="drillFrom"
           :api-kind-to-id="API_KIND_TO_ID"
@@ -1443,6 +1728,9 @@ const {
           :custom-resource-status-class="customResourceStatusClass"
           :recent-kind-items="recentKindItems"
           :filtered-kind-groups="filteredKindGroups"
+          :favorite-kind-rows="favoriteKindToolbarRows"
+          :is-favorite-builtin="isFavoriteBuiltin"
+          :is-favorite-extension="isFavoriteExtension"
           :selected-kind="selectedKind"
           :selected-custom-target="selectedCustomTarget"
           :custom-kind-candidates="customKindCandidates"
@@ -1461,6 +1749,7 @@ const {
           @toggle-favorite-namespace="toggleFavoriteNamespace"
           @select-kind="selectKindAndClearDrill"
           @select-custom-kind="selectCustomKindOption"
+          @toggle-favorite-kind="onToggleFavoriteKindEntry"
           @refresh="loadList"
           @enter-batch-delete="enterBatchDeleteMode"
           @exit-batch-delete="exitBatchDeleteMode"
@@ -1483,6 +1772,10 @@ const {
           @dismiss-error="dismissError"
         >
           <WorkbenchResourceTable
+            ref="workbenchResourceTableRef"
+            :keyboard-focus-row-key="keyboardFocusRowKey"
+            :workbench-kind-label="workbenchKindLabel"
+            :effective-namespace="effectiveNamespace"
             :table-rows="tableRows"
             :table-columns="tableColumns"
             :batch-delete-mode="batchDeleteMode"
@@ -1490,16 +1783,17 @@ const {
             :sort-by="sortBy"
             :sort-order="sortOrder"
             :selected-kind="selectedKind"
+            :list-loading="listLoading"
+            :active-row-key="activeRowKey"
+            :delete-action-armed="deleteActionArmed"
             :ns-selection-disabled="nsSelectionDisabled"
             :selected-namespace="selectedNamespace"
             :get-row-key="getRowKey"
-            :toggle-select-all="toggleSelectAll"
-            :toggle-row-selection="toggleRowSelection"
+            :replace-selected-row-keys="replaceSelectedRowKeys"
+            :set-workbench-sort="setWorkbenchSort"
             :on-row-click="onRowClick"
             :on-row-context-menu="onRowContextMenu"
             :on-namespace-row-dbl-click="onNamespaceRowClick"
-            :is-selected-row="isSelectedRow"
-            :on-sort-column="onSortColumn"
             :is-cell-drillable="isCellDrillable"
             :on-replicas-click="onReplicasClick"
             :on-role-ref-click="onRoleRefClick"
@@ -1520,19 +1814,20 @@ const {
             :clear-all-filters="clearAllFilters"
             :select-all-namespaces="() => selectNamespace(null)"
             :open-kind-selector="openKindSelector"
+            @shell-keydown="onResourceListShellKeydown"
           />
         </WorkbenchResourceFrame>
-      </div>
-    </template>
+    </div>
     <div v-else class="empty-state">
-      <div class="empty-emoji" aria-hidden="true">🌐</div>
-      <p class="empty-title">暂无打开的环境</p>
-      <p class="empty-desc">请先在「环境管理」中打开至少一个环境。</p>
+      <div class="empty-state-card" role="status">
+        <div class="empty-emoji" aria-hidden="true">🌐</div>
+        <p class="empty-title">暂无打开的环境</p>
+        <p class="empty-desc">请先在「环境管理」中打开至少一个环境。</p>
+      </div>
     </div>
 
-    <!-- 资源操作菜单：资源管理 vs 资源钻取 -->
+    <!-- overlay 组件全部基于 Teleport 渲染到 body，不会影响 NLayout 的 flex 布局 -->
     <WorkbenchActionMenu
-      ref="actionMenuComponentRef"
       :visible="actionMenuVisible"
       :position="actionMenuPosition"
       :selected-resource="selectedResource"
@@ -1601,7 +1896,7 @@ const {
       @close="deleteConfirmVisible = false"
       @confirm="onDeleteConfirm"
     />
-
+  </NLayout>
   </div>
 </template>
 

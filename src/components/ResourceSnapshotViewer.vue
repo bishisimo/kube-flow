@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { NButton, NEmpty, NModal, NScrollbar, NSpin, NTag } from "naive-ui";
 import { CodeEditor } from "monaco-editor-vue3";
 import { useYamlMonacoTheme } from "../stores/yamlTheme";
 import type { ResourceSnapshotItem } from "../stores/resourceSnapshots";
@@ -103,15 +104,23 @@ watch(
 </script>
 
 <template>
-  <Teleport to="body">
-    <div v-if="visible" class="snapshot-viewer-overlay" @click.self="emit('close')">
-      <div
-        class="snapshot-viewer"
-        :class="{ 'snapshot-viewer-wide': viewMode === 'image-diff' || viewMode === 'env-diff' }"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="snapshot-viewer-title"
-      >
+  <NModal
+    :show="visible"
+    :mask-closable="true"
+    :auto-focus="false"
+    :trap-focus="false"
+    class="o-snapshot-n-modal"
+    :zIndex="2100"
+    @mask-click="emit('close')"
+    @esc="emit('close')"
+  >
+    <div
+      class="snapshot-viewer"
+      :class="{ 'snapshot-viewer-wide': viewMode === 'image-diff' || viewMode === 'env-diff' }"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="snapshot-viewer-title"
+    >
         <header class="snapshot-viewer-header">
           <div class="snapshot-viewer-header-info">
             <h3 id="snapshot-viewer-title" class="snapshot-viewer-title">{{ title }}</h3>
@@ -122,28 +131,31 @@ watch(
           </div>
           <div class="snapshot-viewer-header-actions">
             <div class="snapshot-viewer-tabs">
-              <button
-                type="button"
+              <NButton
+                size="tiny"
+                :type="viewMode === 'yaml' ? 'primary' : 'default'"
+                :secondary="viewMode !== 'yaml'"
                 class="snapshot-tab-btn"
-                :class="{ active: viewMode === 'yaml' }"
                 @click="switchMode('yaml')"
-              >YAML</button>
-              <button
+              >YAML</NButton>
+              <NButton
                 v-if="hasDualView"
-                type="button"
+                size="tiny"
+                :type="viewMode === 'image-diff' ? 'primary' : 'default'"
+                :secondary="viewMode !== 'image-diff'"
                 class="snapshot-tab-btn"
-                :class="{ active: viewMode === 'image-diff' }"
                 @click="switchMode('image-diff')"
-              >镜像对比</button>
-              <button
+              >镜像对比</NButton>
+              <NButton
                 v-if="canEnvDiff"
-                type="button"
+                size="tiny"
+                :type="viewMode === 'env-diff' ? 'primary' : 'default'"
+                :secondary="viewMode !== 'env-diff'"
                 class="snapshot-tab-btn"
-                :class="{ active: viewMode === 'env-diff' }"
                 @click="switchMode('env-diff')"
-              >与环境对比</button>
+              >与环境对比</NButton>
             </div>
-            <button type="button" class="snapshot-viewer-close" aria-label="关闭" @click="emit('close')">×</button>
+            <NButton quaternary class="snapshot-viewer-close" aria-label="关闭" @click="emit('close')">×</NButton>
           </div>
         </header>
 
@@ -162,20 +174,24 @@ watch(
 
         <!-- 与环境 diff -->
         <div v-else-if="viewMode === 'env-diff'" class="snapshot-viewer-diff-wrap">
-          <div v-if="envDiffLoading" class="snapshot-diff-status">正在获取环境中的当前资源…</div>
+          <div v-if="envDiffLoading" class="snapshot-diff-status snapshot-diff-loading">
+            <NSpin size="small" />
+            <span>正在获取环境中的当前资源…</span>
+          </div>
           <div v-else-if="envDiffError" class="snapshot-diff-status snapshot-diff-error">{{ envDiffError }}</div>
-          <div v-else-if="!envDiffRows.length" class="snapshot-diff-status">暂无对比数据</div>
+          <NEmpty v-else-if="!envDiffRows.length" class="snapshot-diff-empty" description="暂无对比数据" />
           <template v-else>
             <div class="snapshot-diff-legend">
               <span class="snapshot-diff-legend-left">快照</span>
               <template v-if="diffHasChanges">
-                <span class="snapshot-diff-stat removed">−{{ diffStats.removed }}</span>
-                <span class="snapshot-diff-stat added">+{{ diffStats.added }}</span>
+                <NTag size="small" :bordered="false" type="error" class="diff-legend-tag">−{{ diffStats.removed }}</NTag>
+                <NTag size="small" :bordered="false" type="success" class="diff-legend-tag">+{{ diffStats.added }}</NTag>
               </template>
-              <span v-else class="snapshot-diff-stat same">与当前环境一致</span>
+              <NTag v-else size="small" :bordered="false" class="diff-legend-tag">与当前环境一致</NTag>
               <span class="snapshot-diff-legend-right">当前环境</span>
-              <button type="button" class="snapshot-diff-refresh" @click="loadEnvDiff">刷新</button>
+              <NButton size="tiny" secondary class="snapshot-diff-refresh" @click="loadEnvDiff">刷新</NButton>
             </div>
+            <NScrollbar class="snapshot-diff-table-scroll" trigger="hover">
             <div class="snapshot-diff-table-wrap">
               <table class="snapshot-diff-table">
                 <tbody>
@@ -192,6 +208,7 @@ watch(
                 </tbody>
               </table>
             </div>
+            </NScrollbar>
           </template>
         </div>
 
@@ -199,21 +216,27 @@ watch(
         <div v-else class="snapshot-viewer-body">
           <CodeEditor :value="yaml" language="yaml" :theme="monacoTheme" :options="monacoOptions" class="snapshot-viewer-editor" />
         </div>
-      </div>
     </div>
-  </Teleport>
+  </NModal>
 </template>
 
 <style scoped>
-.snapshot-viewer-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(15, 23, 42, 0.42);
-  z-index: 1200;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 1.5rem;
+:deep(.o-snapshot-n-modal .n-dialog) {
+  max-width: min(96vw, 1440px);
+  width: 100% !important;
+  padding: 0;
+  margin: 0 auto;
+  background: transparent;
+  box-shadow: none;
+}
+:deep(.o-snapshot-n-modal .n-dialog__content) {
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  width: 100% !important;
+  max-width: 100% !important;
 }
 .snapshot-viewer {
   width: min(92vw, 980px);
@@ -258,25 +281,32 @@ watch(
   border-radius: 999px;
   background: #f8fafc;
 }
-.snapshot-tab-btn {
-  padding: 0.28rem 0.75rem;
-  border: none;
+.snapshot-viewer-tabs :deep(.snapshot-tab-btn) {
   border-radius: 999px;
-  background: transparent;
-  color: #64748b;
   font-size: 0.75rem;
   font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background 0.14s ease, color 0.14s ease;
+  height: auto;
+  min-height: unset;
+  padding: 0.28rem 0.75rem;
 }
-.snapshot-tab-btn:hover {
-  background: #e2e8f0;
-  color: #334155;
+.snapshot-diff-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  flex: 1;
+  min-height: 6rem;
 }
-.snapshot-tab-btn.active {
-  background: #2563eb;
-  color: #fff;
+.snapshot-diff-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 8rem;
+}
+.snapshot-diff-table-scroll {
+  flex: 1;
+  min-height: 0;
 }
 .snapshot-viewer-title {
   margin: 0;
@@ -294,17 +324,10 @@ watch(
 }
 .snapshot-viewer-close {
   width: 2rem;
+  min-width: 2rem;
   height: 2rem;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: #64748b;
   font-size: 1.25rem;
-  cursor: pointer;
-}
-.snapshot-viewer-close:hover {
-  background: #f1f5f9;
-  color: #334155;
+  padding: 0 !important;
 }
 .snapshot-viewer-body {
   flex: 1;
@@ -404,17 +427,13 @@ watch(
   background: #f1f5f9;
   color: #475569;
 }
-.snapshot-diff-refresh {
-  padding: 0.18rem 0.6rem;
-  border: 1px solid #e2e8f0;
-  border-radius: 999px;
-  background: #fff;
+.snapshot-diff-legend .snapshot-diff-refresh {
+  margin-left: auto;
   font-size: 0.7rem;
-  color: #475569;
-  cursor: pointer;
 }
-.snapshot-diff-refresh:hover {
-  background: #f1f5f9;
+.diff-legend-tag {
+  font-size: 0.7rem !important;
+  font-weight: 700 !important;
 }
 .snapshot-diff-table-wrap {
   flex: 1;

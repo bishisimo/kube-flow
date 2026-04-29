@@ -1,17 +1,27 @@
 <script setup lang="ts">
 import { onMounted } from "vue";
 import { useRouter } from "vue-router";
+import { NButton, NCard, NEmpty, NList, NListItem, NScrollbar, NSpace, NTag } from "naive-ui";
+import { kfSpace } from "../kf";
 import { useEnvStore } from "../stores/env";
-import { effectiveContext } from "../api/env";
+import { effectiveContext, type Environment } from "../api/env";
 
 const router = useRouter();
 const { loadEnvironments, environments, openEnv } = useEnvStore();
 
-function currentLabel(e: import("../api/env").Environment) {
-  const name = effectiveContext(e);
+function currentLabel(env: Environment): string {
+  const name = effectiveContext(env);
   if (!name) return "—";
-  const ctx = e.contexts.find((c) => c.context_name === name);
+  const ctx = env.contexts.find((c) => c.context_name === name);
   return ctx?.cluster_name ?? name;
+}
+
+function sourceLabel(env: Environment): string {
+  return env.source === "ssh_tunnel" ? "SSH" : "本地";
+}
+
+function sourceType(env: Environment): "warning" | "info" {
+  return env.source === "ssh_tunnel" ? "warning" : "info";
 }
 
 onMounted(async () => {
@@ -30,92 +40,82 @@ function useEnv(id: string) {
 
 <template>
   <div class="home">
-    <h1>Kube-Flow</h1>
-    <p class="sub">Kubernetes 资源管理</p>
-    <nav>
-      <button class="primary" @click="goEnvManage">环境管理</button>
+    <header class="home-header">
+      <h1>Kube-Flow</h1>
+      <p class="sub">Kubernetes 资源管理</p>
+    </header>
+
+    <nav class="home-nav">
+      <NButton type="primary" size="medium" @click="goEnvManage">环境管理</NButton>
     </nav>
-    <section v-if="environments.length" class="env-list">
-      <h2>已配置环境</h2>
-      <ul>
-        <li v-for="e in environments" :key="e.id" class="env-item">
-          <span class="name">{{ e.display_name }}</span>
-          <span class="meta">{{ currentLabel(e) }}</span>
-          <button @click="useEnv(e.id)">使用</button>
-        </li>
-      </ul>
-    </section>
-    <p v-else class="hint">暂无环境，请先在「环境管理」中新建环境。</p>
+
+    <NCard title="已配置环境" size="small" class="env-card" :bordered="false">
+      <NScrollbar style="max-height: 60vh;">
+        <NList v-if="environments.length" hoverable>
+          <NListItem v-for="env in environments" :key="env.id">
+            <template #prefix>
+              <NTag size="small" :type="sourceType(env)" round :bordered="false">
+                {{ sourceLabel(env) }}
+              </NTag>
+            </template>
+            <NSpace v-bind="kfSpace.homeEnvRow" class="env-row">
+              <span class="env-name">{{ env.display_name }}</span>
+              <span class="env-meta">{{ currentLabel(env) }}</span>
+            </NSpace>
+            <template #suffix>
+              <NButton size="small" type="primary" ghost @click="useEnv(env.id)">使用</NButton>
+            </template>
+          </NListItem>
+        </NList>
+        <NEmpty v-else description="暂无环境，请先在「环境管理」中新建环境。" />
+      </NScrollbar>
+    </NCard>
   </div>
 </template>
 
 <style scoped>
 .home {
-  padding: 2rem;
-  max-width: 640px;
+  padding: 2.25rem;
+  max-width: 760px;
   margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
 }
-h1 {
+.home-header h1 {
   font-size: 1.75rem;
-  margin-bottom: 0.25rem;
+  font-weight: 650;
+  margin: 0 0 0.25rem;
+  letter-spacing: -0.02em;
 }
 .sub {
-  color: var(--color-text-muted, #666);
-  margin-bottom: 1.5rem;
-}
-nav {
-  margin-bottom: 2rem;
-}
-.primary {
-  padding: 0.5rem 1rem;
-  background: #396cd8;
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-}
-.primary:hover {
-  background: #2d5ac2;
-}
-.env-list h2 {
-  font-size: 1rem;
-  margin-bottom: 0.75rem;
-}
-.env-list ul {
-  list-style: none;
-  padding: 0;
   margin: 0;
-  max-height: 60vh;
-  overflow-y: auto;
-  overflow-x: hidden;
+  color: #64748b;
 }
-.env-item {
+.home-nav {
   display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.5rem 0;
-  border-bottom: 1px solid #eee;
+  gap: 0.5rem;
 }
-.env-item .name {
-  font-weight: 500;
-  min-width: 140px;
+.env-card {
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  border: 1px solid var(--kf-border, #e2e8f0);
+  border-radius: 12px;
 }
-.env-item .meta {
-  color: #666;
-  font-size: 0.9rem;
+.env-row {
+  min-width: 0;
   flex: 1;
 }
-.env-item button {
-  padding: 0.35rem 0.75rem;
-  border: 1px solid #ccc;
-  border-radius: 4px;
-  cursor: pointer;
-  background: #fff;
+.env-name {
+  font-weight: 600;
+  color: #0f172a;
+  font-size: 0.9rem;
 }
-.env-item button:hover {
-  background: #f5f5f5;
-}
-.hint {
-  color: #666;
+.env-meta {
+  color: #64748b;
+  font-size: 0.8125rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

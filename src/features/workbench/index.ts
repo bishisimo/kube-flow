@@ -3,9 +3,11 @@
  * 行为与状态仍由视图/composables 持有；此处仅放无 Vue 依赖、可单测的片段。
  */
 export * from "./constants";
+export * from "./resourcePaletteActions";
 export * from "./contracts";
 export * from "./resourceDescriptors";
 export * from "./apiKindMap";
+export * from "./builtinGvk";
 export * from "./podDebugNamespaces";
 export * from "./composables";
 export { extractErrorMessage } from "../../utils/errorMessage";

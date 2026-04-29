@@ -3,6 +3,7 @@
  */
 import { ref, computed } from "vue";
 import type { Environment } from "../api/env";
+import type { ResolvedAliasTarget } from "../api/types/kube";
 import { envList, envTouch, envDelete } from "../api/env";
 import { kubeRemoveClient } from "../api/kube";
 import { createStorage, type Storage } from "../utils/storage";
@@ -50,6 +51,30 @@ const environments = ref<Environment[]>([]);
 /** 已打开环境的 id 列表，顺序为打开顺序，不随切换或 last_used_at 变化 */
 const openedIds = ref<string[]>([]);
 const currentId = ref<string | null>(null);
+
+/**
+ * 工作台跨组件导航请求：由命令面板等外部入口写入，Main.vue 监听并调用 navigateTo。
+ * 若 envId 与当前不同，会先切换环境。写入后由消费方清空。
+ */
+export const workbenchPendingNav = ref<{
+  envId?: string;
+  kind?: string;
+  namespace?: string | null;
+  nameFilter?: string;
+  customTarget?: ResolvedAliasTarget | null;
+  /** 为 true 时 Main 在导航后聚焦资源列表并启用键盘选行（由命令面板 ⌘Enter 提交导航触发） */
+  focusResourceList?: boolean;
+} | null>(null);
+
+/**
+ * 各环境的命名空间列表快照：由工作台在拉取后同步写入，命令面板等外部消费方只读。
+ * 仅在工作台访问过该环境之后才有值；未访问过的环境此处为 undefined。
+ */
+export const namespacesByEnv = ref<Record<string, string[]>>({});
+
+export function setEnvNamespaces(envId: string, names: string[]) {
+  namespacesByEnv.value = { ...namespacesByEnv.value, [envId]: names };
+}
 
 export function useEnvStore() {
   const openedEnvs = computed(() =>

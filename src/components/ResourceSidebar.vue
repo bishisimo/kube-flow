@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from "vue";
+import { NButton } from "naive-ui";
 import { RESOURCE_GROUPS, type ResourceKind } from "../constants/resourceKinds";
 
 defineProps<{
@@ -30,15 +31,16 @@ function selectKind(kind: ResourceKind) {
       <h3 class="section-title">资源类型</h3>
       <div class="group-list">
         <div v-for="group in RESOURCE_GROUPS" :key="group.id" class="group">
-          <button
-            type="button"
+          <NButton
+            quaternary
+            block
             class="group-header"
             :class="{ expanded: expandedGroups.has(group.id) }"
             @click="toggleGroup(group.id)"
           >
             <span class="group-chevron">{{ expandedGroups.has(group.id) ? "▼" : "▶" }}</span>
             {{ group.label }}
-          </button>
+          </NButton>
           <ul v-show="expandedGroups.has(group.id)" class="kind-list">
             <li
               v-for="k in group.kinds"

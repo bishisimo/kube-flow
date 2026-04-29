@@ -23,7 +23,7 @@ fn extract_from_pod_spec(
                         from: node_ref.clone(),
                         to: ResourceRef::new("ConfigMap", ns.clone(), cm),
                         relation_type: RelationType::Volume,
-                        label_selector: None,
+                        label_selector: None, to_display: None,
                     });
                 }
             }
@@ -33,7 +33,7 @@ fn extract_from_pod_spec(
                         from: node_ref.clone(),
                         to: ResourceRef::new("Secret", ns.clone(), sec),
                         relation_type: RelationType::Volume,
-                        label_selector: None,
+                        label_selector: None, to_display: None,
                     });
                 }
             }
@@ -43,7 +43,7 @@ fn extract_from_pod_spec(
                         from: node_ref.clone(),
                         to: ResourceRef::new("PersistentVolumeClaim", ns.clone(), pvc),
                         relation_type: RelationType::Volume,
-                        label_selector: None,
+                        label_selector: None, to_display: None,
                     });
                 }
             }
@@ -59,7 +59,7 @@ fn extract_from_pod_spec(
                         from: node_ref.clone(),
                         to: ResourceRef::new("Secret", ns.clone(), name),
                         relation_type: RelationType::ImagePullSecret,
-                        label_selector: None,
+                        label_selector: None, to_display: None,
                     });
                 }
             }
@@ -83,7 +83,7 @@ fn extract_from_pod_spec(
                                     from: node_ref.clone(),
                                     to: ResourceRef::new("ConfigMap", ns.clone(), cm),
                                     relation_type: RelationType::EnvFrom,
-                                    label_selector: None,
+                                    label_selector: None, to_display: None,
                                 });
                             }
                         }
@@ -93,7 +93,7 @@ fn extract_from_pod_spec(
                                     from: node_ref.clone(),
                                     to: ResourceRef::new("Secret", ns.clone(), sec),
                                     relation_type: RelationType::EnvFrom,
-                                    label_selector: None,
+                                    label_selector: None, to_display: None,
                                 });
                             }
                         }
@@ -113,7 +113,7 @@ fn extract_from_pod_spec(
                                     from: node_ref.clone(),
                                     to: ResourceRef::new("ConfigMap", ns.clone(), cm),
                                     relation_type: RelationType::EnvValue,
-                                    label_selector: None,
+                                    label_selector: None, to_display: None,
                                 });
                             }
                         }
@@ -123,7 +123,7 @@ fn extract_from_pod_spec(
                                     from: node_ref.clone(),
                                     to: ResourceRef::new("Secret", ns.clone(), sec),
                                     relation_type: RelationType::EnvValue,
-                                    label_selector: None,
+                                    label_selector: None, to_display: None,
                                 });
                             }
                         }

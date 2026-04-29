@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
+import { NButton, NCheckbox, NInput, NRadio, NRadioGroup, NSelect } from "naive-ui";
+import BaseModal from "../base/BaseModal.vue";
 import type { SyncRelatedRef } from "../../features/workbench/utils/parseWorkloadRefs";
 
 const props = defineProps<{
@@ -48,6 +50,7 @@ const totalCount = computed(() => props.relatedRefs.length);
 const allSelected = computed(
   () => props.relatedRefs.length > 0 && selectedRefKeys.value.length === props.relatedRefs.length
 );
+const componentOptions = computed(() => props.components.map((name) => ({ label: name, value: name })));
 
 function toggleAll(checked: boolean) {
   selectedRefKeys.value = checked ? props.relatedRefs.map(relatedRefKey) : [];
@@ -62,35 +65,31 @@ function onConfirm() {
 </script>
 
 <template>
-  <Teleport to="body">
-    <div v-if="visible" class="error-modal-overlay" @click.self="emit('close')">
+  <BaseModal :visible="visible" title="同步到编排中心" width="640px" @close="emit('close')">
       <div class="sync-orchestrator-modal" role="dialog" aria-label="同步到编排中心">
         <h3 class="sync-orchestrator-title">同步到编排中心</h3>
         <p class="sync-orchestrator-desc">
           选择将当前资源同步到哪个应用组件，可用于继续维护已有组件或新建组件。
         </p>
         <div class="sync-orchestrator-mode-row">
-          <label class="sync-radio">
-            <input v-model="mode" type="radio" value="new" />
-            新增应用组件
-          </label>
-          <label class="sync-radio">
-            <input v-model="mode" type="radio" value="existing" :disabled="components.length === 0" />
-            加入已有应用组件
-          </label>
+          <NRadioGroup v-model:value="mode" name="sync-mode">
+            <NRadio value="new">新增应用组件</NRadio>
+            <NRadio value="existing" :disabled="components.length === 0">加入已有应用组件</NRadio>
+          </NRadioGroup>
         </div>
         <label v-if="mode === 'existing'" class="sync-field">
           <span>已有组件</span>
-          <select v-model="existingComponent" class="filter-input" :disabled="components.length === 0">
-            <option value="" disabled>选择组件</option>
-            <option v-for="name in components" :key="name" :value="name">
-              {{ name }}
-            </option>
-          </select>
+          <NSelect
+            v-model:value="existingComponent"
+            class="filter-input"
+            :disabled="components.length === 0"
+            placeholder="选择组件"
+            :options="componentOptions"
+          />
         </label>
         <label v-else class="sync-field">
           <span>新组件名称</span>
-          <input v-model="newComponent" type="text" class="filter-input" placeholder="输入应用组件名称" />
+          <NInput v-model:value="newComponent" type="text" class="filter-input" placeholder="输入应用组件名称" />
         </label>
         <div class="sync-related-panel">
           <div class="sync-related-head">
@@ -101,16 +100,18 @@ function onConfirm() {
           <div v-else-if="relatedError" class="sync-related-error">{{ relatedError }}</div>
           <template v-else>
             <label v-if="totalCount > 0" class="sync-select-all">
-              <input
-                type="checkbox"
-                :checked="allSelected"
-                @change="toggleAll(($event.target as HTMLInputElement).checked)"
-              />
-              全选关联资源
+              <NCheckbox :checked="allSelected" @update:checked="toggleAll">
+                全选关联资源
+              </NCheckbox>
             </label>
             <div v-if="totalCount > 0" class="sync-related-list">
               <label v-for="r in relatedRefs" :key="relatedRefKey(r)" class="sync-related-item">
-                <input v-model="selectedRefKeys" type="checkbox" :value="relatedRefKey(r)" />
+                <NCheckbox
+                  :checked="selectedRefKeys.includes(relatedRefKey(r))"
+                  @update:checked="(checked: boolean) => checked
+                    ? selectedRefKeys.push(relatedRefKey(r))
+                    : selectedRefKeys = selectedRefKeys.filter((item) => item !== relatedRefKey(r))"
+                />
                 <span>{{ r.kind }}/{{ r.name }}</span>
                 <small>{{ r.namespace || "default" }}</small>
               </label>
@@ -118,18 +119,17 @@ function onConfirm() {
             <div v-else class="sync-related-empty">当前资源未检测到可关联同步的配置与 RBAC 资源。</div>
           </template>
         </div>
-        <div class="sync-orchestrator-actions">
-          <button type="button" class="btn-secondary-outline" @click="emit('close')">取消</button>
-          <button
-            type="button"
-            class="btn-primary"
-            :disabled="(mode === 'existing' && !existingComponent) || loadingRelated"
-            @click="onConfirm"
-          >
-            确认同步
-          </button>
-        </div>
+        <div class="sync-orchestrator-actions" v-if="false" />
       </div>
-    </div>
-  </Teleport>
+    <template #footer>
+      <NButton secondary @click="emit('close')">取消</NButton>
+      <NButton
+        type="primary"
+        :disabled="(mode === 'existing' && !existingComponent) || loadingRelated"
+        @click="onConfirm"
+      >
+            确认同步
+      </NButton>
+    </template>
+  </BaseModal>
 </template>

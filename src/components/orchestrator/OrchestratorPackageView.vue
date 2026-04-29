@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { NButton, NCheckbox, NCheckboxGroup, NInput, NSelect, NSpace } from "naive-ui";
+import { kfSpace } from "../../kf";
+import BaseModal from "../base/BaseModal.vue";
 import { formatDateTime } from "../../utils/dateFormat";
 import { extractErrorMessage } from "../../utils/errorMessage";
 import { appSettingsGetResourceDeployStrategy } from "../../api/config";
@@ -71,9 +74,11 @@ const packageDeployments = computed(() => selectedPackage.value?.deployments ?? 
 const packageDraftComponents = computed(() =>
   props.components.map((name) => ({
     name,
-    checked: packageComponentDraft.value.includes(name),
     count: props.manifestsByEnv.filter((m) => m.component === name).length,
   }))
+);
+const packageEnvOptions = computed(() =>
+  props.environments.map((e) => ({ label: e.display_name, value: e.id }))
 );
 const canCreatePackageVersion = computed(
   () => Boolean(selectedPackage.value && props.selectedEnvId && packageComponentDraft.value.length)
@@ -527,16 +532,21 @@ async function onConfirmPackageAction() {
       <div class="pkg-panel pkg-create-panel">
         <div class="pkg-side-title">应用包管理</div>
         <div class="pkg-create">
-          <input v-model="packageNameInput" type="text" class="pkg-input" placeholder="新应用包名称" />
-          <input v-model="packageDescriptionInput" type="text" class="pkg-input" placeholder="描述（可选）" />
-          <button
-            type="button"
-            class="btn btn-package-create"
+          <NInput v-model:value="packageNameInput" class="pkg-input-naive" size="small" placeholder="新应用包名称" />
+          <NInput
+            v-model:value="packageDescriptionInput"
+            class="pkg-input-naive"
+            size="small"
+            placeholder="描述（可选）"
+          />
+          <NButton
+            type="primary"
+            class="btn-package-create-naive"
             :disabled="!packageNameInput.trim()"
             @click="onCreatePackage"
           >
             创建应用包
-          </button>
+          </NButton>
         </div>
         <div class="pkg-side-subtitle">共 {{ packages.length }} 个应用包</div>
       </div>
@@ -569,27 +579,31 @@ async function onConfirmPackageAction() {
               <span class="pkg-summary-pill">更新于 {{ formatDateTime(selectedPackage.updated_at) }}</span>
             </div>
           </div>
-          <button type="button" class="btn btn-danger" @click="openDeletePackageDialog">删除应用包</button>
+          <NButton type="error" @click="openDeletePackageDialog">删除应用包</NButton>
         </div>
 
         <div class="pkg-main-grid">
           <div class="pkg-compose pkg-panel">
             <div class="pkg-block-title">版本构建（来源：当前环境）</div>
-            <div class="pkg-comp-list">
-              <label v-for="item in packageDraftComponents" :key="item.name" class="pkg-check">
-                <input v-model="packageComponentDraft" type="checkbox" :value="item.name" />
-                <span>{{ item.name }}</span>
-                <small>{{ item.count }} 资源</small>
-              </label>
-            </div>
-            <button
-              type="button"
-              class="btn btn-package-version"
+            <NCheckboxGroup v-model:value="packageComponentDraft" class="pkg-comp-list-naive">
+              <NCheckbox
+                v-for="item in packageDraftComponents"
+                :key="item.name"
+                :value="item.name"
+                class="pkg-check-naive"
+              >
+                <span class="pkg-check-name">{{ item.name }}</span>
+                <small class="pkg-check-count">{{ item.count }} 资源</small>
+              </NCheckbox>
+            </NCheckboxGroup>
+            <NButton
+              class="btn-package-version-naive"
+              type="primary"
               :disabled="!canCreatePackageVersion"
               @click="onCreatePackageVersion"
             >
               生成新版本
-            </button>
+            </NButton>
           </div>
 
           <div class="pkg-versions pkg-panel">
@@ -604,26 +618,39 @@ async function onConfirmPackageAction() {
               >
                 <div class="pkg-version-title-row">
                   <span>{{ v.label }}</span>
-                  <button
+                  <NButton
                     v-if="editingVersionTagId !== v.id"
-                    type="button"
-                    class="version-tag-edit-btn"
+                    quaternary
+                    size="small"
+                    class="version-tag-edit-btn-naive"
                     :title="v.tag ? '编辑 Tag' : '设置 Tag'"
                     :aria-label="v.tag ? '编辑 Tag' : '设置 Tag'"
                     @click.stop="startEditVersionTag(v)"
                   >
                     <span aria-hidden="true">🏷</span>
-                  </button>
+                  </NButton>
                 </div>
                 <div v-if="editingVersionTagId === v.id" class="version-inline-edit-row" @click.stop>
-                  <input
-                    v-model="editingVersionTagValue"
-                    type="text"
-                    class="pkg-input version-inline-input"
+                  <NInput
+                    v-model:value="editingVersionTagValue"
+                    size="small"
+                    class="pkg-input-naive version-inline-input-naive"
                     placeholder="输入正式 Tag，例如 prod-20260318"
                   />
-                  <button type="button" class="btn btn-save version-inline-btn" @click.stop="onSaveVersionTag(v.id)">保存</button>
-                  <button type="button" class="btn version-inline-btn" @click.stop="cancelEditVersionTag">取消</button>
+                  <NButton
+                    class="version-inline-btn-naive"
+                    type="primary"
+                    size="small"
+                    @click.stop="onSaveVersionTag(v.id)"
+                    >保存</NButton
+                  >
+                  <NButton
+                    quaternary
+                    size="small"
+                    class="version-inline-btn-naive"
+                    @click.stop="cancelEditVersionTag"
+                    >取消</NButton
+                  >
                 </div>
                 <div v-else class="version-tag-display">
                   <strong v-if="v.tag" class="version-tag">#{{ v.tag }}</strong>
@@ -653,28 +680,24 @@ async function onConfirmPackageAction() {
             <span>资源数：{{ selectedPackageVersion.resources.length }}</span>
             <span>组件：{{ selectedPackageVersion.component_names.join(" / ") }}</span>
           </div>
-          <div class="pkg-action-row">
-            <button
-              type="button"
-              class="btn"
+          <NSpace v-bind="kfSpace.compactActions">
+            <NButton
+              secondary
               :disabled="!canOpenPackageActionDialog || packageWorking"
               @click="openPackageActionDialog('sync')"
             >
               {{ packageWorking ? "处理中…" : "同步到环境…" }}
-            </button>
-            <button
-              type="button"
-              class="btn btn-primary"
+            </NButton>
+            <NButton
+              type="primary"
               :disabled="!canOpenPackageActionDialog || packageWorking"
               @click="openPackageActionDialog('apply')"
             >
               {{ packageWorking ? "发布中…" : "发布到环境…" }}
-            </button>
-          </div>
+            </NButton>
+          </NSpace>
           <div class="copy-tip">点击按钮后会弹出确认窗口，选择目标环境后再执行。</div>
-          <button type="button" class="btn btn-danger" :disabled="packageWorking" @click="openDeleteVersionDialog">
-            删除当前版本
-          </button>
+          <NButton type="error" :disabled="packageWorking" @click="openDeleteVersionDialog">删除当前版本</NButton>
         </div>
 
         <div class="pkg-panel">
@@ -704,87 +727,170 @@ async function onConfirmPackageAction() {
     </aside>
   </div>
 
-  <Teleport to="body">
-    <div v-if="packageActionDialogVisible" class="apply-modal-overlay" @click.self="closePackageActionDialog">
-      <section class="apply-modal" role="dialog" aria-label="应用包发布确认">
-        <header class="apply-head">
-          <h3>{{ packageActionMode === "apply" ? "发布到环境" : "同步到环境" }}</h3>
-        </header>
-        <div class="apply-body">
-          <div class="pkg-version-meta">
-            <strong>{{ selectedPackage?.name }} @ {{ selectedPackageVersion?.label }}</strong>
-            <span>组件数：{{ selectedPackageVersion?.component_names.length ?? 0 }}</span>
-            <span>资源数：{{ selectedPackageVersion?.resources.length ?? 0 }}</span>
-          </div>
-          <label class="field-label">
-            <span>目标环境</span>
-            <select v-model="packageTargetEnvId" class="select copy-select" :disabled="packageWorking">
-              <option value="" disabled>选择目标环境</option>
-              <option v-for="env in environments" :key="env.id" :value="env.id">
-                {{ env.display_name }}
-              </option>
-            </select>
-          </label>
-          <label class="field-check">
-            <input v-model="packageOverwrite" type="checkbox" :disabled="packageWorking" />
-            覆盖同名资源
-          </label>
-          <div class="copy-tip">
-            {{ packageActionMode === "apply" ? "将先同步编排资产，再按顺序发布到集群。" : "仅同步到编排资产，不会直接写入集群。" }}
-          </div>
-        </div>
-        <footer class="apply-foot">
-          <button type="button" class="btn" :disabled="packageWorking" @click="closePackageActionDialog">取消</button>
-          <button
-            type="button"
-            class="btn btn-primary"
-            :disabled="!canOperatePackageDeploy || packageWorking"
-            @click="onConfirmPackageAction"
-          >
-            {{ packageWorking ? "处理中…" : packageActionMode === "apply" ? "确认发布" : "确认同步" }}
-          </button>
-        </footer>
-      </section>
+  <BaseModal
+    :visible="packageActionDialogVisible"
+    :title="packageActionMode === 'apply' ? '发布到环境' : '同步到环境'"
+    width="520px"
+    @close="closePackageActionDialog"
+  >
+    <div class="package-action-body">
+      <div class="pkg-version-meta">
+        <strong>{{ selectedPackage?.name }} @ {{ selectedPackageVersion?.label }}</strong>
+        <span>组件数：{{ selectedPackageVersion?.component_names.length ?? 0 }}</span>
+        <span>资源数：{{ selectedPackageVersion?.resources.length ?? 0 }}</span>
+      </div>
+      <label class="field-label">
+        <span>目标环境</span>
+        <NSelect
+          v-model:value="packageTargetEnvId"
+          :options="packageEnvOptions"
+          :disabled="packageWorking"
+          filterable
+          class="env-select-naive"
+        />
+      </label>
+      <NCheckbox v-model:checked="packageOverwrite" :disabled="packageWorking" class="package-overwrite-naive">
+        覆盖同名资源
+      </NCheckbox>
+      <div class="copy-tip">
+        {{
+          packageActionMode === "apply"
+            ? "将先同步编排资产，再按顺序发布到集群。"
+            : "仅同步到编排资产，不会直接写入集群。"
+        }}
+      </div>
     </div>
-  </Teleport>
+    <template #footer>
+      <NButton secondary :disabled="packageWorking" @click="closePackageActionDialog">取消</NButton>
+      <NButton
+        type="primary"
+        :disabled="!canOperatePackageDeploy || packageWorking"
+        :loading="packageWorking"
+        @click="onConfirmPackageAction"
+      >
+        {{ packageActionMode === "apply" ? "确认发布" : "确认同步" }}
+      </NButton>
+    </template>
+  </BaseModal>
 
-  <Teleport to="body">
-    <div v-if="packageDeleteDialogVisible" class="apply-modal-overlay" @click.self="closeDeletePackageDialog">
-      <section class="apply-modal" role="dialog" aria-label="删除应用包确认">
-        <header class="apply-head">
-          <h3>确认删除应用包</h3>
-        </header>
-        <div class="apply-body">
-          <div class="copy-tip">
-            将删除应用包 <strong>{{ selectedPackage?.name }}</strong>，以及该应用包下所有版本和发布记录。
-          </div>
-        </div>
-        <footer class="apply-foot">
-          <button type="button" class="btn" :disabled="packageWorking" @click="closeDeletePackageDialog">取消</button>
-          <button type="button" class="btn btn-danger" :disabled="packageWorking" @click="onDeletePackage">确认删除</button>
-        </footer>
-      </section>
+  <BaseModal
+    :visible="packageDeleteDialogVisible"
+    title="确认删除应用包"
+    width="480px"
+    @close="closeDeletePackageDialog"
+  >
+    <div class="package-action-body">
+      <div class="copy-tip">
+        将删除应用包
+        <strong>{{ selectedPackage?.name }}</strong>，以及该应用包下所有版本和发布记录。
+      </div>
     </div>
-  </Teleport>
+    <template #footer>
+      <NButton secondary :disabled="packageWorking" @click="closeDeletePackageDialog">取消</NButton>
+      <NButton type="error" :disabled="packageWorking" @click="onDeletePackage">确认删除</NButton>
+    </template>
+  </BaseModal>
 
-  <Teleport to="body">
-    <div v-if="versionDeleteDialogVisible" class="apply-modal-overlay" @click.self="closeDeleteVersionDialog">
-      <section class="apply-modal" role="dialog" aria-label="删除版本确认">
-        <header class="apply-head">
-          <h3>确认删除版本</h3>
-        </header>
-        <div class="apply-body">
-          <div class="copy-tip">
-            将删除版本 <strong>{{ selectedPackageVersion?.label }}</strong>
-            <span v-if="selectedPackageVersion?.tag">（#{{ selectedPackageVersion?.tag }}）</span>
-            及其发布记录。
-          </div>
-        </div>
-        <footer class="apply-foot">
-          <button type="button" class="btn" :disabled="packageWorking" @click="closeDeleteVersionDialog">取消</button>
-          <button type="button" class="btn btn-danger" :disabled="packageWorking" @click="onDeletePackageVersion">确认删除</button>
-        </footer>
-      </section>
+  <BaseModal
+    :visible="versionDeleteDialogVisible"
+    title="确认删除版本"
+    width="480px"
+    @close="closeDeleteVersionDialog"
+  >
+    <div class="package-action-body">
+      <div class="copy-tip">
+        将删除版本
+        <strong>{{ selectedPackageVersion?.label }}</strong>
+        <span v-if="selectedPackageVersion?.tag">（#{{ selectedPackageVersion?.tag }}）</span>
+        及其发布记录。
+      </div>
     </div>
-  </Teleport>
+    <template #footer>
+      <NButton secondary :disabled="packageWorking" @click="closeDeleteVersionDialog">取消</NButton>
+      <NButton type="error" :disabled="packageWorking" @click="onDeletePackageVersion">确认删除</NButton>
+    </template>
+  </BaseModal>
 </template>
+
+<style scoped>
+.pkg-input-naive {
+  width: 100%;
+  min-width: 0;
+}
+.btn-package-create-naive,
+.btn-package-version-naive {
+  margin-top: 0.1rem;
+}
+.pkg-comp-list-naive {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 0.5rem;
+}
+.pkg-check-naive {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+}
+.pkg-check-naive :deep(.n-checkbox__label) {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.pkg-check-name {
+  font-weight: 500;
+  color: #0f172a;
+}
+.pkg-check-count {
+  color: #64748b;
+  font-size: 0.75rem;
+}
+.version-tag-edit-btn-naive {
+  width: 1.65rem;
+  min-width: 1.65rem;
+  height: 1.65rem;
+  font-size: 0.78rem;
+  padding: 0 !important;
+  border-radius: 999px;
+}
+.version-inline-input-naive {
+  flex: 1;
+  min-width: 0;
+}
+.version-inline-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.version-inline-btn-naive {
+  flex-shrink: 0;
+}
+.package-action-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.1rem 0 0.2rem;
+}
+.field-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  color: #334155;
+}
+.env-select-naive {
+  width: 100%;
+  min-width: 0;
+}
+.package-overwrite-naive {
+  font-size: 0.8rem;
+  color: #334155;
+}
+.copy-tip {
+  font-size: 0.75rem;
+  color: #64748b;
+  line-height: 1.45;
+}
+</style>

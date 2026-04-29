@@ -5,6 +5,7 @@ use super::extractors::{
     hpa_ref::HpaRefExtractor,
     ingress_backend::IngressBackendExtractor,
     owner_ref::OwnerRefExtractor,
+    pod_service_link::PodServiceLinkExtractor,
     pvc_bindings::PvcBindingsExtractor,
     rbac_refs::RbacRefsExtractor,
     sa_bindings_reverse::SaBindingsReverseExtractor,
@@ -13,6 +14,7 @@ use super::extractors::{
     service_reverse::ServiceReverseExtractor,
     service_selector::ServiceSelectorExtractor,
     workload_mounts::WorkloadMountsExtractor,
+    workload_service_link::WorkloadServiceLinkExtractor,
 };
 
 /// 构建默认 Extractor 注册表，包含所有内置关联规则。
@@ -21,6 +23,8 @@ pub fn build_default_registry() -> Vec<Box<dyn RelationExtractor>> {
         Box::new(WorkloadMountsExtractor),
         Box::new(OwnerRefExtractor),
         Box::new(WorkloadSelectorExtractor),
+        Box::new(PodServiceLinkExtractor),
+        Box::new(WorkloadServiceLinkExtractor),
         Box::new(ServiceSelectorExtractor),
         Box::new(ServiceAccountExtractor),
         Box::new(PvcBindingsExtractor),

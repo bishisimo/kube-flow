@@ -1,9 +1,10 @@
 /**
- * YAML/编辑 代码高亮主题：供设置页配置，YAML 与编辑页共用。
+ * YAML/编辑 代码高亮主题：为浅色/深色应用壳各保存一套，随界面明暗切换；YAML 与编辑页共用。
  */
 import { computed, ref, watch } from "vue";
 import * as monaco from "monaco-editor";
 import { createStorage } from "../utils/storage";
+import { appChromeIsDark } from "./appChromeTheme";
 
 export const YAML_THEMES = [
   { id: "atom-one-dark", label: "Atom One Dark" },
@@ -22,18 +23,8 @@ export const YAML_THEMES = [
 type YamlThemeId = (typeof YAML_THEMES)[number]["id"];
 
 const MONACO_THEME_PREFIX = "kube-flow-";
-
-const themeStorage = createStorage<string>({
-  key: "kube-flow:yaml-theme",
-  version: 1,
-  fallback: "atom-one-dark",
-  migrate: (old) => {
-    const s = typeof old === "string" && YAML_THEMES.some((t) => t.id === old) ? old : "atom-one-dark";
-    return s;
-  },
-});
-
-const themeId = ref<string>(themeStorage.read());
+const THEME_PAIR_KEY = "kube-flow:yaml-themes";
+const THEME_LEGACY_SINGLE_KEY = "kube-flow:yaml-theme";
 
 const YAML_DARK_THEMES = new Set<YamlThemeId>([
   "atom-one-dark",
@@ -49,6 +40,96 @@ const YAML_DARK_THEMES = new Set<YamlThemeId>([
 function isYamlThemeId(id: string): id is YamlThemeId {
   return YAML_THEMES.some((t) => t.id === id);
 }
+
+function normalizeLightEditorThemeId(id: string): YamlThemeId {
+  if (isYamlThemeId(id) && !YAML_DARK_THEMES.has(id)) return id;
+  return "atom-one-light";
+}
+
+function normalizeDarkEditorThemeId(id: string): YamlThemeId {
+  if (isYamlThemeId(id) && YAML_DARK_THEMES.has(id)) return id;
+  return "atom-one-dark";
+}
+
+/** 供设置页 NSelect：仅适合浅色应用壳的 Monaco 主题。 */
+export const EDITOR_LIGHT_THEME_OPTIONS = YAML_THEMES.filter((t) => !YAML_DARK_THEMES.has(t.id)).map(
+  (t) => ({ label: t.label, value: t.id })
+);
+/** 供设置页 NSelect：仅适合深色应用壳的 Monaco 主题。 */
+export const EDITOR_DARK_THEME_OPTIONS = YAML_THEMES.filter((t) => YAML_DARK_THEMES.has(t.id)).map((t) => ({
+  label: t.label,
+  value: t.id,
+}));
+
+const themePairStorage = createStorage<{ light: YamlThemeId; dark: YamlThemeId }>({
+  key: THEME_PAIR_KEY,
+  version: 1,
+  fallback: { light: "atom-one-light", dark: "atom-one-dark" },
+  migrate: (old) => {
+    if (old && typeof old === "object" && "light" in old && "dark" in old) {
+      const o = old as { light: unknown; dark: unknown };
+      return {
+        light: normalizeLightEditorThemeId(typeof o.light === "string" ? o.light : "atom-one-light"),
+        dark: normalizeDarkEditorThemeId(typeof o.dark === "string" ? o.dark : "atom-one-dark"),
+      };
+    }
+    return { light: "atom-one-light", dark: "atom-one-dark" };
+  },
+});
+
+function readLegacySingleThemeId(): string | null {
+  const raw = localStorage.getItem(THEME_LEGACY_SINGLE_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === "object" && "v" in parsed) {
+      const d = (parsed as { data?: unknown }).data;
+      return typeof d === "string" ? d : null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function pairFromLegacySingleId(id: string): { light: YamlThemeId; dark: YamlThemeId } {
+  if (isYamlThemeId(id) && YAML_DARK_THEMES.has(id)) {
+    return { light: "atom-one-light", dark: id };
+  }
+  if (isYamlThemeId(id) && !YAML_DARK_THEMES.has(id)) {
+    return { light: id, dark: "atom-one-dark" };
+  }
+  return { light: "atom-one-light", dark: "atom-one-dark" };
+}
+
+function loadEditorThemePairFromStorage(): { light: YamlThemeId; dark: YamlThemeId } {
+  if (localStorage.getItem(THEME_PAIR_KEY) === null) {
+    const legacy = readLegacySingleThemeId();
+    if (legacy) {
+      const p = pairFromLegacySingleId(legacy);
+      themePairStorage.write(p);
+      try {
+        localStorage.removeItem(THEME_LEGACY_SINGLE_KEY);
+      } catch {
+        /* ignore */
+      }
+      return p;
+    }
+  }
+  const r = themePairStorage.read();
+  return { light: normalizeLightEditorThemeId(r.light), dark: normalizeDarkEditorThemeId(r.dark) };
+}
+
+const _editorPairInit = loadEditorThemePairFromStorage();
+const themeIdLight = ref<YamlThemeId>(_editorPairInit.light);
+const themeIdDark = ref<YamlThemeId>(_editorPairInit.dark);
+
+/** 根据当前应用壳明暗，选择对应的编辑器语法高亮主题（若配置异常则归一化）。 */
+export const activeYamlThemeId = computed<YamlThemeId>(() =>
+  appChromeIsDark.value
+    ? normalizeDarkEditorThemeId(themeIdDark.value)
+    : normalizeLightEditorThemeId(themeIdLight.value)
+);
 
 function monacoThemeName(id: YamlThemeId): string {
   return `${MONACO_THEME_PREFIX}${id}`;
@@ -220,27 +301,28 @@ function ensureMonacoYamlThemesRegistered() {
   monacoThemesReady = true;
 }
 
-watch(themeId, (id) => {
-  if (isYamlThemeId(id)) {
-    themeStorage.write(id);
-  }
+watch([themeIdLight, themeIdDark], () => {
+  themePairStorage.write({
+    light: normalizeLightEditorThemeId(themeIdLight.value),
+    dark: normalizeDarkEditorThemeId(themeIdDark.value),
+  });
 });
 
 export function useYamlTheme() {
-  function setTheme(id: string) {
-    if (isYamlThemeId(id)) {
-      themeId.value = id;
-    }
-  }
-
-  return { themeId, setTheme };
+  return {
+    themeIdLight,
+    themeIdDark,
+    activeYamlThemeId,
+  };
 }
 
-/** 返回 Monaco 主题名，所有 YAML 编辑器共享同一全局主题设置。 */
+/** 返回 Monaco 主题名；随应用壳明暗在「浅色编辑器主题 / 深色编辑器主题」之间切换。 */
 export function useYamlMonacoTheme() {
   ensureMonacoYamlThemesRegistered();
   const monacoTheme = computed(() =>
-    isYamlThemeId(themeId.value) ? monacoThemeName(themeId.value) : monacoThemeName("atom-one-dark")
+    isYamlThemeId(activeYamlThemeId.value)
+      ? monacoThemeName(activeYamlThemeId.value)
+      : monacoThemeName("atom-one-dark")
   );
   return { monacoTheme };
 }

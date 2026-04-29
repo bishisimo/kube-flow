@@ -2,7 +2,8 @@
 //! 适用于 Deployment / StatefulSet / DaemonSet。
 
 use crate::kube::resource_graph::{
-    extractor::RelationExtractor, selector_to_string, RelationType, ResourceEdge, ResourceRef,
+    extractor::RelationExtractor, selector_to_string, set_id_for_label_aggregate, RelationType,
+    ResourceEdge, ResourceRef,
 };
 use crate::kube::resources::list_pods;
 use async_trait::async_trait;
@@ -37,16 +38,14 @@ impl RelationExtractor for WorkloadSelectorExtractor {
         };
 
         let count = list_pods(client, namespace, Some(&ls)).await.map(|v| v.len()).unwrap_or(0);
+        let set_id = set_id_for_label_aggregate("Pod", node_ref.namespace.as_deref(), &ls);
 
         vec![ResourceEdge {
             from: node_ref.clone(),
-            to: ResourceRef {
-                kind: "Pod".to_string(),
-                namespace: node_ref.namespace.clone(),
-                name: format!("Pods ({})", count),
-            },
+            to: ResourceRef::for_label_set("Pod", node_ref.namespace.clone(), set_id),
             relation_type: RelationType::Selector,
             label_selector: Some(ls),
+            to_display: Some(format!("Pods ({})", count)),
         }]
     }
 }

@@ -1,44 +1,93 @@
-.main-layout {
-  display: flex;
-  flex-direction: row;
+/* 占满 AppShell 主区高度，让无环境时 empty-state 能垂直居中 */
+.main-workbench-wrap {
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
   overflow: hidden;
+}
+.main-workbench-wrap .main-layout {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.main-workbench-wrap :deep(.n-layout-scroll-container) {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.main-layout {
+  background: transparent;
+}
+.main-layout.n-layout .n-layout-sider {
+  flex-shrink: 0;
+}
+.main-layout.n-layout .content {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
 }
 .content {
   flex: 1;
   display: flex;
   flex-direction: column;
   min-width: 0;
-  overflow: hidden;
+  min-height: 0;
+  overflow: visible;
+  background: var(--wb-canvas);
 }
 
 
 .empty-state {
-  flex: 1;
+  flex: 1 1 0;
+  min-height: 0;
+  width: 100%;
+  align-self: stretch;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 0.5rem;
-  color: #64748b;
+  box-sizing: border-box;
+  padding: clamp(1.25rem, 4vh, 2.5rem) 1.25rem;
+  color: var(--kf-text-secondary);
   font-size: 0.875rem;
-  background: #f8fafc;
+  background: var(--wb-canvas);
+}
+.empty-state-card {
+  max-width: 22rem;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  text-align: center;
+  padding: 1.75rem 1.5rem 1.65rem;
+  border-radius: var(--kf-radius-md, 14px);
+  background: var(--kf-surface-strong);
+  border: 1px solid var(--kf-border);
+  box-shadow: var(--kf-shadow-sm);
 }
 .empty-state p {
   margin: 0;
 }
 .empty-emoji {
-  font-size: 1.5rem;
+  font-size: 1.75rem;
   line-height: 1;
 }
 .empty-title {
   margin: 0;
-  font-size: 0.95rem;
-  color: #334155;
+  font-size: 1rem;
+  color: var(--kf-text-primary);
   font-weight: 600;
 }
 .empty-desc {
   font-size: 0.8125rem;
-  color: #94a3b8;
+  line-height: 1.55;
+  color: var(--kf-text-secondary);
 }

@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, watch, onUnmounted } from "vue";
+import { ref, computed, watch } from "vue";
 import * as jsYaml from "js-yaml";
+import { NButton, NCheckbox, NDrawer, NDrawerContent, NInput, NSelect, NSpace, NTab, NTabs } from "naive-ui";
+import { kfSpace } from "../kf";
 import { extractErrorMessage } from "../utils/errorMessage";
 import { stripManagedFields } from "../utils/yaml";
 import { marked } from "marked";
@@ -65,7 +67,24 @@ const emit = defineEmits<{
 }>();
 
 type DetailTab = "yaml" | "describe" | "edit" | "editConfig" | "logs" | "topology" | "snapshots" | "taints";
+const VALID_DETAIL_TABS: readonly DetailTab[] = [
+  "yaml",
+  "edit",
+  "describe",
+  "taints",
+  "logs",
+  "editConfig",
+  "topology",
+  "snapshots",
+];
 const activeTab = ref<DetailTab>("yaml");
+
+function onTabChange(v: string | number) {
+  if (typeof v !== "string") return;
+  if ((VALID_DETAIL_TABS as readonly string[]).includes(v)) {
+    activeTab.value = v as DetailTab;
+  }
+}
 
 const rawYaml = ref("");
 const editYaml = ref("");
@@ -231,36 +250,15 @@ async function handleStrongholdLocked(message: string, onConfirmed: () => void):
 }
 const drawerWidth = ref(Math.min(DRAWER_MAX, Math.max(DRAWER_MIN, drawerWidthStorage.read())));
 
-let resizeStartX = 0;
-let resizeStartW = 0;
-
-function onResizeStart(e: MouseEvent) {
-  resizeStartX = e.clientX;
-  resizeStartW = drawerWidth.value;
-  document.addEventListener("mousemove", onResizeMove);
-  document.addEventListener("mouseup", onResizeEnd);
-  document.body.style.cursor = "col-resize";
-  document.body.style.userSelect = "none";
-}
-
-function onResizeMove(e: MouseEvent) {
-  const delta = resizeStartX - e.clientX;
-  const w = Math.min(DRAWER_MAX, Math.max(DRAWER_MIN, resizeStartW + delta));
+function onDrawerWidthUpdate(value: number) {
+  const w = Math.min(DRAWER_MAX, Math.max(DRAWER_MIN, Math.round(value)));
   drawerWidth.value = w;
   drawerWidthStorage.write(w);
 }
 
-function onResizeEnd() {
-  document.removeEventListener("mousemove", onResizeMove);
-  document.removeEventListener("mouseup", onResizeEnd);
-  document.body.style.cursor = "";
-  document.body.style.userSelect = "";
+function onDrawerShowUpdate(value: boolean) {
+  if (!value) emit("close");
 }
-
-onUnmounted(() => {
-  document.removeEventListener("mousemove", onResizeMove);
-  document.removeEventListener("mouseup", onResizeEnd);
-});
 
 const displayYaml = computed(() => {
   if (!rawYaml.value) return "";
@@ -500,125 +498,91 @@ watch(
 </script>
 
 <template>
-  <Teleport to="body">
-    <div v-if="visible" class="drawer-overlay" @click.self="emit('close')">
-      <div
-        class="resize-handle"
-        aria-label="拖拽调整宽度"
-        @mousedown.prevent="onResizeStart"
-      />
-      <aside class="drawer" role="dialog" aria-labelledby="drawer-title" :style="{ width: drawerWidth + 'px' }">
-        <header class="drawer-header">
-          <h2 id="drawer-title" class="drawer-title">
+  <NDrawer
+    :show="visible"
+    placement="right"
+    resizable
+    :width="drawerWidth"
+    :min-width="DRAWER_MIN"
+    :max-width="DRAWER_MAX"
+    :default-width="DRAWER_DEFAULT"
+    :mask-closable="true"
+    :auto-focus="false"
+    :block-scroll="false"
+    @update:show="onDrawerShowUpdate"
+    @update:width="onDrawerWidthUpdate"
+  >
+    <NDrawerContent
+      class="detail-drawer-content"
+      closable
+      :native-scrollbar="true"
+      body-class="detail-drawer-body"
+      body-content-class="detail-drawer-body-content"
+      body-style="padding: 0; overflow: hidden;"
+      body-content-style="display: flex; flex-direction: column; height: 100%; min-height: 0;"
+    >
+      <template #header>
+        <NSpace v-bind="kfSpace.drawerTitle" class="detail-drawer-header">
+          <span class="detail-drawer-title">
             {{ resource ? `${resource.kind} / ${resource.name}` : "资源详情" }}
-          </h2>
-          <div class="drawer-header-actions">
-            <label v-if="activeTab === 'yaml' && rawYaml" class="checkbox-label checkbox-label-inline drawer-header-toggle">
-              <input v-model="showManagedFields" type="checkbox" />
-              <span>managedFields</span>
-            </label>
-            <button type="button" class="btn-close" aria-label="关闭" @click="emit('close')">×</button>
-          </div>
-        </header>
-        <div v-if="props.resource" class="drawer-toolbar">
-          <div class="toolbar-head">
-            <template v-if="(activeTab === 'edit' || activeTab === 'taints') && rawYaml">
-              <button
-                type="button"
-                class="btn-primary toolbar-apply"
-                :disabled="editSaving"
+          </span>
+          <NCheckbox
+            v-if="activeTab === 'yaml' && rawYaml"
+            v-model:checked="showManagedFields"
+            size="small"
+            class="detail-drawer-header-toggle"
+          >
+            managedFields
+          </NCheckbox>
+        </NSpace>
+      </template>
+      <div v-if="props.resource" class="drawer-toolbar">
+          <NTabs
+            :value="activeTab"
+            type="segment"
+            size="small"
+            animated
+            class="detail-tabs"
+            @update:value="onTabChange"
+          >
+            <template #suffix>
+              <NButton
+                v-if="(activeTab === 'edit' || activeTab === 'taints') && rawYaml"
+                type="primary"
+                size="small"
+                :loading="editSaving"
                 @click="activeTab === 'taints' ? applyNodeTaints() : applyEdit()"
               >
                 {{ editSaving ? "保存中…" : "应用" }}
-              </button>
+              </NButton>
             </template>
-          </div>
-          <div class="toolbar-row">
-            <div class="tab-grid">
-              <button
-                type="button"
-                class="tab-btn tab-compact"
-                :class="{ active: activeTab === 'yaml' }"
-                @click="activeTab = 'yaml'"
-              >
-                <span class="tab-icon" aria-hidden="true">Y</span>
-                <span class="tab-title">YAML</span>
-              </button>
-              <button
-                type="button"
-                class="tab-btn tab-compact"
-                :class="{ active: activeTab === 'edit' }"
-                @click="activeTab = 'edit'"
-              >
-                <span class="tab-icon" aria-hidden="true">E</span>
-                <span class="tab-title">编辑</span>
-              </button>
-              <button
-                type="button"
-                class="tab-btn tab-compact"
-                :class="{ active: activeTab === 'describe' }"
-                @click="activeTab = 'describe'"
-              >
-                <span class="tab-icon" aria-hidden="true">D</span>
-                <span class="tab-title">详情</span>
-              </button>
-              <button
-                v-if="resource?.kind === 'Node'"
-                type="button"
-                class="tab-btn tab-compact"
-                :class="{ active: activeTab === 'taints' }"
-                @click="activeTab = 'taints'"
-              >
-                <span class="tab-icon" aria-hidden="true">T</span>
-                <span class="tab-title">污点</span>
-              </button>
-              <button
-                v-if="
-                  resource &&
-                  (resource.kind === 'Pod' ||
-                    resource.kind === 'Deployment' ||
-                    resource.kind === 'StatefulSet' ||
-                    resource.kind === 'DaemonSet')
-                "
-                type="button"
-                class="tab-btn tab-compact"
-                :class="{ active: activeTab === 'logs' }"
-                @click="activeTab = 'logs'"
-              >
-                <span class="tab-icon" aria-hidden="true">L</span>
-                <span class="tab-title">日志</span>
-              </button>
-              <button
-                v-if="resource && (resource.kind === 'ConfigMap' || resource.kind === 'Secret')"
-                type="button"
-                class="tab-btn tab-compact"
-                :class="{ active: activeTab === 'editConfig' }"
-                @click="activeTab = 'editConfig'"
-              >
-                <span class="tab-icon" aria-hidden="true">C</span>
-                <span class="tab-title">配置</span>
-              </button>
-              <button
-                v-if="resource && !resource.dynamic"
-                type="button"
-                class="tab-btn tab-compact"
-                :class="{ active: activeTab === 'topology' }"
-                @click="activeTab = 'topology'"
-              >
-                <span class="tab-icon" aria-hidden="true">R</span>
-                <span class="tab-title">关联</span>
-              </button>
-              <button
-                type="button"
-                class="tab-btn tab-compact"
-                :class="{ active: activeTab === 'snapshots' }"
-                @click="activeTab = 'snapshots'"
-              >
-                <span class="tab-icon" aria-hidden="true">S</span>
-                <span class="tab-title">快照</span>
-              </button>
-            </div>
-          </div>
+            <NTab name="yaml" tab="YAML" />
+            <NTab name="edit" tab="编辑" />
+            <NTab name="describe" tab="详情" />
+            <NTab v-if="resource?.kind === 'Node'" name="taints" tab="污点" />
+            <NTab
+              v-if="
+                resource &&
+                (resource.kind === 'Pod' ||
+                  resource.kind === 'Deployment' ||
+                  resource.kind === 'StatefulSet' ||
+                  resource.kind === 'DaemonSet')
+              "
+              name="logs"
+              tab="日志"
+            />
+            <NTab
+              v-if="resource && (resource.kind === 'ConfigMap' || resource.kind === 'Secret')"
+              name="editConfig"
+              tab="配置"
+            />
+            <NTab
+              v-if="resource && !resource.dynamic"
+              name="topology"
+              tab="关联"
+            />
+            <NTab name="snapshots" tab="快照" />
+          </NTabs>
         </div>
         <div class="drawer-body">
           <div v-if="loading && (activeTab === 'yaml' || activeTab === 'edit' || activeTab === 'editConfig' || activeTab === 'taints')" class="loading-state">加载中…</div>
@@ -637,35 +601,40 @@ watch(
               <div v-for="(taint, index) in nodeTaints" :key="index" class="taint-card">
                 <div class="taint-card-head">
                   <div class="taint-card-index">污点 {{ index + 1 }}</div>
-                  <button type="button" class="btn-close taint-remove-btn" aria-label="删除污点" @click="removeNodeTaint(index)">×</button>
+                  <NButton text type="error" class="taint-remove-btn" aria-label="删除污点" @click="removeNodeTaint(index)">×</NButton>
                 </div>
                 <label class="taint-field">
                   <span class="taint-field-label">Key</span>
-                  <input v-model="taint.key" type="text" class="taint-input" placeholder="例如 dedicated" />
+                  <NInput v-model:value="taint.key" class="taint-input" placeholder="例如 dedicated" />
                 </label>
                 <label class="taint-field">
                   <span class="taint-field-label">Value</span>
-                  <input v-model="taint.value" type="text" class="taint-input" placeholder="例如 infra（可选）" />
+                  <NInput v-model:value="taint.value" class="taint-input" placeholder="例如 infra（可选）" />
                 </label>
                 <label class="taint-field">
                   <span class="taint-field-label">Effect</span>
                   <div class="taint-effect-row">
-                    <select v-model="taint.effect" class="taint-input taint-select">
-                      <option value="" disabled>选择生效方式</option>
-                      <option value="NoSchedule">NoSchedule</option>
-                      <option value="PreferNoSchedule">PreferNoSchedule</option>
-                      <option value="NoExecute">NoExecute</option>
-                    </select>
+                    <NSelect
+                      v-model:value="taint.effect"
+                      class="taint-input taint-select-naive"
+                      placeholder="选择生效方式"
+                      :options="[
+                        { label: '未设置', value: '' },
+                        { label: 'NoSchedule', value: 'NoSchedule' },
+                        { label: 'PreferNoSchedule', value: 'PreferNoSchedule' },
+                        { label: 'NoExecute', value: 'NoExecute' },
+                      ]"
+                    />
                     <span class="taint-effect-pill" :class="`effect-${taint.effect || 'empty'}`">
                       {{ taintEffectLabel(taint.effect) }}
                     </span>
                   </div>
                 </label>
               </div>
-              <button type="button" class="taint-add-card" :disabled="editSaving" @click="addNodeTaint">
+              <NButton quaternary block class="taint-add-card" :disabled="editSaving" @click="addNodeTaint">
                 <span class="taint-add-card-plus">+</span>
                 <span class="taint-add-card-text">新增污点</span>
-              </button>
+              </NButton>
             </div>
             <div v-if="taintsValidationError" class="edit-error taints-validation">{{ taintsValidationError }}</div>
           </div>
@@ -761,9 +730,8 @@ watch(
           </div>
           <div v-else class="loading-state">加载中…</div>
         </div>
-      </aside>
-    </div>
-  </Teleport>
+    </NDrawerContent>
+  </NDrawer>
   <ResourceSnapshotViewer
     :visible="!!viewingSnapshot"
     :snapshot="viewingSnapshot"
@@ -773,191 +741,102 @@ watch(
 </template>
 
 <style scoped>
-.drawer-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.3);
-  z-index: 1000;
-  display: flex;
-  justify-content: flex-end;
-  align-items: stretch;
+.detail-drawer-header {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  padding-right: 2.5rem;
 }
-.resize-handle {
-  width: 6px;
-  flex-shrink: 0;
-  cursor: col-resize;
-  background: transparent;
+.detail-drawer-header :deep(.n-space-item:first-child) {
+  flex: 1;
+  min-width: 0;
 }
-.resize-handle:hover {
-  background: rgba(37, 99, 235, 0.15);
-}
-.drawer {
-  height: 100%;
-  max-width: 90vw;
-  background: #fff;
-  box-shadow: -4px 0 20px rgba(0, 0, 0, 0.1);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  flex-shrink: 0;
-}
-.drawer-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  padding: 0.75rem 1rem;
-  border-bottom: 1px solid #e2e8f0;
-  flex-shrink: 0;
-}
-.drawer-title {
-  margin: 0;
+.detail-drawer-title {
+  display: block;
   font-size: 0.9375rem;
   font-weight: 600;
   color: #1e293b;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.drawer-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.55rem;
+.detail-drawer-header-toggle {
   flex-shrink: 0;
-}
-.btn-close {
-  width: 2rem;
-  height: 2rem;
-  border: none;
-  background: transparent;
-  font-size: 1.5rem;
-  line-height: 1;
-  color: #64748b;
-  cursor: pointer;
-  border-radius: 4px;
-}
-.btn-close:hover {
-  background: #f1f5f9;
-  color: #334155;
+  padding: 0.18rem 0.5rem;
+  border: 1px solid var(--wb-line, #dbe3ee);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--kf-surface-strong) 90%, transparent);
+  max-width: min(32vw, 180px);
+  overflow: hidden;
 }
 .drawer-toolbar {
   padding: 0.75rem 1rem 0.9rem;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid var(--kf-border);
   background:
     radial-gradient(circle at top left, rgba(59, 130, 246, 0.12), transparent 28%),
-    linear-gradient(180deg, #f8fbff 0%, #f8fafc 100%);
+    linear-gradient(180deg, var(--wb-panel-soft) 0%, var(--kf-bg-soft) 100%);
   flex-shrink: 0;
 }
-.toolbar-head {
+/** Segment 式 Tab：轨道 + 滑块；滑块为 primary-soft 底，与未选区形成明确色块对比。 */
+.detail-tabs {
+  --n-tab-font-size: 0.78rem;
+  --n-color-segment: color-mix(in srgb, var(--wb-panel-soft, #eef2f7) 92%, var(--kf-border) 6%);
+  --n-tab-color-segment: var(
+    --kf-primary-soft,
+    color-mix(in srgb, var(--kf-primary, #2563eb) 12%, #fff)
+  );
+  --n-tab-text-color: var(--kf-text-secondary, #64748b);
+  --n-tab-text-color-active: var(--kf-primary, #2563eb);
+  --n-tab-text-color-hover: var(--wb-text-primary, #334155);
+}
+.detail-tabs:deep(.n-tabs-nav) {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 0.75rem;
-  margin-bottom: 0.75rem;
+  width: 100%;
+  min-width: 0;
+  gap: 0;
+  box-sizing: border-box;
 }
-.toolbar-row {
-  display: flex;
-  align-items: stretch;
-  gap: 0.75rem;
+.detail-tabs:deep(.n-tabs-nav__prefix) {
+  padding-right: 0.5rem;
+  flex: 0 0 auto;
+}
+.detail-tabs:deep(.n-tabs-nav__suffix) {
+  padding-left: 0.75rem;
+  flex: 0 0 auto;
+}
+/** 让分段条在左右缀饰之间占满剩余空间，避免窄抽屉里挤压后缀按钮。 */
+.detail-tabs:deep(.n-tabs-nav) > *:not(.n-tabs-nav__prefix):not(.n-tabs-nav__suffix) {
+  flex: 1 1 0;
   min-width: 0;
 }
-.toolbar-apply {
-  flex-shrink: 0;
-}
-.tab-grid {
-  display: flex;
-  align-items: center;
-  gap: 0.55rem;
+.detail-tabs:deep(.n-tabs-rail) {
+  width: 100%;
   min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  padding-bottom: 0.1rem;
-  scrollbar-width: thin;
+  min-height: 2rem;
+  box-sizing: border-box;
+  border: 1px solid color-mix(in srgb, var(--kf-border) 65%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 40%, transparent);
 }
-.tab-btn {
-  flex-shrink: 0;
-  border: 1px solid #dbe3ee;
-  border-radius: 999px;
-  background: #fff;
-  cursor: pointer;
-  color: #475569;
-  transition:
-    border-color 0.16s ease,
-    box-shadow 0.16s ease,
-    background 0.16s ease;
+.detail-tabs:deep(.n-tabs-capsule) {
+  box-shadow:
+    0 1px 3px color-mix(in srgb, #0f172a 10%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--kf-primary) 26%, var(--kf-border) 35%);
 }
-.tab-btn:hover {
-  background: #fff;
-  border-color: #93c5fd;
-  box-shadow: 0 6px 16px rgba(148, 163, 184, 0.12);
+.detail-tabs:deep(.n-tabs-tab) {
+  padding: 0.28rem 0.5rem;
+  line-height: 1.3;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  transition: color 0.15s ease;
 }
-.tab-compact {
-  min-height: 0;
-  padding: 0.5rem 0.8rem;
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-  white-space: nowrap;
-}
-.tab-btn.active {
-  background: linear-gradient(180deg, rgba(219, 234, 254, 0.88) 0%, rgba(239, 246, 255, 1) 100%);
-  border-color: #60a5fa;
-  color: #1d4ed8;
-  box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.22), 0 8px 18px rgba(59, 130, 246, 0.12);
-}
-.tab-icon {
-  width: 1.35rem;
-  height: 1.35rem;
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 999px;
-  background: #eff6ff;
-  color: #2563eb;
-  font-size: 0.68rem;
-  font-weight: 800;
-}
-.tab-btn.active .tab-icon {
-  background: #2563eb;
-  color: #fff;
-}
-.tab-title {
-  font-size: 0.78rem;
+.detail-tabs:deep(.n-tabs-tab--active) {
   font-weight: 700;
-  line-height: 1;
-  color: #1e293b;
+  color: var(--kf-primary, #2563eb);
 }
-.tab-btn.active .tab-title {
-  color: #1d4ed8;
-}
-.checkbox-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.8125rem;
-  color: #475569;
-  cursor: pointer;
-}
-.checkbox-label input {
-  cursor: pointer;
-}
-.checkbox-label-ghost {
-  padding: 0.55rem 0.8rem;
-  border: 1px solid #dbe3ee;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.82);
-}
-.checkbox-label-inline {
-  flex-shrink: 0;
-  align-self: center;
-  padding: 0.42rem 0.72rem;
-  border: 1px solid #dbe3ee;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.88);
-  white-space: nowrap;
-}
-.drawer-header-toggle {
-  max-width: min(34vw, 180px);
-  overflow: hidden;
+.detail-tabs:deep(.n-tabs-tab:not(.n-tabs-tab--active):hover) {
+  color: var(--kf-text-primary, #0f172a);
 }
 .drawer-body {
   flex: 1;
@@ -974,7 +853,7 @@ watch(
   font-size: 0.875rem;
 }
 .error-state {
-  color: #dc2626;
+  color: var(--kf-danger);
 }
 .describe-panel {
   flex: 1;
@@ -992,13 +871,13 @@ watch(
 .describe-markdown {
   font-size: 0.8125rem;
   line-height: 1.6;
-  color: #334155;
+  color: var(--wb-text-primary);
 }
 .describe-markdown :deep(h2) {
   margin: 1rem 0 0.5rem;
   font-size: 0.9375rem;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--wb-text-primary);
 }
 .describe-markdown :deep(h2:first-child) {
   margin-top: 0;
@@ -1013,23 +892,23 @@ watch(
 .describe-markdown :deep(td) {
   padding: 0.4rem 0.6rem;
   text-align: left;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--kf-border);
 }
 .describe-markdown :deep(th) {
-  background: #f8fafc;
+  background: var(--kf-bg-soft);
   font-weight: 600;
-  color: #475569;
+  color: var(--kf-text-secondary);
 }
 .describe-markdown :deep(tr:hover td) {
-  background: #f8fafc;
+  background: var(--kf-bg-soft);
 }
 .describe-markdown :deep(pre) {
   margin: 0.5rem 0 1rem;
   padding: 0.75rem;
   font-family: ui-monospace, "SF Mono", Monaco, Consolas, monospace;
   font-size: 0.75rem;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
+  background: var(--kf-bg-soft);
+  border: 1px solid var(--kf-border);
   border-radius: 4px;
   overflow-x: auto;
 }
@@ -1044,7 +923,7 @@ watch(
   margin: 0;
   padding: 1rem;
   font-size: 0.8125rem;
-  color: #64748b;
+  color: var(--kf-text-secondary);
 }
 .topology-panel-wrap {
   flex: 1;
@@ -1065,7 +944,7 @@ watch(
   max-width: none;
   height: 100%;
   border-left: none;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--kf-border);
   border-radius: 16px;
 }
 .logs-panel {
@@ -1082,15 +961,15 @@ watch(
   padding: 1rem;
   display: grid;
   gap: 0.75rem;
-  background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
+  background: linear-gradient(180deg, var(--kf-bg-soft) 0%, var(--kf-surface-strong) 100%);
 }
 .taints-empty {
   padding: 0.9rem 1rem;
-  border: 1px dashed #cbd5e1;
+  border: 1px dashed var(--kf-border);
   border-radius: 14px;
-  background: #fff;
+  background: var(--kf-surface-strong);
   font-size: 0.8rem;
-  color: #64748b;
+  color: var(--kf-text-secondary);
 }
 .taints-list {
   display: flex;
@@ -1102,11 +981,11 @@ watch(
   flex-direction: column;
   gap: 0.8rem;
   padding: 1rem;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--kf-border);
   border-radius: 18px;
   background:
     radial-gradient(circle at top right, rgba(37, 99, 235, 0.08), transparent 28%),
-    #fff;
+    var(--kf-surface-strong);
   box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
 }
 .taint-card-head {
@@ -1213,26 +1092,26 @@ watch(
   font-size: 0.8rem;
   font-weight: 700;
 }
-.taint-input {
+.taint-field .taint-input {
   width: 100%;
   min-width: 0;
-  height: 2.2rem;
-  border: 1px solid #dbe3ee;
-  border-radius: 10px;
-  padding: 0 0.7rem;
-  font-size: 0.82rem;
-  color: #0f172a;
-  background: #f8fafc;
 }
-.taint-select {
+.taint-select-naive {
   flex: 1 1 280px;
   max-width: 100%;
+  min-width: 0;
 }
-.taint-input:focus {
-  outline: none;
-  border-color: #2563eb;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
-  background: #fff;
+.taint-add-card.n-button {
+  height: auto !important;
+  min-height: unset !important;
+  --n-height: auto !important;
+}
+.taint-add-card :deep(.n-button__content) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  width: 100%;
 }
 .taints-validation {
   margin: 0;
@@ -1274,23 +1153,6 @@ watch(
   outline: none;
   border-color: #2563eb;
 }
-.btn-primary {
-  padding: 0.55rem 0.95rem;
-  border: none;
-  border-radius: 12px;
-  background: #2563eb;
-  color: #fff;
-  font-size: 0.8125rem;
-  font-weight: 600;
-  cursor: pointer;
-}
-.btn-primary:hover:not(:disabled) {
-  background: #1d4ed8;
-}
-.btn-primary:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
 .yaml-scroll {
   flex: 1;
   min-height: 0;
@@ -1303,23 +1165,7 @@ watch(
   min-height: 200px;
 }
 
-@media (max-width: 960px) {
-  .toolbar-head {
-    flex-direction: column;
-    align-items: stretch;
-  }
-  .toolbar-row {
-    flex-direction: column;
-  }
-  .tab-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 640px) {
-  .tab-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
   .toolbar-resource-meta {
     flex-direction: column;
     align-items: flex-start;

@@ -1,13 +1,12 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, h } from "vue";
+import { NDropdown } from "naive-ui";
+import type { DropdownOption } from "naive-ui";
 import {
   WORKBENCH_SHELL_WORKLOAD_KINDS,
   WORKBENCH_NODE_TERMINAL_RESOURCE_KINDS,
   WORKBENCH_IMAGE_PATCH_KINDS,
 } from "../../features/workbench";
-
-const menuEl = ref<HTMLElement | null>(null);
-defineExpose({ menuEl });
 
 type SelectedResourceRef = {
   kind: string;
@@ -17,7 +16,7 @@ type SelectedResourceRef = {
   dynamic?: { api_version: string; namespaced: boolean };
 };
 
-defineProps<{
+const props = defineProps<{
   visible: boolean;
   position: { x: number; y: number };
   selectedResource: SelectedResourceRef | null;
@@ -42,290 +41,233 @@ const emit = defineEmits<{
   openSyncOrchestrator: [];
   handleDelete: [];
 }>();
+
+type ActionEmitKey =
+  | "openDetail"
+  | "openTopology"
+  | "openPodLogs"
+  | "openPodShell"
+  | "openNodeTerminal"
+  | "openPodDebug"
+  | "openEditConfig"
+  | "openChangeImage"
+  | "openSyncOrchestrator"
+  | "handleDelete";
+
+const emitMap: Record<ActionEmitKey, () => void> = {
+  openDetail: () => emit("openDetail"),
+  openTopology: () => emit("openTopology"),
+  openPodLogs: () => emit("openPodLogs"),
+  openPodShell: () => emit("openPodShell"),
+  openNodeTerminal: () => emit("openNodeTerminal"),
+  openPodDebug: () => emit("openPodDebug"),
+  openEditConfig: () => emit("openEditConfig"),
+  openChangeImage: () => emit("openChangeImage"),
+  openSyncOrchestrator: () => emit("openSyncOrchestrator"),
+  handleDelete: () => emit("handleDelete"),
+};
+
+type WBOption = DropdownOption & {
+  tail?: string;
+  tone?: "navi" | "run" | "flow" | "danger";
+  emit?: ActionEmitKey;
+};
+
+const quickTargetMeta = computed(() => {
+  if (!props.selectedResource) return "";
+  const ns = props.selectedResource.namespace ? `${props.selectedResource.namespace}/` : "";
+  return `${props.selectedResource.kind} · ${ns}${props.selectedResource.name}`;
+});
+
+function renderHeader() {
+  return h("div", { class: "wb-act-header" }, [
+    h("div", { class: "wb-act-title" }, "资源操作"),
+    h("div", { class: "wb-act-target", title: quickTargetMeta.value }, quickTargetMeta.value),
+  ]);
+}
+
+function renderGroup(text: string, tone: WBOption["tone"]) {
+  return h("div", { class: ["wb-act-group", `wb-act-group-${tone}`] }, text);
+}
+
+const menuOptions = computed<WBOption[]>(() => {
+  const opts: WBOption[] = [];
+  if (quickTargetMeta.value) {
+    opts.push({ key: "__header", type: "render", render: renderHeader });
+    opts.push({ type: "divider", key: "__d0" });
+  }
+
+  opts.push({ key: "__g_navi", type: "render", render: () => renderGroup("查看与导航", "navi") });
+  opts.push({ key: "openDetail", label: "查看详情", tail: "YAML", tone: "navi", emit: "openDetail" });
+  opts.push({ key: "openTopology", label: "关联资源", tail: "拓扑", tone: "navi", emit: "openTopology" });
+
+  const r = props.selectedResource;
+  const runItems: WBOption[] = [];
+  if (r && ["Pod", "Deployment", "StatefulSet", "DaemonSet"].includes(r.kind)) {
+    runItems.push({ key: "openPodLogs", label: "打开日志中心", tail: "Logs", tone: "run", emit: "openPodLogs" });
+  }
+  if (r && WORKBENCH_SHELL_WORKLOAD_KINDS.has(r.kind)) {
+    runItems.push({ key: "openPodShell", label: "打开 Shell", tail: "Exec", tone: "run", emit: "openPodShell" });
+  }
+  if (r && WORKBENCH_NODE_TERMINAL_RESOURCE_KINDS.has(r.kind)) {
+    runItems.push({
+      key: "openNodeTerminal",
+      label: props.nodeTerminalMenuLabel,
+      tail: "Node",
+      tone: "run",
+      emit: "openNodeTerminal",
+      disabled: !props.canOpenNodeTerminal,
+      props: props.nodeTerminalDisabledReason ? { title: props.nodeTerminalDisabledReason } : undefined,
+    });
+  }
+  if (r?.kind === "Pod") {
+    runItems.push({
+      key: "openPodDebug",
+      label: "进入容器调试环境",
+      tail: "Debug",
+      tone: "run",
+      emit: "openPodDebug",
+      disabled: !props.canOpenPodDebug,
+      props: props.podDebugDisabledReason ? { title: props.podDebugDisabledReason } : undefined,
+    });
+  }
+  if (runItems.length) {
+    opts.push({ type: "divider", key: "__d1" });
+    opts.push({ key: "__g_run", type: "render", render: () => renderGroup("运行与调试", "run") });
+    opts.push(...runItems);
+  }
+
+  const flowItems: WBOption[] = [];
+  if (r && (r.kind === "ConfigMap" || r.kind === "Secret")) {
+    flowItems.push({ key: "openEditConfig", label: "修改配置", tail: "Config", tone: "flow", emit: "openEditConfig" });
+  }
+  if (r && WORKBENCH_IMAGE_PATCH_KINDS.has(r.kind)) {
+    flowItems.push({ key: "openChangeImage", label: "修改镜像", tail: "Image", tone: "flow", emit: "openChangeImage" });
+  }
+  flowItems.push({ key: "openSyncOrchestrator", label: "编排中心", tail: "Flow", tone: "flow", emit: "openSyncOrchestrator" });
+  opts.push({ type: "divider", key: "__d2" });
+  opts.push({ key: "__g_flow", type: "render", render: () => renderGroup("编排与变更", "flow") });
+  opts.push(...flowItems);
+
+  opts.push({ type: "divider", key: "__d3" });
+  opts.push({ key: "__g_danger", type: "render", render: () => renderGroup("危险操作", "danger") });
+  opts.push({
+    key: "handleDelete",
+    label: props.deleteActionArmed ? "再次点击确认删除" : "删除资源",
+    tail: props.deleteActionArmed ? "确认" : "Danger",
+    tone: "danger",
+    emit: "handleDelete",
+  });
+
+  return opts;
+});
+
+function onSelect(_key: string | number, option: DropdownOption) {
+  const o = option as WBOption;
+  if (o.disabled) return;
+  if (o.emit) emitMap[o.emit]();
+}
+
+function onClickoutside() {
+  if (props.visible) emit("close");
+}
+
+function renderLabel(option: DropdownOption) {
+  const o = option as WBOption;
+  const main = h("span", { class: "wb-act-main" }, String(o.label ?? ""));
+  const tail = o.tail
+    ? h("span", { class: ["wb-act-tail", o.tone ? `wb-act-tail-${o.tone}` : ""] }, o.tail)
+    : null;
+  const rowClasses = ["wb-act-row"];
+  if (o.tone === "danger") {
+    rowClasses.push(props.deleteActionArmed ? "wb-act-row-danger-armed" : "wb-act-row-danger");
+  }
+  return h("span", { class: rowClasses }, [main, tail]);
+}
 </script>
 
 <template>
-  <Teleport to="body">
-    <div
-      v-if="visible"
-      class="action-menu-backdrop"
-      @click="emit('close')"
-    >
-      <div
-        ref="menuEl"
-        class="action-menu-overlay"
-        :style="{ left: position.x + 'px', top: position.y + 'px' }"
-        role="menu"
-        @click.stop
-      >
-        <div class="action-menu-section">
-          <div class="action-menu-section-title">查看与导航</div>
-          <button type="button" class="action-menu-item" @click="emit('openDetail')">
-            <span class="action-menu-icon" aria-hidden="true">📄</span>
-            <span class="action-menu-text">
-              <span class="action-menu-main">查看详情</span>
-              <span class="action-menu-sub">打开 YAML、Describe 与编辑面板</span>
-            </span>
-          </button>
-          <button type="button" class="action-menu-item" @click="emit('openTopology')">
-            <span class="action-menu-icon" aria-hidden="true">🧭</span>
-            <span class="action-menu-text">
-              <span class="action-menu-main">关联资源</span>
-              <span class="action-menu-sub">查看上下游资源拓扑并快速跳转</span>
-            </span>
-          </button>
-          <button
-            v-if="selectedResource && ['Pod', 'Deployment', 'StatefulSet', 'DaemonSet'].includes(selectedResource.kind)"
-            type="button"
-            class="action-menu-item"
-            @click="emit('openPodLogs')"
-          >
-            <span class="action-menu-icon" aria-hidden="true">📜</span>
-            <span class="action-menu-text">
-              <span class="action-menu-main">打开日志中心</span>
-              <span class="action-menu-sub">集中查看 Pod 或工作负载日志</span>
-            </span>
-          </button>
-          <button
-            v-if="selectedResource && WORKBENCH_SHELL_WORKLOAD_KINDS.has(selectedResource.kind)"
-            type="button"
-            class="action-menu-item"
-            @click="emit('openPodShell')"
-          >
-            <span class="action-menu-icon" aria-hidden="true">⌨</span>
-            <span class="action-menu-text">
-              <span class="action-menu-main">打开 Shell</span>
-              <span class="action-menu-sub">进入容器执行命令与排障</span>
-            </span>
-          </button>
-          <button
-            v-if="selectedResource && WORKBENCH_NODE_TERMINAL_RESOURCE_KINDS.has(selectedResource.kind)"
-            type="button"
-            class="action-menu-item"
-            :class="{ 'action-menu-item-disabled': !canOpenNodeTerminal }"
-            :disabled="!canOpenNodeTerminal"
-            :title="nodeTerminalDisabledReason || nodeTerminalMenuLabel"
-            @click="emit('openNodeTerminal')"
-          >
-            <span class="action-menu-icon" aria-hidden="true">🖥</span>
-            <span class="action-menu-text">
-              <span class="action-menu-main">{{ nodeTerminalMenuLabel }}</span>
-              <span class="action-menu-sub">通过环境入口快速切换到目标节点主机</span>
-            </span>
-          </button>
-          <button
-            v-if="selectedResource?.kind === 'Pod'"
-            type="button"
-            class="action-menu-item"
-            :class="{ 'action-menu-item-disabled': !canOpenPodDebug }"
-            :disabled="!canOpenPodDebug"
-            :title="podDebugDisabledReason || '进入容器调试环境'"
-            @click="emit('openPodDebug')"
-          >
-            <span class="action-menu-icon" aria-hidden="true">🧪</span>
-            <span class="action-menu-text">
-              <span class="action-menu-main">进入容器调试环境</span>
-              <span class="action-menu-sub">通过 nsenter 进入目标容器的网络或完整隔离空间</span>
-            </span>
-          </button>
-        </div>
-        <div class="action-menu-section">
-          <div class="action-menu-section-title">编辑与变更</div>
-          <button
-            v-if="selectedResource && (selectedResource.kind === 'ConfigMap' || selectedResource.kind === 'Secret')"
-            type="button"
-            class="action-menu-item"
-            @click="emit('openEditConfig')"
-          >
-            <span class="action-menu-icon" aria-hidden="true">⚙</span>
-            <span class="action-menu-text">
-              <span class="action-menu-main">修改配置</span>
-              <span class="action-menu-sub">编辑 ConfigMap / Secret 内容</span>
-            </span>
-          </button>
-          <button
-            v-if="selectedResource && WORKBENCH_IMAGE_PATCH_KINDS.has(selectedResource.kind)"
-            type="button"
-            class="action-menu-item"
-            @click="emit('openChangeImage')"
-          >
-            <span class="action-menu-icon" aria-hidden="true">🧩</span>
-            <span class="action-menu-text">
-              <span class="action-menu-main">修改镜像</span>
-              <span class="action-menu-sub">更新工作负载容器镜像版本</span>
-            </span>
-          </button>
-          <button type="button" class="action-menu-item" @click="emit('openSyncOrchestrator')">
-            <span class="action-menu-icon" aria-hidden="true">🧱</span>
-            <span class="action-menu-text">
-              <span class="action-menu-main">编排中心</span>
-              <span class="action-menu-sub">同步到编排中心并统一维护 YAML</span>
-            </span>
-          </button>
-        </div>
-        <div class="action-menu-section action-menu-section-danger">
-          <div class="action-menu-section-title">危险操作</div>
-          <button
-            type="button"
-            class="action-menu-item action-menu-item-danger"
-            :class="{ 'action-menu-item-danger-armed': deleteActionArmed }"
-            @click="emit('handleDelete')"
-          >
-            <span class="action-menu-icon" aria-hidden="true">🗑</span>
-            <span class="action-menu-text">
-              <span class="action-menu-main">
-                {{ deleteActionArmed ? "再次点击确认删除" : "删除" }}
-              </span>
-              <span class="action-menu-sub">
-                {{
-                  deleteActionArmed
-                    ? "将打开删除确认弹窗，避免误操作"
-                    : "高风险操作，资源删除后通常不可恢复"
-                }}
-              </span>
-            </span>
-          </button>
-        </div>
-      </div>
-    </div>
-  </Teleport>
+  <NDropdown
+    :show="visible"
+    trigger="manual"
+    :x="position.x"
+    :y="position.y"
+    :options="menuOptions"
+    :show-arrow="false"
+    placement="bottom-start"
+    size="medium"
+    :render-label="renderLabel"
+    :on-clickoutside="onClickoutside"
+    :keyboard="true"
+    @select="onSelect"
+  />
 </template>
 
-<style scoped>
-.action-menu-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 999;
-}
-.action-menu-overlay {
-  position: fixed;
-  z-index: 1000;
-  width: min(320px, calc(100vw - 20px));
-  max-width: calc(100vw - 20px);
-  max-height: calc(100vh - 20px);
-  padding: 0.5rem 0;
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.18);
-  overflow: auto;
-  overscroll-behavior: contain;
-}
-.action-menu-section {
-  padding: 0 0.25rem;
-}
-.action-menu-section:not(:last-child) {
-  margin-bottom: 0.35rem;
-  padding-bottom: 0.35rem;
-  border-bottom: 1px solid #f1f5f9;
-}
-.action-menu-section-title {
-  padding: 0.25rem 0.5rem;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: #94a3b8;
-}
-.action-menu-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.5rem;
+<style>
+/* NDropdown 渲染到 body，scoped 不生效，这里走全局命名空间。 */
+.wb-act-row {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
   width: 100%;
-  padding: 0.45rem 0.75rem;
-  border: none;
-  background: none;
-  font-size: 0.8125rem;
-  text-align: left;
-  color: #334155;
-  cursor: pointer;
-  border-radius: 4px;
+  gap: 0.6rem;
+  min-width: 220px;
 }
-.action-menu-icon {
-  width: 1rem;
-  text-align: center;
-  opacity: 0.9;
-  margin-top: 0.1rem;
-}
-.action-menu-text {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-.action-menu-main {
+.wb-act-main {
+  font-size: 0.82rem;
   color: inherit;
-  line-height: 1.2;
+  min-width: 0;
+  font-weight: 500;
 }
-.action-menu-sub {
-  margin-top: 0.12rem;
-  font-size: 0.72rem;
-  line-height: 1.25;
-  color: #94a3b8;
-  word-break: break-word;
+.wb-act-tail {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 0.42rem;
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  background: #e2e8f0;
+  color: #475569;
+  flex-shrink: 0;
 }
-.action-menu-item:hover .action-menu-sub {
+.wb-act-tail-navi { background: #dbeafe; color: #1d4ed8; }
+.wb-act-tail-run { background: #cffafe; color: #0e7490; }
+.wb-act-tail-flow { background: #ede9fe; color: #5b21b6; }
+.wb-act-tail-danger { background: #fee2e2; color: #b91c1c; }
+.wb-act-row-danger .wb-act-main { color: #b91c1c; }
+.wb-act-row-danger-armed .wb-act-main { color: #b91c1c; font-weight: 650; }
+.wb-act-header {
+  padding: 0.45rem 0.6rem 0.5rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
+  margin-bottom: 0.18rem;
+}
+.wb-act-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #0f172a;
+  letter-spacing: 0.02em;
+}
+.wb-act-target {
+  margin-top: 0.18rem;
+  font-size: 0.7rem;
   color: #64748b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 280px;
 }
-.action-menu-item:hover {
-  background: #f1f5f9;
-  color: #2563eb;
-}
-.action-menu-item-disabled {
-  cursor: not-allowed;
-  opacity: 0.72;
-}
-.action-menu-item-disabled:hover {
-  background: none;
-  color: #334155;
-}
-.action-menu-item-disabled:hover .action-menu-sub {
+.wb-act-group {
+  padding: 0.36rem 0.65rem 0.18rem;
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
   color: #94a3b8;
 }
-.action-menu-section-danger {
-  border-left: 2px solid #fecaca;
-  margin-left: 0.25rem;
-  padding-left: 0.25rem;
-}
-.action-menu-item-danger:hover {
-  background: #fef2f2;
-  color: #dc2626;
-}
-.action-menu-item-danger:hover .action-menu-sub {
-  color: #b91c1c;
-}
-.action-menu-item-danger-armed {
-  background: #fee2e2;
-  color: #b91c1c;
-  box-shadow: inset 2px 0 0 #dc2626;
-}
-.action-menu-item-danger-armed .action-menu-sub {
-  color: #b91c1c;
-}
-.action-menu-loading {
-  padding: 0.4rem 0.75rem;
-  font-size: 0.8125rem;
-  color: #94a3b8;
-}
-@media (max-width: 640px) {
-  .action-menu-overlay {
-    width: min(300px, calc(100vw - 16px));
-    max-width: calc(100vw - 16px);
-    max-height: calc(100vh - 16px);
-    padding: 0.35rem 0;
-    border-radius: 10px;
-  }
-  .action-menu-section {
-    padding: 0 0.18rem;
-  }
-  .action-menu-item {
-    gap: 0.42rem;
-    padding: 0.42rem 0.62rem;
-  }
-  .action-menu-main {
-    font-size: 0.78rem;
-  }
-  .action-menu-sub {
-    font-size: 0.68rem;
-  }
-}
+.wb-act-group-navi { color: #1d4ed8; }
+.wb-act-group-run { color: #0e7490; }
+.wb-act-group-flow { color: #5b21b6; }
+.wb-act-group-danger { color: #dc2626; }
 </style>

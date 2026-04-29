@@ -6,8 +6,6 @@ use crate::env::{EnvService, EnvironmentSource};
 use crate::kube::{resource_get, KubeClientStore};
 use serde::Deserialize;
 #[cfg(unix)]
-use std::ffi::CString;
-#[cfg(unix)]
 use std::os::fd::FromRawFd;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -385,6 +383,9 @@ fn create_pty(cols: u16, rows: u16) -> Result<(std::fs::File, std::fs::File), St
 
 #[cfg(unix)]
 fn configure_child_pty(cmd: &mut Command, slave: std::fs::File) -> Result<(), String> {
+    use std::os::fd::AsRawFd;
+
+    let slave_fd = slave.as_raw_fd();
     let stdin = slave
         .try_clone()
         .map_err(|e| format!("clone slave stdin failed: {}", e))?;
@@ -397,15 +398,15 @@ fn configure_child_pty(cmd: &mut Command, slave: std::fs::File) -> Result<(), St
         .stderr(Stdio::from(slave));
 
     unsafe {
-        cmd.pre_exec(|| {
+        cmd.pre_exec(move || {
             if libc::setsid() == -1 {
                 return Err(std::io::Error::last_os_error());
             }
-            let tty_path = CString::new("/dev/tty")
-                .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid tty path"))?;
-            let tty_fd = libc::open(tty_path.as_ptr(), libc::O_RDWR);
-            if tty_fd >= 0 {
-                libc::close(tty_fd);
+
+            // Make the PTY slave the controlling terminal for the new session so
+            // full-screen TUI apps like vim receive terminal signals/job control.
+            if libc::ioctl(slave_fd, libc::TIOCSCTTY.into(), 0) == -1 {
+                return Err(std::io::Error::last_os_error());
             }
             Ok(())
         });

@@ -61,7 +61,7 @@ impl RelationExtractor for ServiceReverseExtractor {
                         from: node_ref.clone(),
                         to: ResourceRef::new("Ingress", node_ref.namespace.clone(), &ing.name),
                         relation_type: RelationType::Routes,
-                        label_selector: None,
+                        label_selector: None, to_display: None,
                     });
                 }
             }

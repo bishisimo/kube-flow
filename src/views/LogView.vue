@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from "vue";
+import { NAlert, NButton, NEmpty, NScrollbar } from "naive-ui";
 import {
   logRead,
   logClear,
@@ -118,28 +119,38 @@ onMounted(refresh);
     <header class="toolbar">
       <h2 class="title">调试日志</h2>
       <div class="actions">
-        <button type="button" class="btn" :disabled="loading" @click="refresh">
-          {{ loading ? "刷新中…" : "刷新" }}
-        </button>
-        <button type="button" class="btn btn-clear" :disabled="clearing" @click="clear">
-          {{ clearing ? "清除中…" : "清除" }}
-        </button>
+        <NButton
+          :loading="loading"
+          :disabled="clearing"
+          @click="refresh"
+        >{{ loading ? "刷新中…" : "刷新" }}</NButton>
+        <NButton
+          type="error"
+          secondary
+          :loading="clearing"
+          :disabled="loading"
+          @click="clear"
+        >{{ clearing ? "清除中…" : "清除" }}</NButton>
       </div>
     </header>
-    <div v-if="error" class="error-banner">{{ error }}</div>
-    <div v-else class="log-content" role="log">
-      <template v-if="lines.length">
-        <div
-          v-for="(line, i) in lines"
-          :key="i"
-          class="log-line"
-          :class="'log-level-' + line.level"
-        >
-          {{ line.text }}
-        </div>
-      </template>
-      <div v-else class="log-empty">暂无日志</div>
-    </div>
+    <NAlert v-if="error" type="error" :show-icon="true" class="err-box">{{ error }}</NAlert>
+    <NScrollbar
+      v-else
+      class="log-scroll"
+      trigger="hover"
+    >
+      <div class="log-content" role="log">
+        <template v-if="lines.length">
+          <div
+            v-for="(line, i) in lines"
+            :key="i"
+            class="log-line"
+            :class="'log-level-' + line.level"
+          >{{ line.text }}</div>
+        </template>
+        <NEmpty v-else class="log-empty" description="暂无日志" />
+      </div>
+    </NScrollbar>
   </div>
 </template>
 
@@ -170,43 +181,21 @@ onMounted(refresh);
   display: flex;
   gap: 0.5rem;
 }
-.btn {
-  padding: 0.35rem 0.75rem;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  background: #fff;
-  font-size: 0.8125rem;
-  cursor: pointer;
+.err-box {
+  margin: 0.75rem 1rem 0;
 }
-.btn:hover:not(:disabled) {
-  background: #f8fafc;
-}
-.btn:disabled {
-  opacity: 0.7;
-  cursor: not-allowed;
-}
-.btn-clear {
-  color: #dc2626;
-  border-color: #fca5a5;
-}
-.btn-clear:hover:not(:disabled) {
-  background: #fef2f2;
-}
-.error-banner {
-  padding: 0.75rem 1rem;
-  background: #fef2f2;
-  color: #dc2626;
-  font-size: 0.875rem;
+.log-scroll {
+  flex: 1;
+  min-height: 0;
 }
 .log-content {
-  flex: 1;
   margin: 0;
   padding: 1rem;
-  overflow: auto;
   font-family: ui-monospace, monospace;
   font-size: 0.8125rem;
   line-height: 1.5;
   background: #f8fafc;
+  min-height: 120px;
 }
 .log-line {
   white-space: pre-wrap;
@@ -230,7 +219,6 @@ onMounted(refresh);
   color: #94a3b8;
 }
 .log-empty {
-  color: #94a3b8;
-  font-style: italic;
+  padding: 2rem 0;
 }
 </style>

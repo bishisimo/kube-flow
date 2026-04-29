@@ -45,7 +45,7 @@ impl RelationExtractor for PvcBindingsExtractor {
                     from: node_ref.clone(),
                     to: ResourceRef::new("PersistentVolume", None, pv),
                     relation_type: RelationType::BoundVolume,
-                    label_selector: None,
+                    label_selector: None, to_display: None,
                 });
             }
         }
@@ -55,7 +55,7 @@ impl RelationExtractor for PvcBindingsExtractor {
                     from: node_ref.clone(),
                     to: ResourceRef::new("StorageClass", None, sc),
                     relation_type: RelationType::StorageClass,
-                    label_selector: None,
+                    label_selector: None, to_display: None,
                 });
             }
         }
@@ -92,7 +92,7 @@ impl RelationExtractor for PvcBindingsExtractor {
                 from: node_ref.clone(),
                 to: ResourceRef::new("PersistentVolumeClaim", node_ref.namespace.clone(), &pvc.name),
                 relation_type: RelationType::Volume,
-                label_selector: None,
+                label_selector: None, to_display: None,
             })
             .collect()
     }

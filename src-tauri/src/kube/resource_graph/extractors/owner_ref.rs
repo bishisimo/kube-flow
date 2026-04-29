@@ -35,7 +35,7 @@ impl RelationExtractor for OwnerRefExtractor {
                         from: node_ref.clone(),
                         to: ResourceRef::new("ReplicaSet", ns.clone(), o_name),
                         relation_type: RelationType::OwnerRef,
-                        label_selector: None,
+                        label_selector: None, to_display: None,
                     });
                 }
                 // Pod → StatefulSet / DaemonSet / Job 直接 Manages
@@ -44,7 +44,7 @@ impl RelationExtractor for OwnerRefExtractor {
                         from: node_ref.clone(),
                         to: ResourceRef::new(o_kind, ns.clone(), o_name),
                         relation_type: RelationType::Manages,
-                        label_selector: None,
+                        label_selector: None, to_display: None,
                     });
                 }
                 // ReplicaSet → Deployment（static，ReplicaSet 作为 source）
@@ -53,7 +53,7 @@ impl RelationExtractor for OwnerRefExtractor {
                         from: node_ref.clone(),
                         to: ResourceRef::new("Deployment", ns.clone(), o_name),
                         relation_type: RelationType::Manages,
-                        label_selector: None,
+                        label_selector: None, to_display: None,
                     });
                 }
                 _ => {}
@@ -95,7 +95,7 @@ impl RelationExtractor for OwnerRefExtractor {
                                 from: node_ref.clone(),
                                 to: ResourceRef::new("Deployment", ns.clone(), ro_name),
                                 relation_type: RelationType::Manages,
-                                label_selector: None,
+                                label_selector: None, to_display: None,
                             });
                         }
                     }

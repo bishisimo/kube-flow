@@ -1,7 +1,7 @@
 //! ServiceAccount 反向 RBAC 关联：
-//! - ServiceAccount ← RoleBinding（动态，list RoleBinding，按 subjects 过滤）
-//! - ServiceAccount ← ClusterRoleBinding（动态，list ClusterRoleBinding，按 subjects 过滤）
-//! 产生的边由 BFS 加入图后，rbac_refs.rs 会继续展开 RoleBinding → Role/ClusterRole。
+//! - ServiceAccount → RoleBinding（动态，list RoleBinding，按 subjects 过滤）
+//! - ServiceAccount → ClusterRoleBinding（动态，list ClusterRoleBinding，按 subjects 过滤）
+//! 产生的边由 BFS 加入图后，rbac_refs.rs 会继续展开 Binding → Role/ClusterRole。
 
 use crate::kube::resource_graph::{extractor::RelationExtractor, RelationType, ResourceEdge, ResourceRef};
 use crate::kube::resources::{list_role_bindings, list_cluster_role_bindings};
@@ -42,10 +42,10 @@ impl RelationExtractor for SaBindingsReverseExtractor {
                 });
                 if matched {
                     edges.push(ResourceEdge {
-                        from: ResourceRef::new("RoleBinding", Some(ns.to_string()), &rb.name),
-                        to: node_ref.clone(),
+                        from: node_ref.clone(),
+                        to: ResourceRef::new("RoleBinding", Some(ns.to_string()), &rb.name),
                         relation_type: RelationType::RoleRef,
-                        label_selector: None,
+                        label_selector: None, to_display: None,
                     });
                 }
             }
@@ -62,10 +62,10 @@ impl RelationExtractor for SaBindingsReverseExtractor {
                 });
                 if matched {
                     edges.push(ResourceEdge {
-                        from: ResourceRef::new("ClusterRoleBinding", None, &crb.name),
-                        to: node_ref.clone(),
+                        from: node_ref.clone(),
+                        to: ResourceRef::new("ClusterRoleBinding", None, &crb.name),
                         relation_type: RelationType::RoleRef,
-                        label_selector: None,
+                        label_selector: None, to_display: None,
                     });
                 }
             }
