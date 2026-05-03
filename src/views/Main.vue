@@ -205,9 +205,17 @@ function restoreEnvViewState(envId: string) {
   if (stored) {
     selectedNamespace.value = stored.namespace;
     selectedKind.value = (VALID_KINDS.has(stored.kind) ? stored.kind : "namespaces") as ResourceKind;
+    nameFilter.value = stored.nameFilter ?? "";
+    nodeFilter.value = stored.nodeFilter ?? "all";
+    podIpFilter.value = stored.podIpFilter ?? "";
+    labelSelector.value = stored.labelSelector ?? "";
   } else {
     selectedNamespace.value = null;
     selectedKind.value = "namespaces";
+    nameFilter.value = "";
+    nodeFilter.value = "all";
+    podIpFilter.value = "";
+    labelSelector.value = "";
   }
   drillFrom.value = null;
 }
@@ -290,6 +298,10 @@ function saveEnvViewState(envId: string) {
   setEnvViewState(envId, {
     namespace: selectedNamespace.value,
     kind: selectedKind.value,
+    nameFilter: nameFilter.value,
+    nodeFilter: nodeFilter.value,
+    podIpFilter: podIpFilter.value,
+    labelSelector: labelSelector.value,
   });
 }
 
@@ -1508,7 +1520,7 @@ watch(kindFilter, (q) => {
   }
   scheduleCustomResourceResolve(false);
 });
-watch([selectedNamespace, selectedKind], () => {
+watch([selectedNamespace, selectedKind, nameFilter, nodeFilter, podIpFilter, labelSelector], () => {
   const id = currentId.value;
   if (id) saveEnvViewState(id);
 });

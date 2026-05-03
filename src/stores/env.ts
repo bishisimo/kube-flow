@@ -13,6 +13,10 @@ const ENV_VIEW_STATE_KEY_PREFIX = "kube-flow:env-view";
 export interface EnvViewState {
   namespace: string | null;
   kind: string;
+  nameFilter: string;
+  nodeFilter: string;
+  podIpFilter: string;
+  labelSelector: string;
 }
 
 const envViewStorageCache = new Map<string, Storage<EnvViewState>>();
@@ -22,13 +26,17 @@ function getEnvViewStorage(envId: string): Storage<EnvViewState> {
       envId,
       createStorage<EnvViewState>({
         key: `${ENV_VIEW_STATE_KEY_PREFIX}:${envId}`,
-        version: 1,
-        fallback: { namespace: null, kind: "namespaces" },
+        version: 2,
+        fallback: { namespace: null, kind: "namespaces", nameFilter: "", nodeFilter: "all", podIpFilter: "", labelSelector: "" },
         migrate: (old) => {
-          const o = old as { namespace?: string | null; kind?: string } | null;
+          const o = old as { namespace?: string | null; kind?: string; nameFilter?: string; nodeFilter?: string; podIpFilter?: string; labelSelector?: string } | null;
           return {
             namespace: o?.namespace ?? null,
             kind: typeof o?.kind === "string" ? o.kind : "namespaces",
+            nameFilter: typeof o?.nameFilter === "string" ? o.nameFilter : "",
+            nodeFilter: typeof o?.nodeFilter === "string" ? o.nodeFilter : "all",
+            podIpFilter: typeof o?.podIpFilter === "string" ? o.podIpFilter : "",
+            labelSelector: typeof o?.labelSelector === "string" ? o.labelSelector : "",
           };
         },
       })
@@ -43,7 +51,7 @@ function getEnvViewStateFromStorage(envId: string): EnvViewState | null {
 }
 
 function setEnvViewStateToStorage(envId: string, state: Partial<EnvViewState>) {
-  const existing = getEnvViewStateFromStorage(envId) ?? { namespace: null, kind: "namespaces" };
+  const existing = getEnvViewStateFromStorage(envId) ?? { namespace: null, kind: "namespaces", nameFilter: "", nodeFilter: "all", podIpFilter: "", labelSelector: "" };
   getEnvViewStorage(envId).write({ ...existing, ...state });
 }
 
