@@ -66,6 +66,14 @@ export function appSettingsSetNodeResourceUsageEnabled(enabled: boolean): Promis
   return invoke("app_settings_set_node_resource_usage_enabled", { enabled });
 }
 
+export function appSettingsGetWhitespaceRenderEnabled(): Promise<boolean> {
+  return invoke("app_settings_get_whitespace_render_enabled");
+}
+
+export function appSettingsSetWhitespaceRenderEnabled(enabled: boolean): Promise<void> {
+  return invoke("app_settings_set_whitespace_render_enabled", { enabled });
+}
+
 export function appSettingsGetBuiltinGpuResourceNames(): Promise<string[]> {
   return invoke("app_settings_get_builtin_gpu_resource_names");
 }

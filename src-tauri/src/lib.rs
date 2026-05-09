@@ -43,6 +43,8 @@ pub fn run() {
             commands::config_commands::app_settings_set_resource_deploy_strategy,
             commands::config_commands::app_settings_get_node_resource_usage_enabled,
             commands::config_commands::app_settings_set_node_resource_usage_enabled,
+            commands::config_commands::app_settings_get_whitespace_render_enabled,
+            commands::config_commands::app_settings_set_whitespace_render_enabled,
             commands::config_commands::app_settings_get_builtin_gpu_resource_names,
             commands::config_commands::app_settings_get_custom_gpu_resource_rules,
             commands::config_commands::app_settings_set_custom_gpu_resource_rules,

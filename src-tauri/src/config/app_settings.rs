@@ -146,6 +146,9 @@ pub struct AppSettingsConfig {
     /// 是否在工作台 Node 列表中展示资源使用量统计；默认关闭。
     #[serde(default)]
     pub node_resource_usage_enabled: bool,
+    /// 是否在编辑器中默认渲染空白字符（空格、制表符等）并开启保存时控制字符校验；默认关闭。
+    #[serde(default)]
+    pub whitespace_render_enabled: bool,
     /// 用户扩展的 GPU 资源规则。
     #[serde(default = "default_custom_gpu_resource_rules")]
     pub custom_gpu_resource_rules: Vec<GpuResourceRule>,
@@ -282,6 +285,14 @@ impl AppSettingsConfig {
         self.node_resource_usage_enabled = enabled;
     }
 
+    pub fn whitespace_render_enabled(&self) -> bool {
+        self.whitespace_render_enabled
+    }
+
+    pub fn set_whitespace_render_enabled(&mut self, enabled: bool) {
+        self.whitespace_render_enabled = enabled;
+    }
+
     pub fn builtin_gpu_resource_names(&self) -> Vec<String> {
         default_builtin_gpu_resource_names()
     }
@@ -411,6 +422,8 @@ struct AppSettingsFile {
     resource_deploy_strategy: String,
     #[serde(default)]
     node_resource_usage_enabled: bool,
+    #[serde(default)]
+    whitespace_render_enabled: bool,
     #[serde(default = "default_custom_gpu_resource_rules")]
     custom_gpu_resource_rules: Vec<GpuResourceRule>,
     #[serde(default)]
@@ -459,6 +472,7 @@ impl AppSettingsConfig {
                 file.resource_deploy_strategy
             },
             node_resource_usage_enabled: file.node_resource_usage_enabled,
+            whitespace_render_enabled: file.whitespace_render_enabled,
             custom_gpu_resource_rules: file.custom_gpu_resource_rules,
             security: file.security,
         })
@@ -480,6 +494,7 @@ impl AppSettingsConfig {
             log_active_stream_limit: self.log_active_stream_limit,
             resource_deploy_strategy: self.resource_deploy_strategy.clone(),
             node_resource_usage_enabled: self.node_resource_usage_enabled,
+            whitespace_render_enabled: self.whitespace_render_enabled,
             custom_gpu_resource_rules: self.custom_gpu_resource_rules.clone(),
             security: self.security.clone(),
         };

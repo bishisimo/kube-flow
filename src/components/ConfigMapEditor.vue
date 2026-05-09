@@ -1,15 +1,11 @@
 <script setup lang="ts">
-import { ref, watch, computed } from "vue";
+import { ref } from "vue";
 import * as jsYaml from "js-yaml";
 import { NButton, NInput } from "naive-ui";
 import BaseModal from "./base/BaseModal.vue";
-import { extractErrorMessage } from "../utils/errorMessage";
 import ValueEditor from "./ValueEditor.vue";
-
-export interface KeyValueRow {
-  key: string;
-  value: string;
-}
+import { useKvEditor, type KeyValueRow } from "../composables/useKvEditor";
+import { getFormatHint, renderSection } from "../utils/kvValidation";
 
 const props = defineProps<{
   rawYaml: string;
@@ -22,206 +18,100 @@ const emit = defineEmits<{
   (e: "update:yaml", yaml: string): void;
 }>();
 
-const rows = ref<KeyValueRow[]>([]);
-const metadata = ref<Record<string, unknown>>({});
 const binaryDataRows = ref<KeyValueRow[]>([]);
-const selectedIndex = ref<number | null>(null);
-const formatConfirmKeys = ref<string[]>([]);
-const sidebarCollapsed = ref(false);
 
-function parseYaml(): boolean {
-  if (!props.rawYaml.trim()) {
-    rows.value = [];
-    binaryDataRows.value = [];
-    metadata.value = {};
-    selectedIndex.value = null;
-    return true;
-  }
-  try {
-    const obj = jsYaml.load(props.rawYaml) as Record<string, unknown>;
-    if (!obj || typeof obj !== "object") return false;
-    metadata.value = { metadata: obj.metadata };
-    const data = (obj.data as Record<string, string>) || {};
-    rows.value = Object.entries(data).map(([k, v]) => ({
-      key: k,
-      value: typeof v === "string" ? v : String(v),
-    }));
-    const binaryData = (obj.binaryData as Record<string, string>) || {};
-    binaryDataRows.value = Object.entries(binaryData).map(([k, v]) => ({
-      key: k,
-      value: typeof v === "string" ? v : String(v),
-    }));
-    if (rows.value.length > 0 && selectedIndex.value === null) {
-      selectedIndex.value = 0;
+const {
+  rows,
+  selectedIndex,
+  formatConfirmKeys,
+  controlCharConfirmKeys,
+  sidebarCollapsed,
+  effectiveWhitespace,
+  localWhitespaceOverride,
+  whitespaceRenderEnabled,
+  hasEmptyRow,
+  selectedRow,
+  addRow,
+  removeRow,
+  onSave,
+  onFormatConfirmApply,
+  onFormatConfirmCancel,
+  onControlCharConfirmApply,
+  onControlCharConfirmCancel,
+  hasCharIssue,
+} = useKvEditor({
+  rawYaml: () => props.rawYaml,
+  parseYaml(raw, rowsRef, metadataRef, selectedIndexRef) {
+    if (!raw.trim()) {
+      rowsRef.value = [];
+      binaryDataRows.value = [];
+      metadataRef.value = {};
+      selectedIndexRef.value = null;
+      return null;
     }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-watch(
-  () => props.rawYaml,
-  () => parseYaml(),
-  { immediate: true }
-);
-
-watch(
-  [rows, binaryDataRows, metadata],
-  () => {
     try {
-      emit("update:yaml", buildYaml());
-    } catch {}
-  },
-  { deep: true, immediate: true }
-);
-
-const hasEmptyRow = computed(() =>
-  rows.value.some((r) => !r.key.trim())
-);
-
-const selectedRow = computed(() =>
-  selectedIndex.value !== null && selectedIndex.value >= 0 && selectedIndex.value < rows.value.length
-    ? rows.value[selectedIndex.value]
-    : null
-);
-
-function addRow() {
-  const idx = rows.value.length;
-  rows.value.push({ key: "", value: "" });
-  selectedIndex.value = idx;
-}
-
-function removeRow(index: number) {
-  rows.value.splice(index, 1);
-  if (selectedIndex.value === index) {
-    selectedIndex.value = rows.value.length > 0 ? Math.min(index, rows.value.length - 1) : null;
-  } else if (selectedIndex.value !== null && selectedIndex.value > index) {
-    selectedIndex.value--;
-  }
-}
-
-function getFormatHint(key: string): string {
-  const ext = key.split(".").pop()?.toLowerCase() ?? "";
-  if (["yaml", "yml"].includes(ext)) return "yaml";
-  if (["json", "json5"].includes(ext)) return "json";
-  return "";
-}
-
-/** 校验 value 是否符合 key 后缀所暗示的格式；返回不符合的 key 列表。空值视为通过。 */
-function validateFormatBySuffix(rows: KeyValueRow[]): string[] {
-  const invalid: string[] = [];
-  for (const r of rows) {
-    const k = r.key.trim();
-    if (!k) continue;
-    const fmt = getFormatHint(k);
-    const v = r.value.trim();
-    if (!v) continue;
-    if (fmt === "yaml") {
-      try {
-        jsYaml.load(v);
-      } catch {
-        invalid.push(k);
+      const obj = jsYaml.load(raw) as Record<string, unknown>;
+      if (!obj || typeof obj !== "object") return null;
+      metadataRef.value = { metadata: obj.metadata };
+      const data = (obj.data as Record<string, string>) || {};
+      rowsRef.value = Object.entries(data).map(([k, v]) => ({
+        key: k,
+        value: typeof v === "string" ? v : String(v),
+      }));
+      const binaryData = (obj.binaryData as Record<string, string>) || {};
+      binaryDataRows.value = Object.entries(binaryData).map(([k, v]) => ({
+        key: k,
+        value: typeof v === "string" ? v : String(v),
+      }));
+      if (rowsRef.value.length > 0 && selectedIndexRef.value === null) {
+        selectedIndexRef.value = 0;
       }
-    } else if (fmt === "json") {
-      try {
-        JSON.parse(v);
-      } catch {
-        invalid.push(k);
-      }
+      return {};
+    } catch {
+      return null;
     }
-  }
-  return invalid;
-}
-
-function dumpInlineScalar(value: string): string {
-  return jsYaml.dump(value, { lineWidth: -1 }).trim();
-}
-
-function renderStringEntry(key: string, value: string, indent = "  "): string[] {
-  const renderedKey = dumpInlineScalar(key);
-  if (!value.includes("\n")) {
-    return [`${indent}${renderedKey}: ${dumpInlineScalar(value)}`];
-  }
-  const lines = value.split("\n");
-  const hasTrailingNewline = value.endsWith("\n");
-  const header = `${indent}${renderedKey}: |${hasTrailingNewline ? "" : "-"}`;
-  return [header, ...lines.map((line) => `${indent}  ${line}`)];
-}
-
-function renderSection(name: string, entries: KeyValueRow[]): string[] {
-  const validEntries = entries.filter((r) => r.key.trim());
-  if (validEntries.length === 0) return [];
-  const lines = [`${name}:`];
-  for (const row of validEntries) {
-    lines.push(...renderStringEntry(row.key.trim(), row.value));
-  }
-  return lines;
-}
-
-function buildYaml(): string {
-  const meta = (metadata.value.metadata as Record<string, unknown>) || {};
-  const metadataYaml = jsYaml.dump(meta, { lineWidth: -1 }).trimEnd();
-  const lines = [
-    "apiVersion: v1",
-    "kind: ConfigMap",
-    "metadata:",
-    ...metadataYaml.split("\n").map((line) => `  ${line}`),
-    ...renderSection("data", rows.value),
-  ];
-  const binarySection = renderSection("binaryData", binaryDataRows.value);
-  if (binarySection.length > 0) {
-    lines.push(...binarySection);
-  }
-  return `${lines.join("\n")}\n`;
-}
-
-function doApply() {
-  try {
-    const yaml = buildYaml();
-    emit("save", yaml);
-  } catch (e) {
-    emit("error", extractErrorMessage(e));
-  }
-}
-
-function onSave() {
-  const dup = new Map<string, number>();
-  for (const r of rows.value) {
-    const k = r.key.trim();
-    if (!k) continue;
-    dup.set(k, (dup.get(k) || 0) + 1);
-  }
-  const duplicates = [...dup.entries()].filter(([, c]) => c > 1).map(([k]) => k);
-  if (duplicates.length) {
-    emit("error", `重复的 Key: ${duplicates.join(", ")}`);
-    return;
-  }
-  const formatMismatch = validateFormatBySuffix(rows.value);
-  if (formatMismatch.length > 0) {
-    formatConfirmKeys.value = formatMismatch;
-    return;
-  }
-  doApply();
-}
-
-function onFormatConfirmApply() {
-  formatConfirmKeys.value = [];
-  doApply();
-}
-
-function onFormatConfirmCancel() {
-  formatConfirmKeys.value = [];
-}
+  },
+  buildYaml(currentRows, currentMetadata) {
+    const meta = (currentMetadata.metadata as Record<string, unknown>) || {};
+    const metadataYaml = jsYaml.dump(meta, { lineWidth: -1 }).trimEnd();
+    const lines = [
+      "apiVersion: v1",
+      "kind: ConfigMap",
+      "metadata:",
+      ...metadataYaml.split("\n").map((line: string) => `  ${line}`),
+      ...renderSection("data", currentRows),
+    ];
+    const binarySection = renderSection("binaryData", binaryDataRows.value);
+    if (binarySection.length > 0) {
+      lines.push(...binarySection);
+    }
+    return `${lines.join("\n")}\n`;
+  },
+  emit,
+});
 </script>
 
 <template>
   <div class="kv-editor">
     <div class="kv-toolbar">
       <span class="kv-toolbar-title">Data · 共 {{ rows.length }} 项</span>
-      <NButton type="primary" :disabled="saving || hasEmptyRow" :loading="saving" @click="onSave">
-        应用
-      </NButton>
+      <div class="kv-toolbar-actions">
+        <NButton
+          size="small"
+          :secondary="!effectiveWhitespace"
+          :type="effectiveWhitespace ? 'primary' : 'default'"
+          class="ws-toggle-btn"
+          title="显示/隐藏空白字符"
+          @click="localWhitespaceOverride = !(localWhitespaceOverride ?? whitespaceRenderEnabled)"
+        >
+          <template #icon>
+            <span class="ws-toggle-icon">¶</span>
+          </template>
+        </NButton>
+        <NButton type="primary" :disabled="saving || hasEmptyRow" :loading="saving" @click="onSave">
+          应用
+        </NButton>
+      </div>
     </div>
     <div class="kv-main">
       <aside class="kv-sidebar" :class="{ collapsed: sidebarCollapsed }">
@@ -242,6 +132,7 @@ function onFormatConfirmCancel() {
               @keydown.enter.space.prevent="selectedIndex = i"
             >
               <span class="kv-item-name">{{ row.key || "(未命名)" }}</span>
+              <span v-if="hasCharIssue(row.value)" class="kv-item-badge kv-item-badge-warn" title="含有控制字符或行尾空白">⚠</span>
               <span v-if="getFormatHint(row.key)" class="kv-item-badge">{{ getFormatHint(row.key) }}</span>
               <NButton
                 text
@@ -255,7 +146,7 @@ function onFormatConfirmCancel() {
               </NButton>
             </div>
           </div>
-          <NButton quaternary block class="kv-add" :disabled="hasEmptyRow" @click="addRow">+ 添加</NButton>
+          <NButton quaternary block class="kv-add" :disabled="hasEmptyRow" @click="addRow(() => ({ key: '', value: '' }))">+ 添加</NButton>
         </template>
       </aside>
       <div class="kv-panel">
@@ -273,6 +164,7 @@ function onFormatConfirmCancel() {
             <ValueEditor
               :model-value="selectedRow.value"
               fill-height
+              :show-whitespace="effectiveWhitespace"
               @update:model-value="selectedRow.value = $event"
             />
           </div>
@@ -292,6 +184,18 @@ function onFormatConfirmCancel() {
       <template #footer>
         <NButton secondary @click="onFormatConfirmCancel">取消</NButton>
         <NButton type="primary" @click="onFormatConfirmApply">仍要应用</NButton>
+      </template>
+    </BaseModal>
+    <BaseModal
+      :visible="controlCharConfirmKeys.length > 0"
+      title="控制字符警告"
+      width="480px"
+      @close="onControlCharConfirmCancel"
+    >
+      <p class="format-confirm-desc">以下配置项含有非常规控制字符或行尾空白，可能导致 kubectl 编辑时显示异常：{{ controlCharConfirmKeys.join("、") }}。是否仍要应用？</p>
+      <template #footer>
+        <NButton secondary @click="onControlCharConfirmCancel">取消</NButton>
+        <NButton type="primary" @click="onControlCharConfirmApply">仍要应用</NButton>
       </template>
     </BaseModal>
     <div v-if="binaryDataRows.length" class="kv-binary-section">
@@ -326,22 +230,17 @@ function onFormatConfirmCancel() {
   font-weight: 600;
   color: var(--kf-text-primary);
 }
-.btn-primary {
-  padding: 0.4rem 1rem;
-  border: none;
-  border-radius: 6px;
-  background: var(--kf-primary);
-  color: #fff;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  cursor: pointer;
+.kv-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
-.btn-primary:hover:not(:disabled) {
-  opacity: 0.92;
+.ws-toggle-btn {
+  font-size: 0.875rem;
 }
-.btn-primary:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
+.ws-toggle-icon {
+  font-family: serif;
+  font-size: 1rem;
 }
 .kv-main {
   flex: 1;
@@ -436,6 +335,16 @@ function onFormatConfirmCancel() {
 .kv-item.active .kv-item-badge {
   background: color-mix(in srgb, var(--kf-primary) 32%, var(--kf-bg-soft));
   color: var(--kf-primary);
+}
+.kv-item-badge-warn {
+  background: var(--kf-warning-soft, #fef3c7);
+  color: var(--kf-warning, #b45309);
+  font-size: 0.75rem;
+  text-transform: none;
+}
+.kv-item.active .kv-item-badge-warn {
+  background: var(--kf-warning-soft, #fef3c7);
+  color: var(--kf-warning, #b45309);
 }
 .kv-item-remove {
   flex-shrink: 0;
@@ -536,50 +445,10 @@ function onFormatConfirmCancel() {
   background: var(--kf-bg-elevated);
   border-radius: 4px;
 }
-.format-confirm-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 100;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.4);
-}
-.format-confirm-panel {
-  padding: 1.25rem;
-  background: var(--kf-surface-strong);
-  border-radius: 8px;
-  box-shadow: var(--kf-shadow-md);
-  min-width: 320px;
-}
-.format-confirm-title {
-  margin: 0 0 0.75rem;
-  font-size: 1rem;
-  font-weight: 600;
-  color: var(--kf-text-primary);
-}
 .format-confirm-desc {
   margin: 0 0 1.25rem;
   font-size: 0.875rem;
   color: var(--kf-text-secondary);
   line-height: 1.5;
-}
-.format-confirm-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-}
-.btn-secondary {
-  padding: 0.4rem 1rem;
-  border: 1px solid var(--kf-border);
-  border-radius: 6px;
-  background: var(--kf-surface-strong);
-  font-size: 0.8125rem;
-  color: var(--kf-text-primary);
-  cursor: pointer;
-}
-.btn-secondary:hover {
-  background: var(--kf-bg-soft);
-  border-color: var(--kf-border-strong);
 }
 </style>

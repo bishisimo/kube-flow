@@ -119,6 +119,21 @@ pub fn app_settings_set_node_resource_usage_enabled(enabled: bool) -> CommandRes
 }
 
 #[tauri::command]
+pub fn app_settings_get_whitespace_render_enabled() -> CommandResult<bool> {
+    let config = load_app_settings()?;
+    Ok(config.whitespace_render_enabled())
+}
+
+#[tauri::command]
+pub fn app_settings_set_whitespace_render_enabled(enabled: bool) -> CommandResult<()> {
+    let mut config = load_app_settings()?;
+    config.set_whitespace_render_enabled(enabled);
+    let path = crate::config::app_settings_config_path()
+        .ok_or_else(|| "app data dir not available".to_string())?;
+    config.save(&path).map_err(err_str)
+}
+
+#[tauri::command]
 pub fn app_settings_get_builtin_gpu_resource_names() -> CommandResult<Vec<String>> {
     let config = load_app_settings()?;
     Ok(config.builtin_gpu_resource_names())

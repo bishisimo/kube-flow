@@ -44,6 +44,7 @@ import {
   appSettingsGetResourceDeployStrategy,
   appSettingsGetTerminalInstanceCacheLimit,
   appSettingsGetSshTunnelMode,
+  appSettingsGetWhitespaceRenderEnabled,
   appSettingsSetAutoSnapshotEnabled,
   appSettingsSetAutoSnapshotLimitPerResource,
   appSettingsSetCustomGpuResourceRules,
@@ -52,6 +53,7 @@ import {
   appSettingsSetResourceDeployStrategy,
   appSettingsSetTerminalInstanceCacheLimit,
   appSettingsSetSshTunnelMode,
+  appSettingsSetWhitespaceRenderEnabled,
   type GpuResourceRule,
   type ResourceDeployStrategy,
   type TunnelMappingMode,
@@ -74,7 +76,7 @@ const CATEGORIES: { id: CategoryId; label: string; icon: string }[] = [
 const { themeIdLight, themeIdDark, activeYamlThemeId } = useYamlTheme();
 const { monacoTheme } = useYamlMonacoTheme();
 const { triggerLogRefresh } = useLogStore();
-const { autoSnapshotEnabled, autoSnapshotLimitPerResource, terminalInstanceCacheLimit, logActiveStreamLimit, nodeResourceUsageEnabled } = useAppSettingsStore();
+const { autoSnapshotEnabled, autoSnapshotLimitPerResource, terminalInstanceCacheLimit, logActiveStreamLimit, nodeResourceUsageEnabled, whitespaceRenderEnabled } = useAppSettingsStore();
 const { loadEnvironments } = useEnvStore();
 const activeCategory = ref<CategoryId>("appearance");
 const currentLevel = ref<string>("off");
@@ -88,6 +90,7 @@ const currentResourceDeployStrategy = ref<ResourceDeployStrategy>("create_replac
 const currentTerminalInstanceCacheLimit = ref(6);
 const currentLogActiveStreamLimit = ref(3);
 const currentNodeResourceUsageEnabled = ref(false);
+const currentWhitespaceRenderEnabled = ref(false);
 const builtinGpuResourceNames = ref<string[]>([]);
 const customGpuResourceRules = ref<GpuResourceRule[]>([]);
 const { saving, message, runSave } = useSaveable();
@@ -128,7 +131,7 @@ const previewOptions = {
 
 async function load() {
   try {
-    const [level, settings, sshMode, autoSnapshot, autoSnapshotLimit, resourceDeployStrategy, terminalCacheLimit, activeLogLimit, nodeUsageEnabled, builtinGpuNames, customGpuRules] = await Promise.all([
+    const [level, settings, sshMode, autoSnapshot, autoSnapshotLimit, resourceDeployStrategy, terminalCacheLimit, activeLogLimit, nodeUsageEnabled, whitespaceEnabled, builtinGpuNames, customGpuRules] = await Promise.all([
       logGetLevel(),
       logGetDisplaySettings(),
       appSettingsGetSshTunnelMode(),
@@ -138,6 +141,7 @@ async function load() {
       appSettingsGetTerminalInstanceCacheLimit(),
       appSettingsGetLogActiveStreamLimit(),
       appSettingsGetNodeResourceUsageEnabled(),
+      appSettingsGetWhitespaceRenderEnabled(),
       appSettingsGetBuiltinGpuResourceNames(),
       appSettingsGetCustomGpuResourceRules(),
     ]);
@@ -152,6 +156,7 @@ async function load() {
     currentTerminalInstanceCacheLimit.value = Math.min(20, Math.max(1, Math.floor(terminalCacheLimit || 6)));
     currentLogActiveStreamLimit.value = Math.min(12, Math.max(1, Math.floor(activeLogLimit || 3)));
     currentNodeResourceUsageEnabled.value = !!nodeUsageEnabled;
+    currentWhitespaceRenderEnabled.value = !!whitespaceEnabled;
     builtinGpuResourceNames.value = builtinGpuNames;
     customGpuResourceRules.value = customGpuRules.length ? customGpuRules : [{ display_name: "", resource_name: "" }];
     autoSnapshotEnabled.value = autoSnapshot;
@@ -159,12 +164,14 @@ async function load() {
     terminalInstanceCacheLimit.value = currentTerminalInstanceCacheLimit.value;
     logActiveStreamLimit.value = currentLogActiveStreamLimit.value;
     nodeResourceUsageEnabled.value = currentNodeResourceUsageEnabled.value;
+    whitespaceRenderEnabled.value = currentWhitespaceRenderEnabled.value;
   } catch {
     currentLevel.value = "off";
     currentResourceDeployStrategy.value = "create_replace";
     currentTerminalInstanceCacheLimit.value = 6;
     currentLogActiveStreamLimit.value = 3;
     currentNodeResourceUsageEnabled.value = false;
+    currentWhitespaceRenderEnabled.value = false;
     builtinGpuResourceNames.value = ["*/gpu"];
     customGpuResourceRules.value = [{ display_name: "", resource_name: "" }];
   }
@@ -216,6 +223,14 @@ async function saveNodeResourceUsageEnabled(enabled: boolean) {
     await appSettingsSetNodeResourceUsageEnabled(enabled);
     currentNodeResourceUsageEnabled.value = enabled;
     nodeResourceUsageEnabled.value = enabled;
+  });
+}
+
+async function saveWhitespaceRenderEnabled(enabled: boolean) {
+  await runSave(async () => {
+    await appSettingsSetWhitespaceRenderEnabled(enabled);
+    currentWhitespaceRenderEnabled.value = enabled;
+    whitespaceRenderEnabled.value = enabled;
   });
 }
 
@@ -618,6 +633,26 @@ const menuOptions = computed<MenuOption[]>(() =>
               class="yaml-preview-editor"
             />
           </div>
+        </NCard>
+        <NCard title="编辑器空白字符" size="small" class="settings-card" :bordered="true">
+          <p class="card-desc">控制 ConfigMap / Secret 编辑器是否默认显示空白字符（空格显示为 ·，制表符显示为 →），同时开启保存时的控制字符校验。编辑器内也可临时切换。</p>
+          <NSpace v-bind="kfSpace.buttonGroup">
+            <NButton
+              :type="currentWhitespaceRenderEnabled ? 'primary' : 'default'"
+              :secondary="!currentWhitespaceRenderEnabled"
+              :disabled="saving"
+              @click="saveWhitespaceRenderEnabled(true)"
+            >开启</NButton>
+            <NButton
+              :type="!currentWhitespaceRenderEnabled ? 'primary' : 'default'"
+              :secondary="currentWhitespaceRenderEnabled"
+              :disabled="saving"
+              @click="saveWhitespaceRenderEnabled(false)"
+            >关闭</NButton>
+          </NSpace>
+          <NAlert title="开启时" type="default" class="hint-alert">编辑器默认渲染空白字符，保存时会校验非常规控制字符（如 NUL、连续空行）并弹出确认提示。</NAlert>
+          <NAlert title="关闭时" type="default" class="hint-alert">编辑器不显示空白字符，保存时不做控制字符校验。编辑器内仍可通过工具栏按钮临时开启。</NAlert>
+          <NAlert v-if="message" class="msg-alert" :type="message === '已保存' ? 'success' : 'error'" :show-icon="true">{{ message }}</NAlert>
         </NCard>
       </template>
     </main>

@@ -34,6 +34,7 @@ function detectValueLanguage(value: string): "json" | "yaml" | "plaintext" {
 const props = defineProps<{
   modelValue: string;
   fillHeight?: boolean;
+  showWhitespace?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -52,6 +53,7 @@ const monacoOptions = computed(() => ({
   scrollBeyondLastLine: false,
   padding: { top: 6, bottom: 6 },
   scrollbar: { verticalScrollbarSize: 8, horizontalScrollbarSize: 8 },
+  renderWhitespace: props.showWhitespace ? "all" : "none",
 }));
 </script>
 

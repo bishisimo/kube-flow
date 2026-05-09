@@ -5,11 +5,13 @@ import {
   appSettingsGetLogActiveStreamLimit,
   appSettingsGetNodeResourceUsageEnabled,
   appSettingsGetTerminalInstanceCacheLimit,
+  appSettingsGetWhitespaceRenderEnabled,
   appSettingsSetAutoSnapshotEnabled,
   appSettingsSetAutoSnapshotLimitPerResource,
   appSettingsSetLogActiveStreamLimit,
   appSettingsSetNodeResourceUsageEnabled,
   appSettingsSetTerminalInstanceCacheLimit,
+  appSettingsSetWhitespaceRenderEnabled,
 } from "../api/config";
 
 const autoSnapshotEnabled = ref(true);
@@ -17,6 +19,7 @@ const autoSnapshotLimitPerResource = ref(10);
 const terminalInstanceCacheLimit = ref(6);
 const logActiveStreamLimit = ref(3);
 const nodeResourceUsageEnabled = ref(false);
+const whitespaceRenderEnabled = ref(false);
 const loaded = ref(false);
 
 export async function ensureAppSettingsLoaded() {
@@ -27,15 +30,17 @@ export async function ensureAppSettingsLoaded() {
       terminalInstanceCacheLimit: terminalInstanceCacheLimit.value,
       logActiveStreamLimit: logActiveStreamLimit.value,
       nodeResourceUsageEnabled: nodeResourceUsageEnabled.value,
+      whitespaceRenderEnabled: whitespaceRenderEnabled.value,
     };
   }
   try {
-    const [enabled, limit, cacheLimit, activeLogLimit, nodeUsageEnabled] = await Promise.all([
+    const [enabled, limit, cacheLimit, activeLogLimit, nodeUsageEnabled, whitespaceEnabled] = await Promise.all([
       appSettingsGetAutoSnapshotEnabled(),
       appSettingsGetAutoSnapshotLimitPerResource(),
       appSettingsGetTerminalInstanceCacheLimit(),
       appSettingsGetLogActiveStreamLimit(),
       appSettingsGetNodeResourceUsageEnabled(),
+      appSettingsGetWhitespaceRenderEnabled(),
     ]);
     autoSnapshotEnabled.value = enabled;
     autoSnapshotLimitPerResource.value = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 10;
@@ -46,12 +51,14 @@ export async function ensureAppSettingsLoaded() {
       ? Math.min(12, Math.max(1, Math.floor(activeLogLimit)))
       : 3;
     nodeResourceUsageEnabled.value = !!nodeUsageEnabled;
+    whitespaceRenderEnabled.value = !!whitespaceEnabled;
   } catch {
     autoSnapshotEnabled.value = true;
     autoSnapshotLimitPerResource.value = 10;
     terminalInstanceCacheLimit.value = 6;
     logActiveStreamLimit.value = 3;
     nodeResourceUsageEnabled.value = false;
+    whitespaceRenderEnabled.value = false;
   } finally {
     loaded.value = true;
   }
@@ -61,6 +68,7 @@ export async function ensureAppSettingsLoaded() {
     terminalInstanceCacheLimit: terminalInstanceCacheLimit.value,
     logActiveStreamLimit: logActiveStreamLimit.value,
     nodeResourceUsageEnabled: nodeResourceUsageEnabled.value,
+    whitespaceRenderEnabled: whitespaceRenderEnabled.value,
   };
 }
 
@@ -102,6 +110,12 @@ export async function setNodeResourceUsageEnabled(enabled: boolean) {
   loaded.value = true;
 }
 
+export async function setWhitespaceRenderEnabled(enabled: boolean) {
+  await appSettingsSetWhitespaceRenderEnabled(enabled);
+  whitespaceRenderEnabled.value = enabled;
+  loaded.value = true;
+}
+
 export function useAppSettingsStore() {
   return {
     autoSnapshotEnabled,
@@ -109,6 +123,7 @@ export function useAppSettingsStore() {
     terminalInstanceCacheLimit,
     logActiveStreamLimit,
     nodeResourceUsageEnabled,
+    whitespaceRenderEnabled,
     ensureAppSettingsLoaded,
     ensureAutoSnapshotSettingLoaded,
     setAutoSnapshotEnabled,
@@ -116,5 +131,6 @@ export function useAppSettingsStore() {
     setTerminalInstanceCacheLimit,
     setLogActiveStreamLimit,
     setNodeResourceUsageEnabled,
+    setWhitespaceRenderEnabled,
   };
 }
