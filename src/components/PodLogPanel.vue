@@ -10,13 +10,13 @@ import {
   kubePodLogStreamStart,
   kubePodLogStreamStop,
 } from "../api/kube";
-import { logGetDisplaySettings, logSetDisplaySettings, LOG_DISPLAY_ORDERS, type LogDisplayOrder } from "../api/log";
+import { logGetDisplaySettings, logSetDisplaySettings, type LogDisplayOrder } from "../api/log";
 import { useLogStore } from "../stores/log";
 import { useStrongholdAuthStore } from "../stores/strongholdAuth";
 import { registerLogStreamSession, unregisterLogStreamSession } from "../stores/logStreamManager";
 import { createStorage } from "../utils/storage";
-import { useLogBuffer, type LogLevel, type LogEntry } from "../composables/useLogBuffer";
-import VirtualLogList from "./VirtualLogList.vue";
+import { useLogBuffer, type LogEntry } from "../composables/useLogBuffer";
+import VirtualLogList, { type VirtualLogItem } from "./VirtualLogList.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -204,15 +204,6 @@ const excludedQuery = computed(() => excludeQuery.value.trim());
 const hasFocusFilter = computed(() => Boolean(includedQuery.value) || selectedLevels.value.size > 0);
 const hasTextSearch = computed(() => Boolean(includedQuery.value));
 const hasLevelFilter = computed(() => selectedLevels.value.size > 0);
-const hasAnySearchControls = computed(
-  () =>
-    Boolean(effectiveContainer.value) ||
-    Boolean(searchQuery.value.trim()) ||
-    Boolean(excludeQuery.value.trim()) ||
-    onlyMatches.value ||
-    contextLines.value !== -1
-);
-
 function buildSearchRegex(pattern: string): RegExp | null {
   if (!pattern) return null;
   if (regexMode.value) {
@@ -300,8 +291,9 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function highlightLine(entry: LogEntry): string {
-  let html = ansiUp.ansi_to_html(entry.raw);
+function highlightLine(entry: VirtualLogItem): string {
+  const raw = (entry as LogEntry).raw;
+  let html = ansiUp.ansi_to_html(raw);
   const q = includedQuery.value;
   if (!q) return html;
   let re: RegExp;

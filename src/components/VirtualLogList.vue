@@ -9,7 +9,6 @@ import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick, type PropTy
 
 export interface VirtualLogItem {
   index: number;
-  [key: string]: unknown;
 }
 
 const props = defineProps({
