@@ -29,6 +29,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::config_commands::app_data_dir,
             commands::config_commands::ensure_app_data_dir,
+            commands::config_commands::ssh_config_default_path,
+            commands::config_commands::ssh_config_list_entries,
+            commands::config_commands::ssh_config_upsert_entry,
+            commands::config_commands::ssh_config_delete_entry,
             commands::config_commands::app_settings_get_ssh_tunnel_mode,
             commands::config_commands::app_settings_set_ssh_tunnel_mode,
             commands::config_commands::app_settings_get_auto_snapshot_enabled,

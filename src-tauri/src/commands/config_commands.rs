@@ -1,7 +1,7 @@
 //! 配置相关 Tauri 命令：路径、目录创建、应用设置。
 
 use crate::commands::kube_command_context::{err_str, load_app_settings, CommandResult};
-use crate::config::GpuResourceRule;
+use crate::config::{GpuResourceRule, SshConfigEntry};
 
 #[tauri::command]
 pub fn app_data_dir() -> Option<String> {
@@ -11,6 +11,26 @@ pub fn app_data_dir() -> Option<String> {
 #[tauri::command]
 pub fn ensure_app_data_dir() -> Option<String> {
     crate::config::ensure_app_data_dir().map(|p| p.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn ssh_config_default_path() -> CommandResult<Option<String>> {
+    Ok(crate::config::ssh_config_default_path())
+}
+
+#[tauri::command]
+pub fn ssh_config_list_entries() -> CommandResult<Vec<SshConfigEntry>> {
+    crate::config::ssh_config_list_entries().map_err(err_str)
+}
+
+#[tauri::command]
+pub fn ssh_config_upsert_entry(entry: SshConfigEntry) -> CommandResult<()> {
+    crate::config::ssh_config_upsert_entry(entry).map_err(err_str)
+}
+
+#[tauri::command]
+pub fn ssh_config_delete_entry(host: String) -> CommandResult<()> {
+    crate::config::ssh_config_delete_entry(&host).map_err(err_str)
 }
 
 #[tauri::command]
@@ -146,7 +166,9 @@ pub fn app_settings_get_custom_gpu_resource_rules() -> CommandResult<Vec<GpuReso
 }
 
 #[tauri::command]
-pub fn app_settings_set_custom_gpu_resource_rules(rules: Vec<GpuResourceRule>) -> CommandResult<()> {
+pub fn app_settings_set_custom_gpu_resource_rules(
+    rules: Vec<GpuResourceRule>,
+) -> CommandResult<()> {
     let mut config = load_app_settings()?;
     config.set_custom_gpu_resource_rules(rules);
     let path = crate::config::app_settings_config_path()

@@ -16,7 +16,10 @@ import NodeTerminalStrategyDialog from "../components/env/NodeTerminalStrategyDi
 
 defineOptions({ name: "EnvManage" });
 
-const emit = defineEmits<{ (e: "use-env"): void }>();
+const emit = defineEmits<{
+  (e: "use-env"): void;
+  (e: "open-ssh-settings"): void;
+}>();
 
 const {
   listLoading,
@@ -135,7 +138,11 @@ async function onContextSwitch(env: Environment, ctx: string) {
       </NEmpty>
     </div>
 
-    <EnvCreateDialog v-model:visible="showCreate" @created="onCreated" />
+    <EnvCreateDialog
+      v-model:visible="showCreate"
+      @created="onCreated"
+      @open-ssh-settings="emit('open-ssh-settings')"
+    />
     <EnvEditDialog
       v-model:visible="showEdit"
       :env="editingEnv"

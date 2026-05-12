@@ -181,6 +181,11 @@ function onMenuUpdate(key: string) {
   setTab(key as TabId);
 }
 
+function openSshSettings() {
+  window.sessionStorage.setItem("kube-flow:settings-category", "ssh");
+  setTab("settings");
+}
+
 /* ---------------- 命令面板：静态 + 动态命令 ---------------- */
 
 const palette = useCommandPalette();
@@ -350,6 +355,7 @@ onBeforeUnmount(() => {
           :is="currentView"
           :key="currentTab"
           @use-env="onUseEnv"
+          @open-ssh-settings="openSshSettings"
         />
       </KeepAlive>
     </main>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, watch } from "vue";
 import type { MenuOption } from "naive-ui";
 import {
   NAlert,
@@ -8,6 +8,7 @@ import {
   NInput,
   NInputNumber,
   NMenu,
+  NPopconfirm,
   NSelect,
   NSpace,
   NTag,
@@ -54,8 +55,13 @@ import {
   appSettingsSetTerminalInstanceCacheLimit,
   appSettingsSetSshTunnelMode,
   appSettingsSetWhitespaceRenderEnabled,
+  sshConfigDefaultPath,
+  sshConfigDeleteEntry,
+  sshConfigListEntries,
+  sshConfigUpsertEntry,
   type GpuResourceRule,
   type ResourceDeployStrategy,
+  type SshConfigEntry,
   type TunnelMappingMode,
 } from "../api/config";
 import { useAppSettingsStore } from "../stores/appSettings";
@@ -78,7 +84,12 @@ const { monacoTheme } = useYamlMonacoTheme();
 const { triggerLogRefresh } = useLogStore();
 const { autoSnapshotEnabled, autoSnapshotLimitPerResource, terminalInstanceCacheLimit, logActiveStreamLimit, nodeResourceUsageEnabled, whitespaceRenderEnabled } = useAppSettingsStore();
 const { loadEnvironments } = useEnvStore();
-const activeCategory = ref<CategoryId>("appearance");
+function initialCategory(): CategoryId {
+  const value = window.sessionStorage.getItem("kube-flow:settings-category");
+  return CATEGORIES.some((item) => item.id === value) ? (value as CategoryId) : "appearance";
+}
+
+const activeCategory = ref<CategoryId>(initialCategory());
 const currentLevel = ref<string>("off");
 const currentOrder = ref<LogDisplayOrder>("asc");
 const currentFormat = ref<LogDisplayFormat>("json");
@@ -93,6 +104,14 @@ const currentNodeResourceUsageEnabled = ref(false);
 const currentWhitespaceRenderEnabled = ref(false);
 const builtinGpuResourceNames = ref<string[]>([]);
 const customGpuResourceRules = ref<GpuResourceRule[]>([]);
+const sshConfigPath = ref("");
+const sshConfigEntries = ref<SshConfigEntry[]>([]);
+const selectedSshHost = ref("");
+const sshConfigLoading = ref(false);
+const sshConfigSaving = ref(false);
+const sshConfigError = ref("");
+const sshConfigMessage = ref("");
+const sshForm = ref<SshConfigEntry>(emptySshConfigEntry());
 const { saving, message, runSave } = useSaveable();
 const yamlThemePreview = `apiVersion: apps/v1
 kind: Deployment
@@ -128,6 +147,150 @@ const previewOptions = {
   scrollBeyondLastLine: false,
   fontSize: 13,
 };
+
+function emptySshConfigEntry(): SshConfigEntry {
+  return {
+    host: "",
+    aliases: [],
+    hostname: "",
+    user: "",
+    port: 22,
+    identity_file: "",
+    proxy_jump: "",
+    proxy_command: "",
+    options: [],
+    source_file: sshConfigPath.value,
+    editable: true,
+    issues: [],
+  };
+}
+
+function cloneSshEntry(entry: SshConfigEntry): SshConfigEntry {
+  return {
+    ...entry,
+    aliases: [...(entry.aliases ?? [])],
+    options: (entry.options ?? []).map((item) => ({ ...item })),
+  };
+}
+
+function formatSshEntryLabel(entry: SshConfigEntry): string {
+  const target = entry.hostname || entry.host;
+  const user = entry.user ? `${entry.user}@` : "";
+  const port = entry.port ? `:${entry.port}` : "";
+  return `${user}${target}${port}`;
+}
+
+function normalizeSshForm(entry: SshConfigEntry): SshConfigEntry {
+  const cleanText = (value?: string | null) => {
+    const trimmed = `${value ?? ""}`.trim();
+    return trimmed ? trimmed : null;
+  };
+  const options = (entry.options ?? [])
+    .map((item) => ({ key: item.key.trim(), value: item.value.trim() }))
+    .filter((item) => item.key && item.value);
+  return {
+    ...entry,
+    host: entry.host.trim(),
+    aliases: (entry.aliases ?? []).map((item) => item.trim()).filter(Boolean),
+    hostname: cleanText(entry.hostname),
+    user: cleanText(entry.user),
+    port: entry.port || null,
+    identity_file: cleanText(entry.identity_file),
+    proxy_jump: cleanText(entry.proxy_jump),
+    proxy_command: cleanText(entry.proxy_command),
+    options,
+    source_file: sshConfigPath.value,
+    editable: true,
+    issues: [],
+  };
+}
+
+function selectSshEntry(entry: SshConfigEntry) {
+  selectedSshHost.value = entry.host;
+  sshForm.value = cloneSshEntry(entry);
+  sshConfigError.value = "";
+  sshConfigMessage.value = "";
+}
+
+function startNewSshEntry() {
+  selectedSshHost.value = "";
+  sshForm.value = emptySshConfigEntry();
+  sshConfigError.value = "";
+  sshConfigMessage.value = "";
+}
+
+function addSshOption() {
+  sshForm.value.options = [...(sshForm.value.options ?? []), { key: "", value: "" }];
+}
+
+function removeSshOption(index: number) {
+  sshForm.value.options = (sshForm.value.options ?? []).filter((_, idx) => idx !== index);
+}
+
+async function loadSshConfigEntries() {
+  sshConfigLoading.value = true;
+  sshConfigError.value = "";
+  try {
+    const [path, entries] = await Promise.all([
+      sshConfigDefaultPath(),
+      sshConfigListEntries(),
+    ]);
+    sshConfigPath.value = path ?? "~/.ssh/config";
+    sshConfigEntries.value = entries;
+    const current = selectedSshHost.value
+      ? entries.find((entry) => entry.host === selectedSshHost.value)
+      : entries[0];
+    if (current) selectSshEntry(current);
+    else startNewSshEntry();
+  } catch (e) {
+    sshConfigError.value = e instanceof Error ? e.message : String(e);
+    sshConfigEntries.value = [];
+  } finally {
+    sshConfigLoading.value = false;
+  }
+}
+
+async function saveSshConfigEntry() {
+  sshConfigError.value = "";
+  sshConfigMessage.value = "";
+  const payload = normalizeSshForm(sshForm.value);
+  if (!payload.host) {
+    sshConfigError.value = "请输入 Host 别名";
+    return;
+  }
+  if (payload.proxy_jump && payload.proxy_command) {
+    sshConfigError.value = "ProxyJump 与 ProxyCommand 只能配置一个";
+    return;
+  }
+  sshConfigSaving.value = true;
+  try {
+    await sshConfigUpsertEntry(payload);
+    sshConfigMessage.value = "SSH 配置已保存";
+    selectedSshHost.value = payload.host;
+    await loadSshConfigEntries();
+  } catch (e) {
+    sshConfigError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    sshConfigSaving.value = false;
+  }
+}
+
+async function deleteSshConfigEntry() {
+  if (!sshForm.value.host) return;
+  sshConfigError.value = "";
+  sshConfigMessage.value = "";
+  sshConfigSaving.value = true;
+  try {
+    await sshConfigDeleteEntry(sshForm.value.host);
+    sshConfigMessage.value = "SSH Host 已删除";
+    selectedSshHost.value = "";
+    await loadSshConfigEntries();
+  } catch (e) {
+    sshConfigError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    sshConfigSaving.value = false;
+  }
+}
 
 async function load() {
   try {
@@ -176,6 +339,7 @@ async function load() {
     customGpuResourceRules.value = [{ display_name: "", resource_name: "" }];
   }
   await loadEnvironments().catch(() => {});
+  await loadSshConfigEntries().catch(() => {});
 }
 
 async function saveSshTunnelMode(mode: TunnelMappingMode) {
@@ -295,6 +459,10 @@ async function saveLogTailLines(lines: number) {
 
 onMounted(() => {
   load();
+});
+
+watch(activeCategory, (value) => {
+  window.sessionStorage.setItem("kube-flow:settings-category", value);
 });
 
 const menuOptions = computed<MenuOption[]>(() =>
@@ -582,6 +750,116 @@ const menuOptions = computed<MenuOption[]>(() =>
           </NSpace>
           <NAlert v-if="message" class="msg-alert" :type="message === '已保存' ? 'success' : 'error'" :show-icon="true">{{ message }}</NAlert>
         </NCard>
+
+        <NCard title="SSH Host 配置" size="small" class="settings-card ssh-config-card" :bordered="true">
+          <p class="card-desc">
+            管理本机 SSH 配置中的普通 Host。保存时会写入 {{ sshConfigPath || "~/.ssh/config" }}，并在同目录生成 kube-flow 备份。
+          </p>
+          <div class="ssh-config-layout">
+            <aside class="ssh-host-list">
+              <div class="ssh-host-list-header">
+                <span>Host</span>
+                <NButton size="small" :disabled="sshConfigLoading || sshConfigSaving" @click="startNewSshEntry">新增</NButton>
+              </div>
+              <button
+                v-for="entry in sshConfigEntries"
+                :key="entry.host"
+                type="button"
+                class="ssh-host-item"
+                :class="{ active: selectedSshHost === entry.host, disabled: !entry.editable }"
+                @click="selectSshEntry(entry)"
+              >
+                <span class="ssh-host-name">{{ entry.host }}</span>
+                <span class="ssh-host-target">{{ formatSshEntryLabel(entry) }}</span>
+              </button>
+              <div v-if="!sshConfigEntries.length && !sshConfigLoading" class="ssh-host-empty">
+                还没有 Host，新增一个即可用于 SSH 隧道环境。
+              </div>
+            </aside>
+
+            <section class="ssh-config-form">
+              <div class="ssh-form-grid">
+                <label class="ssh-form-field">
+                  <span class="field-label">Host 别名</span>
+                  <NInput v-model:value="sshForm.host" :disabled="sshConfigSaving || !sshForm.editable" placeholder="prod-bastion" />
+                </label>
+                <label class="ssh-form-field">
+                  <span class="field-label">HostName</span>
+                  <NInput v-model:value="sshForm.hostname" :disabled="sshConfigSaving || !sshForm.editable" placeholder="10.0.0.12 或 bastion.example.com" />
+                </label>
+                <label class="ssh-form-field">
+                  <span class="field-label">User</span>
+                  <NInput v-model:value="sshForm.user" :disabled="sshConfigSaving || !sshForm.editable" placeholder="root" />
+                </label>
+                <label class="ssh-form-field">
+                  <span class="field-label">Port</span>
+                  <NInputNumber
+                    v-model:value="sshForm.port"
+                    :min="1"
+                    :max="65535"
+                    :show-button="false"
+                    :disabled="sshConfigSaving || !sshForm.editable"
+                    placeholder="22"
+                  />
+                </label>
+              </div>
+
+              <label class="ssh-form-field">
+                <span class="field-label">IdentityFile</span>
+                <NInput v-model:value="sshForm.identity_file" :disabled="sshConfigSaving || !sshForm.editable" placeholder="~/.ssh/id_rsa" />
+              </label>
+
+              <div class="ssh-form-grid">
+                <label class="ssh-form-field">
+                  <span class="field-label">ProxyJump</span>
+                  <NInput v-model:value="sshForm.proxy_jump" :disabled="sshConfigSaving || !sshForm.editable || !!sshForm.proxy_command" placeholder="jump-host" />
+                </label>
+                <label class="ssh-form-field">
+                  <span class="field-label">ProxyCommand</span>
+                  <NInput v-model:value="sshForm.proxy_command" :disabled="sshConfigSaving || !sshForm.editable || !!sshForm.proxy_jump" placeholder="ssh -W %h:%p jump-host" />
+                </label>
+              </div>
+
+              <div class="ssh-options">
+                <div class="ssh-options-head">
+                  <span class="setting-title">高级选项</span>
+                  <NButton size="small" :disabled="sshConfigSaving || !sshForm.editable" @click="addSshOption">增加选项</NButton>
+                </div>
+                <div
+                  v-for="(option, index) in sshForm.options"
+                  :key="index"
+                  class="ssh-option-row"
+                >
+                  <NInput v-model:value="option.key" :disabled="sshConfigSaving || !sshForm.editable" placeholder="ConnectTimeout" />
+                  <NInput v-model:value="option.value" :disabled="sshConfigSaving || !sshForm.editable" placeholder="10" />
+                  <NButton quaternary type="error" :disabled="sshConfigSaving || !sshForm.editable" @click="removeSshOption(index)">删除</NButton>
+                </div>
+                <p v-if="!sshForm.options.length" class="setting-desc">可补充 ServerAliveInterval、ConnectTimeout、IdentitiesOnly 等 OpenSSH 选项。</p>
+              </div>
+
+              <NAlert v-if="sshForm.issues.length" type="warning" :show-icon="false" size="small" class="msg-alert">
+                {{ sshForm.issues.join("；") }}
+              </NAlert>
+              <NAlert v-if="sshConfigError" type="error" :show-icon="false" size="small" class="msg-alert">{{ sshConfigError }}</NAlert>
+              <NAlert v-if="sshConfigMessage" type="success" :show-icon="false" size="small" class="msg-alert">{{ sshConfigMessage }}</NAlert>
+
+              <div class="ssh-config-actions">
+                <NButton :loading="sshConfigLoading" :disabled="sshConfigSaving" @click="loadSshConfigEntries">重新加载</NButton>
+                <NPopconfirm
+                  v-if="selectedSshHost"
+                  :disabled="sshConfigSaving || !sshForm.editable"
+                  @positive-click="deleteSshConfigEntry"
+                >
+                  <template #trigger>
+                    <NButton type="error" ghost :disabled="sshConfigSaving || !sshForm.editable">删除 Host</NButton>
+                  </template>
+                  删除后会从 ~/.ssh/config 移除该 Host 块，确认删除？
+                </NPopconfirm>
+                <NButton type="primary" :loading="sshConfigSaving" :disabled="!sshForm.editable" @click="saveSshConfigEntry">保存 Host</NButton>
+              </div>
+            </section>
+          </div>
+        </NCard>
       </template>
 
       <!-- 安全与凭证 -->
@@ -697,6 +975,9 @@ const menuOptions = computed<MenuOption[]>(() =>
   max-width: 520px;
   margin-bottom: 1rem;
 }
+.ssh-config-card {
+  max-width: 920px;
+}
 .card-desc {
   margin: 0 0 1rem;
   font-size: 0.875rem;
@@ -794,5 +1075,115 @@ const menuOptions = computed<MenuOption[]>(() =>
 }
 .theme-select-naive {
   max-width: 280px;
+}
+.ssh-config-layout {
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+.ssh-host-list {
+  border: 1px solid var(--kf-border, #e2e8f0);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--kf-bg-soft, #f8fafc);
+}
+.ssh-host-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 0.7rem;
+  border-bottom: 1px solid var(--kf-border, #e2e8f0);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--kf-text-secondary, #64748b);
+}
+.ssh-host-item {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--kf-border, #e2e8f0);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+  padding: 0.7rem;
+  text-align: left;
+}
+.ssh-host-item:last-child {
+  border-bottom: 0;
+}
+.ssh-host-item:hover,
+.ssh-host-item.active {
+  background: var(--kf-surface-strong, #fff);
+}
+.ssh-host-item.disabled {
+  opacity: 0.62;
+}
+.ssh-host-name {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--kf-text-primary, #0f172a);
+}
+.ssh-host-target,
+.ssh-host-empty {
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--kf-text-muted, #94a3b8);
+}
+.ssh-host-empty {
+  padding: 0.8rem;
+}
+.ssh-config-form {
+  min-width: 0;
+}
+.ssh-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.ssh-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 0.75rem;
+}
+.ssh-options {
+  margin-top: 0.25rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--kf-border, #e2e8f0);
+}
+.ssh-options-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.6rem;
+}
+.ssh-option-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+.ssh-config-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+  flex-wrap: wrap;
+}
+@media (max-width: 900px) {
+  .ssh-config-layout {
+    grid-template-columns: 1fr;
+  }
+  .ssh-form-grid,
+  .ssh-option-row {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

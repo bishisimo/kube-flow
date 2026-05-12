@@ -10,6 +10,42 @@ export interface GpuResourceRule {
   resource_name: string;
 }
 
+export interface SshConfigOption {
+  key: string;
+  value: string;
+}
+
+export interface SshConfigEntry {
+  host: string;
+  aliases: string[];
+  hostname?: string | null;
+  user?: string | null;
+  port?: number | null;
+  identity_file?: string | null;
+  proxy_jump?: string | null;
+  proxy_command?: string | null;
+  options: SshConfigOption[];
+  source_file: string;
+  editable: boolean;
+  issues: string[];
+}
+
+export function sshConfigDefaultPath(): Promise<string | null> {
+  return invoke("ssh_config_default_path");
+}
+
+export function sshConfigListEntries(): Promise<SshConfigEntry[]> {
+  return invoke("ssh_config_list_entries");
+}
+
+export function sshConfigUpsertEntry(entry: SshConfigEntry): Promise<void> {
+  return invoke("ssh_config_upsert_entry", { entry });
+}
+
+export function sshConfigDeleteEntry(host: string): Promise<void> {
+  return invoke("ssh_config_delete_entry", { host });
+}
+
 export function appSettingsGetSshTunnelMode(): Promise<TunnelMappingMode> {
   return invoke("app_settings_get_ssh_tunnel_mode");
 }

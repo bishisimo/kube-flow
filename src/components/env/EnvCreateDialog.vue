@@ -23,6 +23,7 @@ const props = defineProps<{ visible: boolean }>();
 const emit = defineEmits<{
   (e: "update:visible", value: boolean): void;
   (e: "created"): void;
+  (e: "open-ssh-settings"): void;
 }>();
 
 type EnvType = "local" | "ssh";
@@ -131,6 +132,12 @@ function parseLocalPort(value: string): number | null {
 
 function close() {
   emit("update:visible", false);
+}
+
+function openSshSettings() {
+  window.sessionStorage.setItem("kube-flow:settings-category", "ssh");
+  emit("open-ssh-settings");
+  close();
 }
 
 async function submit() {
@@ -292,7 +299,8 @@ async function submit() {
           />
         </label>
         <NAlert v-if="!sshConfigHosts.length" type="warning" :show-icon="false" size="small">
-          未检测到 ~/.ssh/config 中的 Host，请确认本机存在 ~/.ssh/config 且包含 Host 配置。
+          未检测到 ~/.ssh/config 中的 Host。
+          <NButton text type="primary" @click="openSshSettings">去配置 SSH Host</NButton>
         </NAlert>
 
         <label class="form-field">
