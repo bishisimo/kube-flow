@@ -11,8 +11,8 @@ pub struct OsKeychainBackend;
 impl OsKeychainBackend {
     /// 读取凭证；未找到返回 Ok(None)，钥匙串不可用时返回 Err。
     pub fn get(key: &CredentialKey) -> Result<Option<String>, String> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, &key.keyring_username())
-            .map_err(err_str)?;
+        let entry =
+            keyring::Entry::new(KEYRING_SERVICE, &key.keyring_username()).map_err(err_str)?;
         match entry.get_password() {
             Ok(p) => Ok(Some(p)),
             Err(keyring::Error::NoEntry) => Ok(None),
@@ -22,15 +22,15 @@ impl OsKeychainBackend {
 
     /// 保存凭证；覆盖已存在的条目。
     pub fn set(key: &CredentialKey, password: &str) -> Result<(), String> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, &key.keyring_username())
-            .map_err(err_str)?;
+        let entry =
+            keyring::Entry::new(KEYRING_SERVICE, &key.keyring_username()).map_err(err_str)?;
         entry.set_password(password).map_err(err_str)
     }
 
     /// 删除凭证；若条目不存在则视为成功。
     pub fn delete(key: &CredentialKey) -> Result<(), String> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, &key.keyring_username())
-            .map_err(err_str)?;
+        let entry =
+            keyring::Entry::new(KEYRING_SERVICE, &key.keyring_username()).map_err(err_str)?;
         match entry.delete_credential() {
             Ok(()) => Ok(()),
             Err(keyring::Error::NoEntry) => Ok(()),

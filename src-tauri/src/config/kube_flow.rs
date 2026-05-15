@@ -71,7 +71,12 @@ impl From<Environment> for EnvironmentRow {
             sort_order: e.sort_order,
             kubeconfig_path: e.kubeconfig_path,
             ssh_tunnel_id: e.ssh_tunnel_id,
-            contexts: e.contexts.iter().cloned().map(EnvironmentContextRow::from).collect(),
+            contexts: e
+                .contexts
+                .iter()
+                .cloned()
+                .map(EnvironmentContextRow::from)
+                .collect(),
             current_context: e.current_context,
             last_used_at: e.last_used_at,
             ssh_idle_protection: e.ssh_idle_protection,
@@ -107,7 +112,13 @@ impl From<EnvironmentContextRow> for EnvironmentContext {
 impl From<EnvironmentRow> for Environment {
     fn from(r: EnvironmentRow) -> Self {
         let (contexts, current_context) = if !r.contexts.is_empty() {
-            (r.contexts.into_iter().map(EnvironmentContext::from).collect(), r.current_context)
+            (
+                r.contexts
+                    .into_iter()
+                    .map(EnvironmentContext::from)
+                    .collect(),
+                r.current_context,
+            )
         } else if let Some(cn) = r.context_name {
             let ctx = EnvironmentContext {
                 context_name: cn.clone(),
@@ -203,7 +214,11 @@ impl KubeFlowConfigFile {
         };
         let file: KubeFlowConfigFile = toml::from_str(&content).map_err(ConfigError::Toml)?;
         Ok(KubeFlowConfig {
-            environments: file.environments.into_iter().map(Environment::from).collect(),
+            environments: file
+                .environments
+                .into_iter()
+                .map(Environment::from)
+                .collect(),
             ssh_tunnels: file.ssh_tunnels.into_iter().map(SshTunnel::from).collect(),
         })
     }
@@ -213,8 +228,18 @@ impl KubeFlowConfigFile {
             std::fs::create_dir_all(parent).map_err(ConfigError::Io)?;
         }
         let file = KubeFlowConfigFile {
-            environments: config.environments.iter().cloned().map(EnvironmentRow::from).collect(),
-            ssh_tunnels: config.ssh_tunnels.iter().cloned().map(SshTunnelRow::from).collect(),
+            environments: config
+                .environments
+                .iter()
+                .cloned()
+                .map(EnvironmentRow::from)
+                .collect(),
+            ssh_tunnels: config
+                .ssh_tunnels
+                .iter()
+                .cloned()
+                .map(SshTunnelRow::from)
+                .collect(),
         };
         let content = toml::to_string_pretty(&file).map_err(ConfigError::TomlSer)?;
         std::fs::write(path, content).map_err(ConfigError::Io)

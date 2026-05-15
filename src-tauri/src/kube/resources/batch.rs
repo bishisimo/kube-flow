@@ -42,7 +42,10 @@ pub async fn list_jobs(
 ) -> Result<Vec<JobItem>, ResourceError> {
     let ns = namespace.unwrap_or("default");
     let api: Api<Job> = Api::namespaced(client.clone(), ns);
-    let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
+    let list = api
+        .list(&build_list_params(label_selector))
+        .await
+        .map_err(ResourceError::Kube)?;
     let items = list
         .items
         .into_iter()
@@ -55,7 +58,11 @@ pub async fn list_jobs(
             let completions = spec.and_then(|s| s.completions);
             let completions_str = match (completions, succeeded, failed, active) {
                 (Some(c), Some(s), Some(f), Some(a)) => Some(format!("{}/{}", s + f + a, c)),
-                (Some(c), s, f, a) => Some(format!("{}/{}", s.unwrap_or(0) + f.unwrap_or(0) + a.unwrap_or(0), c)),
+                (Some(c), s, f, a) => Some(format!(
+                    "{}/{}",
+                    s.unwrap_or(0) + f.unwrap_or(0) + a.unwrap_or(0),
+                    c
+                )),
                 _ => Some("1/1".to_string()),
             };
             let start = status.and_then(|s| s.start_time.as_ref());
@@ -87,13 +94,20 @@ pub async fn list_cron_jobs(
 ) -> Result<Vec<CronJobItem>, ResourceError> {
     let ns = namespace.unwrap_or("default");
     let api: Api<CronJob> = Api::namespaced(client.clone(), ns);
-    let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
+    let list = api
+        .list(&build_list_params(label_selector))
+        .await
+        .map_err(ResourceError::Kube)?;
     let items = list
         .items
         .into_iter()
         .map(|c| {
             let schedule = c.spec.as_ref().map(|s| s.schedule.clone());
-            let last_schedule = c.status.as_ref().and_then(|s| s.last_successful_time.as_ref().or(s.last_schedule_time.as_ref()));
+            let last_schedule = c.status.as_ref().and_then(|s| {
+                s.last_successful_time
+                    .as_ref()
+                    .or(s.last_schedule_time.as_ref())
+            });
             let last_schedule_str = last_schedule.and_then(|t| format_creation_time(Some(t)));
             CronJobItem {
                 name: c.metadata.name.unwrap_or_default(),

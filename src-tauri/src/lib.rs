@@ -1,11 +1,11 @@
 //! Kube-Flow：Tauri 2 + K8s 资源管理。模块分层：config → credentials → env → kube → commands。
 
+mod commands;
 mod config;
 mod credentials;
 mod debug_log;
 mod env;
 mod kube;
-mod commands;
 mod ssh_askpass;
 
 use tauri::Manager;
@@ -21,7 +21,10 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
-                if let Some(store) = window.app_handle().try_state::<crate::kube::KubeClientStore>() {
+                if let Some(store) = window
+                    .app_handle()
+                    .try_state::<crate::kube::KubeClientStore>()
+                {
                     store.close_all_tunnels();
                 }
             }

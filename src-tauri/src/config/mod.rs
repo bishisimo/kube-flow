@@ -1,10 +1,10 @@
 //! 配置层：路径解析、kube-flow.toml、crd-display.toml、~/.ssh/config 的读写。
 
-mod paths;
-mod kube_flow;
-mod crd_display;
-mod ssh_config;
 mod app_settings;
+mod crd_display;
+mod kube_flow;
+mod paths;
+mod ssh_config;
 
 pub use app_settings::{
     AppSettingsConfig, GpuResourceRule, LogDisplayFormat, LogDisplayOrder, LogLevel,

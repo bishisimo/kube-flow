@@ -2,14 +2,13 @@
 
 use super::super::kube_command_context::{self, err_str, CommandResult};
 use crate::config::ResourceDeployStrategy;
-use crate::kube::{
-    apply_resource_yaml, build_graph, delete_dynamic_resource, delete_resource, deploy_resource_yaml,
-    describe_dynamic_resource, describe_resource, get_dynamic_resource_yaml, get_pod_container_names,
-    get_resource_yaml,
-    patch_container_images, ContainerImagePatch, DescribeResult, KubeClientStore,
-    ResourceGraph,
-};
 use crate::kube::resource_graph::registry::build_default_registry;
+use crate::kube::{
+    apply_resource_yaml, build_graph, delete_dynamic_resource, delete_resource,
+    deploy_resource_yaml, describe_dynamic_resource, describe_resource, get_dynamic_resource_yaml,
+    get_pod_container_names, get_resource_yaml, patch_container_images, ContainerImagePatch,
+    DescribeResult, KubeClientStore, ResourceGraph,
+};
 use tauri::State;
 
 #[tauri::command]

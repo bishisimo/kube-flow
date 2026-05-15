@@ -42,16 +42,14 @@ impl EnvService {
     /// 列出所有环境（连接），按收藏、sort_order、last_used_at 排序。
     pub fn list() -> Result<Vec<Environment>, config::ConfigError> {
         let mut envs = Self::load_config()?.environments;
-        envs.sort_by(|a, b| {
-            match (a.is_favorite, b.is_favorite) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => a.sort_order.cmp(&b.sort_order).reverse().then_with(|| {
-                    let a_ts = a.last_used_at.as_deref().unwrap_or("");
-                    let b_ts = b.last_used_at.as_deref().unwrap_or("");
-                    b_ts.cmp(a_ts)
-                }),
-            }
+        envs.sort_by(|a, b| match (a.is_favorite, b.is_favorite) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.sort_order.cmp(&b.sort_order).reverse().then_with(|| {
+                let a_ts = a.last_used_at.as_deref().unwrap_or("");
+                let b_ts = b.last_used_at.as_deref().unwrap_or("");
+                b_ts.cmp(a_ts)
+            }),
         });
         Ok(envs)
     }
@@ -72,12 +70,16 @@ impl EnvService {
     /// 更新指定 id 的环境。
     pub fn update(env: Environment) -> Result<(), config::ConfigError> {
         let mut cfg = Self::load_config()?;
-        let pos = cfg.environments.iter().position(|e| e.id == env.id).ok_or_else(|| {
-            config::ConfigError::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "environment not found",
-            ))
-        })?;
+        let pos = cfg
+            .environments
+            .iter()
+            .position(|e| e.id == env.id)
+            .ok_or_else(|| {
+                config::ConfigError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "environment not found",
+                ))
+            })?;
         cfg.environments[pos] = env;
         Self::save_config(&cfg)
     }
@@ -90,14 +92,21 @@ impl EnvService {
     }
 
     /// 设置当前选中的 context。
-    pub fn set_current_context(env_id: &str, context_name: &str) -> Result<(), config::ConfigError> {
+    pub fn set_current_context(
+        env_id: &str,
+        context_name: &str,
+    ) -> Result<(), config::ConfigError> {
         let mut cfg = Self::load_config()?;
-        let env = cfg.environments.iter_mut().find(|e| e.id == env_id).ok_or_else(|| {
-            config::ConfigError::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "environment not found",
-            ))
-        })?;
+        let env = cfg
+            .environments
+            .iter_mut()
+            .find(|e| e.id == env_id)
+            .ok_or_else(|| {
+                config::ConfigError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "environment not found",
+                ))
+            })?;
         if env.contexts.iter().any(|c| c.context_name == context_name) {
             env.current_context = Some(context_name.to_string());
             Self::save_config(&cfg)
@@ -133,7 +142,11 @@ impl EnvService {
         let mut out = Vec::new();
         for ctx in raw.contexts.unwrap_or_default() {
             let name = ctx.name.clone();
-            let cluster = ctx.context.as_ref().and_then(|c| c.cluster.clone()).unwrap_or_default();
+            let cluster = ctx
+                .context
+                .as_ref()
+                .and_then(|c| c.cluster.clone())
+                .unwrap_or_default();
             let namespace = ctx.context.as_ref().and_then(|c| c.namespace.clone());
             out.push(KubeContextInfo {
                 context_name: name,
@@ -167,7 +180,11 @@ impl EnvService {
             })
             .collect();
         let current = contexts.first().map(|c| c.context_name.clone());
-        let tags: Vec<String> = tags.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        let tags: Vec<String> = tags
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
         let env = Environment {
             id: Uuid::new_v4().to_string(),
             source: EnvironmentSource::LocalKubeconfig,
@@ -193,7 +210,10 @@ impl EnvService {
 
     /// 按 id 获取 SSH 隧道配置；供工作台构建 Client 时使用。
     pub fn get_ssh_tunnel(id: &str) -> Result<Option<SshTunnel>, config::ConfigError> {
-        Ok(Self::load_config()?.ssh_tunnels.into_iter().find(|t| t.id == id))
+        Ok(Self::load_config()?
+            .ssh_tunnels
+            .into_iter()
+            .find(|t| t.id == id))
     }
 
     /// 新建 SSH 隧道连接：先需有 ssh_tunnels 中配置，contexts 可先空或后续通过隧道发现后更新。
@@ -205,7 +225,11 @@ impl EnvService {
         ssh_idle_protection: Option<bool>,
     ) -> Result<Environment, config::ConfigError> {
         let current = contexts.first().map(|c| c.context_name.clone());
-        let tags: Vec<String> = tags.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        let tags: Vec<String> = tags
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
         let env = Environment {
             id: Uuid::new_v4().to_string(),
             source: EnvironmentSource::SshTunnel,
@@ -238,7 +262,11 @@ impl EnvService {
             "ssh-{}",
             ssh_host
                 .chars()
-                .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
+                .map(|c| if c.is_alphanumeric() || c == '-' {
+                    c
+                } else {
+                    '_'
+                })
                 .collect::<String>()
         );
         let mut cfg = Self::load_config()?;
@@ -277,11 +305,19 @@ impl EnvService {
             "ssh-{}",
             ssh_host
                 .chars()
-                .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
+                .map(|c| if c.is_alphanumeric() || c == '-' {
+                    c
+                } else {
+                    '_'
+                })
                 .collect::<String>()
         );
         let mut cfg = Self::load_config()?;
-        if let Some(idx) = cfg.ssh_tunnels.iter().position(|t| t.id == tunnel_id || t.ssh_host == ssh_host) {
+        if let Some(idx) = cfg
+            .ssh_tunnels
+            .iter()
+            .position(|t| t.id == tunnel_id || t.ssh_host == ssh_host)
+        {
             let id = cfg.ssh_tunnels[idx].id.clone();
             cfg.ssh_tunnels[idx].remote_kubeconfig_path = remote_kubeconfig_path;
             cfg.ssh_tunnels[idx].name = ssh_host.clone();
@@ -306,7 +342,9 @@ impl EnvService {
 
 fn expand_tilde(p: &str) -> std::path::PathBuf {
     if p.starts_with("~/") {
-        dirs::home_dir().map(|h| h.join(&p[2..])).unwrap_or_else(|| p.into())
+        dirs::home_dir()
+            .map(|h| h.join(&p[2..]))
+            .unwrap_or_else(|| p.into())
     } else {
         p.into()
     }

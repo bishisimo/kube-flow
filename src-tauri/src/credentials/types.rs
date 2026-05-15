@@ -10,7 +10,9 @@ pub struct CredentialKey {
 
 impl CredentialKey {
     pub fn new(tunnel_id: impl Into<String>) -> Self {
-        Self { tunnel_id: tunnel_id.into() }
+        Self {
+            tunnel_id: tunnel_id.into(),
+        }
     }
 
     /// OS 钥匙串中的 username 字段：`ssh/{tunnel_id}`。

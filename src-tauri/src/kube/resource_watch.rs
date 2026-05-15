@@ -6,11 +6,11 @@ use crate::debug_log;
 use crate::env::EnvService;
 use crate::kube::resources::{
     compute_workload_pod_rollup, format_cpu_total, format_creation_time, format_gpu, format_mem,
-    label_selector_to_string, quantity_cpu_millis, quantity_mem_bytes, quantity_scalar_units, SubjectRef,
+    label_selector_to_string, quantity_cpu_millis, quantity_mem_bytes, quantity_scalar_units,
     ClusterRoleBindingItem, ClusterRoleItem, ConfigMapItem, DaemonSetItem, DeploymentItem,
     EndpointSliceItem, EndpointsItem, NamespaceItem, NodeItem, PersistentVolumeClaimItem,
     PersistentVolumeItem, PodItem, RoleBindingItem, RoleItem, SecretItem, ServiceAccountItem,
-    ServiceItem, StatefulSetItem, StorageClassItem, WorkloadPodRollup,
+    ServiceItem, StatefulSetItem, StorageClassItem, SubjectRef, WorkloadPodRollup,
 };
 use crate::kube::KubeClientStore;
 use futures::stream::{self, StreamExt};
@@ -66,13 +66,8 @@ impl WatchStore {
     }
 }
 
-
 fn pod_to_item(p: Pod, ns: &str) -> PodItem {
-    let total = p
-        .spec
-        .as_ref()
-        .map(|s| s.containers.len())
-        .unwrap_or(0);
+    let total = p.spec.as_ref().map(|s| s.containers.len()).unwrap_or(0);
     let ready = p
         .status
         .as_ref()
@@ -97,7 +92,11 @@ fn pod_to_item(p: Pod, ns: &str) -> PodItem {
 fn deployment_to_item(d: Deployment, ns: &str, pod_rollup: WorkloadPodRollup) -> DeploymentItem {
     let replicas = d.spec.as_ref().and_then(|s| s.replicas);
     let ready = d.status.as_ref().and_then(|s| s.ready_replicas);
-    let label_selector = d.spec.as_ref().map(|s| &s.selector).and_then(|sel| label_selector_to_string(Some(sel)));
+    let label_selector = d
+        .spec
+        .as_ref()
+        .map(|s| &s.selector)
+        .and_then(|sel| label_selector_to_string(Some(sel)));
     DeploymentItem {
         name: d.metadata.name.unwrap_or_default(),
         namespace: d.metadata.namespace.unwrap_or_else(|| ns.to_string()),
@@ -155,14 +154,19 @@ fn namespace_to_item(n: Namespace) -> NamespaceItem {
 fn node_to_item(n: Node) -> NodeItem {
     let status = n.status.as_ref().and_then(|s| {
         s.conditions.as_ref().and_then(|conds| {
-            conds.iter()
-                .find(|c| c.type_ == "Ready")
-                .map(|c| if c.status == "True" { "Ready".to_string() } else { "NotReady".to_string() })
+            conds.iter().find(|c| c.type_ == "Ready").map(|c| {
+                if c.status == "True" {
+                    "Ready".to_string()
+                } else {
+                    "NotReady".to_string()
+                }
+            })
         })
     });
     let internal_ip = n.status.as_ref().and_then(|s| {
         s.addresses.as_ref().and_then(|addrs| {
-            addrs.iter()
+            addrs
+                .iter()
                 .find(|a| a.type_ == "InternalIP")
                 .map(|a| a.address.clone())
         })
@@ -214,7 +218,11 @@ fn node_to_item(n: Node) -> NodeItem {
 fn statefulset_to_item(s: StatefulSet, ns: &str, pod_rollup: WorkloadPodRollup) -> StatefulSetItem {
     let replicas = s.spec.as_ref().and_then(|sp| sp.replicas);
     let ready = s.status.and_then(|st| st.ready_replicas);
-    let label_selector = s.spec.as_ref().map(|sp| &sp.selector).and_then(|sel| label_selector_to_string(Some(sel)));
+    let label_selector = s
+        .spec
+        .as_ref()
+        .map(|sp| &sp.selector)
+        .and_then(|sel| label_selector_to_string(Some(sel)));
     StatefulSetItem {
         name: s.metadata.name.unwrap_or_default(),
         namespace: s.metadata.namespace.unwrap_or_else(|| ns.to_string()),
@@ -330,7 +338,11 @@ fn clusterrolebinding_to_item(r: ClusterRoleBinding) -> ClusterRoleBindingItem {
 fn daemonset_to_item(d: DaemonSet, ns: &str, pod_rollup: WorkloadPodRollup) -> DaemonSetItem {
     let desired = d.status.as_ref().map(|s| s.desired_number_scheduled);
     let ready = d.status.map(|s| s.number_ready);
-    let label_selector = d.spec.as_ref().map(|s| &s.selector).and_then(|sel| label_selector_to_string(Some(sel)));
+    let label_selector = d
+        .spec
+        .as_ref()
+        .map(|s| &s.selector)
+        .and_then(|sel| label_selector_to_string(Some(sel)));
     DaemonSetItem {
         name: d.metadata.name.unwrap_or_default(),
         namespace: d.metadata.namespace.unwrap_or_else(|| ns.to_string()),
@@ -457,25 +469,217 @@ async fn run_watch(
     watch_token: String,
 ) {
     match kind.as_str() {
-        "pods" => run_simple_watch_ns::<Pod, _>(app, client, env_id, ns, label_selector, watch_token, "pods", pod_to_item).await,
-        "deployments" => run_watch_deployments(app, client, env_id, ns, label_selector, watch_token).await,
-        "services" => run_simple_watch_ns::<Service, _>(app, client, env_id, ns, label_selector, watch_token, "services", service_to_item).await,
-        "namespaces" => run_simple_watch_cluster::<Namespace, _>(app, client, env_id, label_selector, watch_token, "namespaces", namespace_to_item).await,
-        "nodes" => run_simple_watch_cluster::<Node, _>(app, client, env_id, label_selector, watch_token, "nodes", node_to_item).await,
-        "statefulsets" => run_watch_statefulsets(app, client, env_id, ns, label_selector, watch_token).await,
-        "configmaps" => run_simple_watch_ns::<ConfigMap, _>(app, client, env_id, ns, label_selector, watch_token, "configmaps", configmap_to_item).await,
-        "secrets" => run_simple_watch_ns::<Secret, _>(app, client, env_id, ns, label_selector, watch_token, "secrets", secret_to_item).await,
-        "serviceaccounts" => run_simple_watch_ns::<ServiceAccount, _>(app, client, env_id, ns, label_selector, watch_token, "serviceaccounts", serviceaccount_to_item).await,
-        "roles" => run_simple_watch_ns::<Role, _>(app, client, env_id, ns, label_selector, watch_token, "roles", role_to_item).await,
-        "rolebindings" => run_simple_watch_ns::<RoleBinding, _>(app, client, env_id, ns, label_selector, watch_token, "rolebindings", rolebinding_to_item).await,
-        "clusterroles" => run_simple_watch_cluster::<ClusterRole, _>(app, client, env_id, label_selector, watch_token, "clusterroles", clusterrole_to_item).await,
-        "clusterrolebindings" => run_simple_watch_cluster::<ClusterRoleBinding, _>(app, client, env_id, label_selector, watch_token, "clusterrolebindings", clusterrolebinding_to_item).await,
-        "daemonsets" => run_watch_daemonsets(app, client, env_id, ns, label_selector, watch_token).await,
-        "persistentvolumeclaims" => run_simple_watch_ns::<PersistentVolumeClaim, _>(app, client, env_id, ns, label_selector, watch_token, "persistentvolumeclaims", pvc_to_item).await,
-        "persistentvolumes" => run_simple_watch_cluster::<PersistentVolume, _>(app, client, env_id, label_selector, watch_token, "persistentvolumes", pv_to_item).await,
-        "storageclasses" => run_simple_watch_cluster::<StorageClass, _>(app, client, env_id, label_selector, watch_token, "storageclasses", storageclass_to_item).await,
-        "endpoints" => run_simple_watch_ns::<Endpoints, _>(app, client, env_id, ns, label_selector, watch_token, "endpoints", endpoints_to_item).await,
-        "endpointslices" => run_simple_watch_ns::<EndpointSlice, _>(app, client, env_id, ns, label_selector, watch_token, "endpointslices", endpointslice_to_item).await,
+        "pods" => {
+            run_simple_watch_ns::<Pod, _>(
+                app,
+                client,
+                env_id,
+                ns,
+                label_selector,
+                watch_token,
+                "pods",
+                pod_to_item,
+            )
+            .await
+        }
+        "deployments" => {
+            run_watch_deployments(app, client, env_id, ns, label_selector, watch_token).await
+        }
+        "services" => {
+            run_simple_watch_ns::<Service, _>(
+                app,
+                client,
+                env_id,
+                ns,
+                label_selector,
+                watch_token,
+                "services",
+                service_to_item,
+            )
+            .await
+        }
+        "namespaces" => {
+            run_simple_watch_cluster::<Namespace, _>(
+                app,
+                client,
+                env_id,
+                label_selector,
+                watch_token,
+                "namespaces",
+                namespace_to_item,
+            )
+            .await
+        }
+        "nodes" => {
+            run_simple_watch_cluster::<Node, _>(
+                app,
+                client,
+                env_id,
+                label_selector,
+                watch_token,
+                "nodes",
+                node_to_item,
+            )
+            .await
+        }
+        "statefulsets" => {
+            run_watch_statefulsets(app, client, env_id, ns, label_selector, watch_token).await
+        }
+        "configmaps" => {
+            run_simple_watch_ns::<ConfigMap, _>(
+                app,
+                client,
+                env_id,
+                ns,
+                label_selector,
+                watch_token,
+                "configmaps",
+                configmap_to_item,
+            )
+            .await
+        }
+        "secrets" => {
+            run_simple_watch_ns::<Secret, _>(
+                app,
+                client,
+                env_id,
+                ns,
+                label_selector,
+                watch_token,
+                "secrets",
+                secret_to_item,
+            )
+            .await
+        }
+        "serviceaccounts" => {
+            run_simple_watch_ns::<ServiceAccount, _>(
+                app,
+                client,
+                env_id,
+                ns,
+                label_selector,
+                watch_token,
+                "serviceaccounts",
+                serviceaccount_to_item,
+            )
+            .await
+        }
+        "roles" => {
+            run_simple_watch_ns::<Role, _>(
+                app,
+                client,
+                env_id,
+                ns,
+                label_selector,
+                watch_token,
+                "roles",
+                role_to_item,
+            )
+            .await
+        }
+        "rolebindings" => {
+            run_simple_watch_ns::<RoleBinding, _>(
+                app,
+                client,
+                env_id,
+                ns,
+                label_selector,
+                watch_token,
+                "rolebindings",
+                rolebinding_to_item,
+            )
+            .await
+        }
+        "clusterroles" => {
+            run_simple_watch_cluster::<ClusterRole, _>(
+                app,
+                client,
+                env_id,
+                label_selector,
+                watch_token,
+                "clusterroles",
+                clusterrole_to_item,
+            )
+            .await
+        }
+        "clusterrolebindings" => {
+            run_simple_watch_cluster::<ClusterRoleBinding, _>(
+                app,
+                client,
+                env_id,
+                label_selector,
+                watch_token,
+                "clusterrolebindings",
+                clusterrolebinding_to_item,
+            )
+            .await
+        }
+        "daemonsets" => {
+            run_watch_daemonsets(app, client, env_id, ns, label_selector, watch_token).await
+        }
+        "persistentvolumeclaims" => {
+            run_simple_watch_ns::<PersistentVolumeClaim, _>(
+                app,
+                client,
+                env_id,
+                ns,
+                label_selector,
+                watch_token,
+                "persistentvolumeclaims",
+                pvc_to_item,
+            )
+            .await
+        }
+        "persistentvolumes" => {
+            run_simple_watch_cluster::<PersistentVolume, _>(
+                app,
+                client,
+                env_id,
+                label_selector,
+                watch_token,
+                "persistentvolumes",
+                pv_to_item,
+            )
+            .await
+        }
+        "storageclasses" => {
+            run_simple_watch_cluster::<StorageClass, _>(
+                app,
+                client,
+                env_id,
+                label_selector,
+                watch_token,
+                "storageclasses",
+                storageclass_to_item,
+            )
+            .await
+        }
+        "endpoints" => {
+            run_simple_watch_ns::<Endpoints, _>(
+                app,
+                client,
+                env_id,
+                ns,
+                label_selector,
+                watch_token,
+                "endpoints",
+                endpoints_to_item,
+            )
+            .await
+        }
+        "endpointslices" => {
+            run_simple_watch_ns::<EndpointSlice, _>(
+                app,
+                client,
+                env_id,
+                ns,
+                label_selector,
+                watch_token,
+                "endpointslices",
+                endpointslice_to_item,
+            )
+            .await
+        }
         _ => {
             let _ = app.emit(
                 WATCH_EVENT,
@@ -499,9 +703,14 @@ async fn run_simple_watch_ns<K, I>(
     watch_token: String,
     kind_str: &'static str,
     to_item: impl Fn(K, &str) -> I,
-)
-where
-    K: Resource<Scope = NamespaceResourceScope> + Clone + std::fmt::Debug + Send + Sync + serde::de::DeserializeOwned + 'static,
+) where
+    K: Resource<Scope = NamespaceResourceScope>
+        + Clone
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + serde::de::DeserializeOwned
+        + 'static,
     K::DynamicType: Default,
     I: serde::Serialize + Clone,
 {
@@ -535,11 +744,14 @@ where
             Err(e) => {
                 let msg = e.to_string();
                 debug_log::log_list_err(kind_str, Some(&env_id), &msg, LogLevel::Error);
-                let _ = app.emit(WATCH_EVENT, serde_json::json!({
-                    "envId": env_id,
-                    "watchToken": watch_token,
-                    "error": msg
-                }));
+                let _ = app.emit(
+                    WATCH_EVENT,
+                    serde_json::json!({
+                        "envId": env_id,
+                        "watchToken": watch_token,
+                        "error": msg
+                    }),
+                );
                 break;
             }
         }
@@ -564,8 +776,7 @@ async fn run_simple_watch_cluster<K, I>(
     watch_token: String,
     kind_str: &'static str,
     to_item: impl Fn(K) -> I,
-)
-where
+) where
     K: Resource + Clone + std::fmt::Debug + Send + Sync + serde::de::DeserializeOwned + 'static,
     K::DynamicType: Default,
     I: serde::Serialize + Clone,
@@ -594,11 +805,14 @@ where
             Err(e) => {
                 let msg = e.to_string();
                 debug_log::log_list_err(kind_str, Some(&env_id), &msg, LogLevel::Error);
-                let _ = app.emit(WATCH_EVENT, serde_json::json!({
-                    "envId": env_id,
-                    "watchToken": watch_token,
-                    "error": msg
-                }));
+                let _ = app.emit(
+                    WATCH_EVENT,
+                    serde_json::json!({
+                        "envId": env_id,
+                        "watchToken": watch_token,
+                        "error": msg
+                    }),
+                );
                 break;
             }
         }
@@ -614,7 +828,11 @@ where
     }
 }
 
-fn workload_watch_cache_key<R: ResourceExt>(obj: &R, all_namespaces: bool, fallback_ns: &str) -> String {
+fn workload_watch_cache_key<R: ResourceExt>(
+    obj: &R,
+    all_namespaces: bool,
+    fallback_ns: &str,
+) -> String {
     if all_namespaces {
         format!(
             "{}/{}",
@@ -709,11 +927,14 @@ async fn run_watch_deployments(
 
         if let Some(msg) = fatal {
             debug_log::log_list_err("deployments/watch", Some(&env_id), &msg, LogLevel::Error);
-            let _ = app.emit(WATCH_EVENT, serde_json::json!({
-                "envId": env_id,
-                "watchToken": watch_token,
-                "error": msg
-            }));
+            let _ = app.emit(
+                WATCH_EVENT,
+                serde_json::json!({
+                    "envId": env_id,
+                    "watchToken": watch_token,
+                    "error": msg
+                }),
+            );
             break;
         }
 
@@ -825,11 +1046,14 @@ async fn run_watch_statefulsets(
 
         if let Some(msg) = fatal {
             debug_log::log_list_err("statefulsets/watch", Some(&env_id), &msg, LogLevel::Error);
-            let _ = app.emit(WATCH_EVENT, serde_json::json!({
-                "envId": env_id,
-                "watchToken": watch_token,
-                "error": msg
-            }));
+            let _ = app.emit(
+                WATCH_EVENT,
+                serde_json::json!({
+                    "envId": env_id,
+                    "watchToken": watch_token,
+                    "error": msg
+                }),
+            );
             break;
         }
 
@@ -941,11 +1165,14 @@ async fn run_watch_daemonsets(
 
         if let Some(msg) = fatal {
             debug_log::log_list_err("daemonsets/watch", Some(&env_id), &msg, LogLevel::Error);
-            let _ = app.emit(WATCH_EVENT, serde_json::json!({
-                "envId": env_id,
-                "watchToken": watch_token,
-                "error": msg
-            }));
+            let _ = app.emit(
+                WATCH_EVENT,
+                serde_json::json!({
+                    "envId": env_id,
+                    "watchToken": watch_token,
+                    "error": msg
+                }),
+            );
             break;
         }
 

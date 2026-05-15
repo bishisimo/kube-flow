@@ -51,7 +51,7 @@ pub async fn kube_client_for_env_id(
 /// 加载应用设置，统一错误转换。
 /// 替代各命令函数中散落的 `app_settings_config_path().ok_or_else(...)?` 样板代码。
 pub fn load_app_settings() -> CommandResult<AppSettingsConfig> {
-    let path = app_settings_config_path()
-        .ok_or_else(|| "app data dir not available".to_string())?;
+    let path =
+        app_settings_config_path().ok_or_else(|| "app data dir not available".to_string())?;
     AppSettingsConfig::load(&path).map_err(err_str)
 }

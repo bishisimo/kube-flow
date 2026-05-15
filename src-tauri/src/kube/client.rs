@@ -1,14 +1,14 @@
 //! 从环境配置构建 kube::Client，并按 env_id 缓存；支持 local_kubeconfig 与 ssh_tunnel。
 
 use crate::config::LogLevel;
+use crate::config::{app_settings_config_path, AppSettingsConfig};
 use crate::credentials::{CredentialKey, CredentialManager};
 use crate::debug_log;
-use crate::env::{EnvService, Environment, EnvironmentSource};
-use crate::config::{app_settings_config_path, AppSettingsConfig};
 use crate::env::TunnelMappingMode;
+use crate::env::{EnvService, Environment, EnvironmentSource};
 use crate::kube::tunnel::{ConnectionProgressPayload, SshTunnelRunner, TunnelError};
 use kube::config::{KubeConfigOptions, Kubeconfig};
-use kube::{Config, Client};
+use kube::{Client, Config};
 use std::path::Path;
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -18,7 +18,9 @@ use tokio::sync::RwLock;
 
 fn expand_tilde(p: &str) -> std::path::PathBuf {
     if p.starts_with("~/") {
-        dirs::home_dir().map(|h| h.join(&p[2..])).unwrap_or_else(|| p.into())
+        dirs::home_dir()
+            .map(|h| h.join(&p[2..]))
+            .unwrap_or_else(|| p.into())
     } else {
         p.into()
     }
@@ -194,7 +196,8 @@ async fn build_client_from_kubeconfig_str(
     context_name: &str,
     default_namespace: Option<&str>,
 ) -> Result<kube::Client, KubeClientError> {
-    let kubeconfig: Kubeconfig = serde_yaml::from_str(content).map_err(|e| KubeClientError::Yaml(e.to_string()))?;
+    let kubeconfig: Kubeconfig =
+        serde_yaml::from_str(content).map_err(|e| KubeClientError::Yaml(e.to_string()))?;
     let options = KubeConfigOptions {
         context: Some(context_name.to_string()),
         cluster: None,
@@ -206,7 +209,8 @@ async fn build_client_from_kubeconfig_str(
     if let Some(ns) = default_namespace {
         config.default_namespace = ns.to_string();
     }
-    let client = Client::try_from(config).map_err(|e: kube::Error| KubeClientError::Client(e.to_string()))?;
+    let client = Client::try_from(config)
+        .map_err(|e: kube::Error| KubeClientError::Client(e.to_string()))?;
     Ok(client)
 }
 

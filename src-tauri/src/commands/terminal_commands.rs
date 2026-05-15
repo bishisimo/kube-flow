@@ -1,10 +1,10 @@
 use crate::commands::kube_command_context::{err_str, load_app_settings, CommandResult};
-use crate::config::LogLevel;
-use crate::kube::session_store::{SessionHandle, SessionStore};
 use crate::config::ssh_config_get_host_config;
+use crate::config::LogLevel;
 use crate::credentials::{AuthMethod, CredentialKey, CredentialManager};
 use crate::debug_log::{self, DebugEntry};
 use crate::env::{EnvService, EnvironmentSource};
+use crate::kube::session_store::{SessionHandle, SessionStore};
 use crate::kube::{resource_get, KubeClientStore};
 use serde::Deserialize;
 #[cfg(unix)]
@@ -37,7 +37,10 @@ fn host_shell_detail(meta: &HostShellLogMeta) -> String {
         format!("stream_id={}", meta.stream_id),
         format!("source={}", meta.source),
         format!("bootstrap_step_count={}", meta.bootstrap_step_count),
-        format!("has_pod_debug={}", if meta.has_pod_debug { "true" } else { "false" }),
+        format!(
+            "has_pod_debug={}",
+            if meta.has_pod_debug { "true" } else { "false" }
+        ),
     ];
     if let Some(kind) = meta.bootstrap_kind.as_ref().filter(|v| !v.is_empty()) {
         detail.push(format!("bootstrap_kind={}", kind));
@@ -51,7 +54,13 @@ fn host_shell_detail(meta: &HostShellLogMeta) -> String {
     detail.join(" ")
 }
 
-fn log_host_shell(level: LogLevel, env_id: &str, result: &str, meta: &HostShellLogMeta, error: Option<&str>) {
+fn log_host_shell(
+    level: LogLevel,
+    env_id: &str,
+    result: &str,
+    meta: &HostShellLogMeta,
+    error: Option<&str>,
+) {
     debug_log::log_debug_entry(DebugEntry {
         ts: chrono::Utc::now().to_rfc3339(),
         level: level.as_str().to_string(),
@@ -234,7 +243,10 @@ fn resolve_pod_container_id(
     for field in ["containerStatuses", "initContainerStatuses"] {
         if let Some(items) = status.get(field).and_then(|v| v.as_array()) {
             for item in items {
-                let name = item.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+                let name = item
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
                 if name != container_name {
                     continue;
                 }
@@ -244,7 +256,10 @@ fn resolve_pod_container_id(
                     .unwrap_or_default()
                     .trim();
                 if raw_id.is_empty() {
-                    return Err(format!("容器 {} 尚未运行，无法进入调试环境", container_name));
+                    return Err(format!(
+                        "容器 {} 尚未运行，无法进入调试环境",
+                        container_name
+                    ));
                 }
                 let normalized = raw_id
                     .split_once("://")
@@ -269,18 +284,17 @@ async fn resolve_pod_debug_command(
     target: &PodDebugTargetRequest,
 ) -> Result<String, String> {
     let client = kube_store.get_or_build(env).await.map_err(err_str)?;
-    let pod_value = resource_get::get_resource_value(
-        &client,
-        "Pod",
-        &target.pod_name,
-        Some(&target.namespace),
-    )
-    .await
-    .map_err(err_str)?;
+    let pod_value =
+        resource_get::get_resource_value(&client, "Pod", &target.pod_name, Some(&target.namespace))
+            .await
+            .map_err(err_str)?;
     let container_id = if target.pid.is_some() {
         None
     } else {
-        Some(resolve_pod_container_id(&pod_value, target.container.trim())?)
+        Some(resolve_pod_container_id(
+            &pod_value,
+            target.container.trim(),
+        )?)
     };
     Ok(build_pod_nsenter_command(
         container_id.as_deref(),
@@ -302,47 +316,48 @@ export LANG=\"${LANG:-C.UTF-8}\"; \
 export LC_CTYPE=\"${LC_CTYPE:-$LANG}\"; \
 if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi";
 
-    let compiled = steps
-        .iter()
-        .rev()
-        .try_fold(final_command.map(|item| item.to_string()), |next, step| {
-        let user = step.user.trim();
-        if user.is_empty() {
-            return Err("节点终端步骤缺少 user".to_string());
-        }
-        let command = match step.r#type {
-            NodeTerminalStepType::Ssh => {
-                let ssh_cmd = format!("exec ssh {}@{}", user, host);
-                if let Some(next_cmd) = next {
-                    format!("ssh {}@{} -t {}", user, host, shell_single_quote(&next_cmd))
-                } else {
-                    ssh_cmd
+    let compiled =
+        steps
+            .iter()
+            .rev()
+            .try_fold(final_command.map(|item| item.to_string()), |next, step| {
+                let user = step.user.trim();
+                if user.is_empty() {
+                    return Err("节点终端步骤缺少 user".to_string());
                 }
-            }
-            NodeTerminalStepType::SwitchUser => {
-                let sudo_prompt = shell_single_quote(NODE_TERMINAL_SUDO_PROMPT);
-                if let Some(next_cmd) = next {
-                    format!(
-                        "sudo -S -p {} su - {} -c {}",
-                        sudo_prompt,
-                        user,
-                        shell_single_quote(&next_cmd)
-                    )
-                } else {
-                    format!("sudo -S -p {} su - {}", sudo_prompt, user)
-                }
-            }
-            NodeTerminalStepType::KindNodeExec => {
-                let base = format!("docker exec -it --user {} {}", user, host);
-                if let Some(next_cmd) = next {
-                    format!("{} sh -lc {}", base, shell_single_quote(&next_cmd))
-                } else {
-                    format!("{} sh -lc {}", base, shell_single_quote(interactive_shell))
-                }
-            }
-        };
-            Ok::<Option<String>, String>(Some(command))
-        })?;
+                let command = match step.r#type {
+                    NodeTerminalStepType::Ssh => {
+                        let ssh_cmd = format!("exec ssh {}@{}", user, host);
+                        if let Some(next_cmd) = next {
+                            format!("ssh {}@{} -t {}", user, host, shell_single_quote(&next_cmd))
+                        } else {
+                            ssh_cmd
+                        }
+                    }
+                    NodeTerminalStepType::SwitchUser => {
+                        let sudo_prompt = shell_single_quote(NODE_TERMINAL_SUDO_PROMPT);
+                        if let Some(next_cmd) = next {
+                            format!(
+                                "sudo -S -p {} su - {} -c {}",
+                                sudo_prompt,
+                                user,
+                                shell_single_quote(&next_cmd)
+                            )
+                        } else {
+                            format!("sudo -S -p {} su - {}", sudo_prompt, user)
+                        }
+                    }
+                    NodeTerminalStepType::KindNodeExec => {
+                        let base = format!("docker exec -it --user {} {}", user, host);
+                        if let Some(next_cmd) = next {
+                            format!("{} sh -lc {}", base, shell_single_quote(&next_cmd))
+                        } else {
+                            format!("{} sh -lc {}", base, shell_single_quote(interactive_shell))
+                        }
+                    }
+                };
+                Ok::<Option<String>, String>(Some(command))
+            })?;
 
     let needs_password = steps
         .iter()
@@ -360,9 +375,15 @@ pub struct HostShellSession {
 }
 
 impl SessionHandle for HostShellSession {
-    fn abort_handle(&self) -> &tokio::task::AbortHandle { &self.abort_handle }
-    fn stdin_tx(&self) -> &mpsc::Sender<Vec<u8>> { &self.stdin_tx }
-    fn resize_tx(&self) -> Option<&mpsc::Sender<(u16, u16)>> { self.resize_tx.as_ref() }
+    fn abort_handle(&self) -> &tokio::task::AbortHandle {
+        &self.abort_handle
+    }
+    fn stdin_tx(&self) -> &mpsc::Sender<Vec<u8>> {
+        &self.stdin_tx
+    }
+    fn resize_tx(&self) -> Option<&mpsc::Sender<(u16, u16)>> {
+        self.resize_tx.as_ref()
+    }
 }
 
 pub type HostShellStore = SessionStore<HostShellSession>;
@@ -431,7 +452,10 @@ fn create_pty(cols: u16, rows: u16) -> Result<(std::fs::File, std::fs::File), St
         )
     };
     if rc != 0 {
-        return Err(format!("openpty failed: {}", std::io::Error::last_os_error()));
+        return Err(format!(
+            "openpty failed: {}",
+            std::io::Error::last_os_error()
+        ));
     }
 
     let master = unsafe { std::fs::File::from_raw_fd(master_fd) };
@@ -486,7 +510,10 @@ fn resize_pty(file: &std::fs::File, cols: u16, rows: u16) -> Result<(), String> 
 
     let rc = unsafe { libc::ioctl(file.as_raw_fd(), libc::TIOCSWINSZ, &winsize) };
     if rc == -1 {
-        return Err(format!("resize pty failed: {}", std::io::Error::last_os_error()));
+        return Err(format!(
+            "resize pty failed: {}",
+            std::io::Error::last_os_error()
+        ));
     }
     Ok(())
 }
@@ -540,7 +567,15 @@ if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi";
             cmd.args(["-o", "ConnectTimeout=10", "-tt", ssh_host, remote_cmd]);
         }
         AuthMethod::Auto | AuthMethod::PublicKey => {
-            cmd.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-tt", ssh_host, remote_cmd]);
+            cmd.args([
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=10",
+                "-tt",
+                ssh_host,
+                remote_cmd,
+            ]);
         }
     }
     Ok((cmd, None))
@@ -612,10 +647,13 @@ async fn run_host_shell_process(
     let pty = match create_pty(80, 24) {
         Ok(pair) => Some(pair),
         Err(e) => {
-            let _ = app.emit(HOST_SHELL_END_EVENT, serde_json::json!({
-                "stream_id": stream_id,
-                "error": format!("无法创建终端 PTY: {}", e)
-            }));
+            let _ = app.emit(
+                HOST_SHELL_END_EVENT,
+                serde_json::json!({
+                    "stream_id": stream_id,
+                    "error": format!("无法创建终端 PTY: {}", e)
+                }),
+            );
             return;
         }
     };
@@ -625,10 +663,13 @@ async fn run_host_shell_process(
 
     #[cfg(unix)]
     if let Err(e) = configure_child_pty(&mut cmd, slave_file) {
-        let _ = app.emit(HOST_SHELL_END_EVENT, serde_json::json!({
-            "stream_id": stream_id,
-            "error": format!("无法配置终端 PTY: {}", e)
-        }));
+        let _ = app.emit(
+            HOST_SHELL_END_EVENT,
+            serde_json::json!({
+                "stream_id": stream_id,
+                "error": format!("无法配置终端 PTY: {}", e)
+            }),
+        );
         return;
     }
 
@@ -648,10 +689,13 @@ async fn run_host_shell_process(
             let resize_file = match master_file.try_clone() {
                 Ok(file) => file,
                 Err(e) => {
-                    let _ = app.emit(HOST_SHELL_END_EVENT, serde_json::json!({
-                        "stream_id": stream_id,
-                        "error": format!("无法克隆 PTY resize 端: {}", e)
-                    }));
+                    let _ = app.emit(
+                        HOST_SHELL_END_EVENT,
+                        serde_json::json!({
+                            "stream_id": stream_id,
+                            "error": format!("无法克隆 PTY resize 端: {}", e)
+                        }),
+                    );
                     return;
                 }
             };
@@ -660,10 +704,13 @@ async fn run_host_shell_process(
             let mut writer = match master_file.try_clone() {
                 Ok(file) => tokio::fs::File::from_std(file),
                 Err(e) => {
-                    let _ = app.emit(HOST_SHELL_END_EVENT, serde_json::json!({
-                        "stream_id": stream_id,
-                        "error": format!("无法克隆 PTY 写入端: {}", e)
-                    }));
+                    let _ = app.emit(
+                        HOST_SHELL_END_EVENT,
+                        serde_json::json!({
+                            "stream_id": stream_id,
+                            "error": format!("无法克隆 PTY 写入端: {}", e)
+                        }),
+                    );
                     return;
                 }
             };
@@ -675,10 +722,13 @@ async fn run_host_shell_process(
             let mut stdin = match child.stdin.take() {
                 Some(v) => v,
                 None => {
-                    let _ = app.emit(HOST_SHELL_END_EVENT, serde_json::json!({
-                        "stream_id": stream_id,
-                        "error": "无法获取主机 Shell stdin"
-                    }));
+                    let _ = app.emit(
+                        HOST_SHELL_END_EVENT,
+                        serde_json::json!({
+                            "stream_id": stream_id,
+                            "error": "无法获取主机 Shell stdin"
+                        }),
+                    );
                     return;
                 }
             };
@@ -931,7 +981,9 @@ pub async fn host_shell_start(
         EnvironmentSource::LocalKubeconfig => {
             #[cfg(windows)]
             {
-                return Err("Windows 仅支持通过 SSH 打开主机 Shell，不支持本地环境 Shell。".to_string());
+                return Err(
+                    "Windows 仅支持通过 SSH 打开主机 Shell，不支持本地环境 Shell。".to_string(),
+                );
             }
 
             let cmd = if let Some(command) = bootstrap_command {

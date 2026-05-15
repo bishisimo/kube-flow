@@ -2,7 +2,8 @@
 
 use super::super::kube_command_context::{self, CommandResult};
 use crate::kube::{
-    get_pod_logs, run_pod_exec, run_pod_log_stream, KubeClientStore, PodExecStore, PodLogStreamStore,
+    get_pod_logs, run_pod_exec, run_pod_log_stream, KubeClientStore, PodExecStore,
+    PodLogStreamStore,
 };
 use std::sync::Arc;
 use tauri::{AppHandle, State};
@@ -41,7 +42,9 @@ pub async fn kube_pod_log_stream_start(
         )
         .await
     });
-    stream_store.insert(stream_id.clone(), task.abort_handle()).await;
+    stream_store
+        .insert(stream_id.clone(), task.abort_handle())
+        .await;
     Ok(stream_id)
 }
 
@@ -96,7 +99,16 @@ pub async fn kube_pod_exec_start(
     let stream_id_clone = stream_id.clone();
     let exec_store_clone = exec_store.inner().clone();
     tokio::spawn(async move {
-        run_pod_exec(app, stream_id_clone, client, namespace, pod_name, container, exec_store_clone).await
+        run_pod_exec(
+            app,
+            stream_id_clone,
+            client,
+            namespace,
+            pod_name,
+            container,
+            exec_store_clone,
+        )
+        .await
     });
     Ok(stream_id)
 }

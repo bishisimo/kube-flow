@@ -64,15 +64,11 @@ async fn resolve_api(
     gvk: &GroupVersionKind,
     namespace: Option<&str>,
 ) -> Result<(Api<DynamicObject>, ApiResource), ResourceError> {
-    let (ar, caps): (ApiResource, ApiCapabilities) = discovery::pinned_kind(client, gvk)
-        .await
-        .map_err(|e| {
+    let (ar, caps): (ApiResource, ApiCapabilities) =
+        discovery::pinned_kind(client, gvk).await.map_err(|e| {
             ResourceError::Serialize(format!(
                 "无法解析资源类型 {}/{} {}：{}",
-                gvk.group,
-                gvk.version,
-                gvk.kind,
-                e
+                gvk.group, gvk.version, gvk.kind, e
             ))
         })?;
 
@@ -105,7 +101,12 @@ async fn create_or_replace_resource(
     name: &str,
     desired: DynamicObject,
 ) -> Result<(), ResourceError> {
-    if api.get_opt(name).await.map_err(ResourceError::Kube)?.is_some() {
+    if api
+        .get_opt(name)
+        .await
+        .map_err(ResourceError::Kube)?
+        .is_some()
+    {
         replace_existing_resource(api, name, desired).await
     } else {
         api.create(&PostParams::default(), &desired)
@@ -152,7 +153,9 @@ pub async fn deploy_resource_yaml(
     let (api, _) = resolve_api(client, &gvk, namespace.as_deref()).await?;
 
     match strategy {
-        ResourceDeployStrategy::CreateReplace => create_or_replace_resource(&api, &name, desired).await,
+        ResourceDeployStrategy::CreateReplace => {
+            create_or_replace_resource(&api, &name, desired).await
+        }
         ResourceDeployStrategy::Apply => server_side_apply_resource(&api, &name, &desired).await,
     }
 }

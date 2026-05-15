@@ -3,8 +3,10 @@
 //! - ServiceAccount → ClusterRoleBinding（动态，list ClusterRoleBinding，按 subjects 过滤）
 //! 产生的边由 BFS 加入图后，rbac_refs.rs 会继续展开 Binding → Role/ClusterRole。
 
-use crate::kube::resource_graph::{extractor::RelationExtractor, RelationType, ResourceEdge, ResourceRef};
-use crate::kube::resources::{list_role_bindings, list_cluster_role_bindings};
+use crate::kube::resource_graph::{
+    extractor::RelationExtractor, RelationType, ResourceEdge, ResourceRef,
+};
+use crate::kube::resources::{list_cluster_role_bindings, list_role_bindings};
 use async_trait::async_trait;
 use kube::Client;
 
@@ -16,7 +18,11 @@ impl RelationExtractor for SaBindingsReverseExtractor {
         &["ServiceAccount"]
     }
 
-    fn extract_static(&self, _node_ref: &ResourceRef, _value: &serde_json::Value) -> Vec<ResourceEdge> {
+    fn extract_static(
+        &self,
+        _node_ref: &ResourceRef,
+        _value: &serde_json::Value,
+    ) -> Vec<ResourceEdge> {
         vec![]
     }
 
@@ -29,7 +35,11 @@ impl RelationExtractor for SaBindingsReverseExtractor {
     ) -> Vec<ResourceEdge> {
         let mut edges = Vec::new();
         let sa_name = &node_ref.name;
-        let ns = node_ref.namespace.as_deref().or(namespace).unwrap_or("default");
+        let ns = node_ref
+            .namespace
+            .as_deref()
+            .or(namespace)
+            .unwrap_or("default");
 
         if let Ok(rbs) = list_role_bindings(client, Some(ns), None).await {
             for rb in rbs {
@@ -45,7 +55,8 @@ impl RelationExtractor for SaBindingsReverseExtractor {
                         from: node_ref.clone(),
                         to: ResourceRef::new("RoleBinding", Some(ns.to_string()), &rb.name),
                         relation_type: RelationType::RoleRef,
-                        label_selector: None, to_display: None,
+                        label_selector: None,
+                        to_display: None,
                     });
                 }
             }
@@ -65,7 +76,8 @@ impl RelationExtractor for SaBindingsReverseExtractor {
                         from: node_ref.clone(),
                         to: ResourceRef::new("ClusterRoleBinding", None, &crb.name),
                         relation_type: RelationType::RoleRef,
-                        label_selector: None, to_display: None,
+                        label_selector: None,
+                        to_display: None,
                     });
                 }
             }

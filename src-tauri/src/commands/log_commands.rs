@@ -24,7 +24,9 @@ pub fn log_set_level(level: String) -> CommandResult<()> {
 #[tauri::command]
 pub fn log_read(file_name: Option<String>) -> CommandResult<String> {
     let path = match file_name.as_deref() {
-        Some(name) => resolve_debug_log_file_path(name).ok_or_else(|| "invalid log file name".to_string())?,
+        Some(name) => {
+            resolve_debug_log_file_path(name).ok_or_else(|| "invalid log file name".to_string())?
+        }
         None => current_debug_log_path().ok_or_else(|| "app data dir not available".to_string())?,
     };
     let content = std::fs::read_to_string(&path).unwrap_or_default();
@@ -63,7 +65,11 @@ pub fn log_get_display_settings() -> CommandResult<(String, String, u32)> {
 }
 
 #[tauri::command]
-pub fn log_set_display_settings(order: String, format: String, tail_lines: u32) -> CommandResult<()> {
+pub fn log_set_display_settings(
+    order: String,
+    format: String,
+    tail_lines: u32,
+) -> CommandResult<()> {
     let mut config = load_app_settings()?;
     config.set_log_display_order(LogDisplayOrder::from_str(&order));
     config.set_log_display_format(LogDisplayFormat::from_str(&format));
@@ -84,7 +90,8 @@ pub fn log_clear() -> CommandResult<()> {
 
 #[tauri::command]
 pub fn log_delete(file_name: String) -> CommandResult<()> {
-    let path = resolve_debug_log_file_path(&file_name).ok_or_else(|| "invalid log file name".to_string())?;
+    let path = resolve_debug_log_file_path(&file_name)
+        .ok_or_else(|| "invalid log file name".to_string())?;
     let current_path = current_debug_log_path();
     if current_path.as_ref() == Some(&path) {
         return Err("cannot delete current startup log file".to_string());

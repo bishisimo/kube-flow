@@ -28,11 +28,11 @@ pub use rbac::*;
 pub use storage::*;
 pub use workloads::*;
 
+use crate::kube::resource_graph::selector_to_string;
 use chrono::{DateTime, Utc};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::api::ListParams;
-use crate::kube::resource_graph::selector_to_string;
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector;
 
 #[path = "../workload_pod_rollup.rs"]
 mod workload_pod_rollup;
@@ -146,7 +146,10 @@ pub(crate) use list_simple_cluster;
 
 /// 命名空间级简单资源的公共构造 trait。
 pub(crate) trait SimpleNamespacedItem: Sized {
-    fn from_meta(meta: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta, default_ns: &str) -> Self;
+    fn from_meta(
+        meta: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta,
+        default_ns: &str,
+    ) -> Self;
 }
 
 /// 集群级简单资源的公共构造 trait。

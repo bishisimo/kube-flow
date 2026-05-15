@@ -13,8 +13,7 @@ pub struct SshAskpassGuard;
 impl SshAskpassGuard {
     pub fn new(password: &str) -> Result<Self, std::io::Error> {
         use std::os::unix::fs::PermissionsExt;
-        let path = std::env::temp_dir()
-            .join(format!("kf-askpass-{}.sh", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("kf-askpass-{}.sh", uuid::Uuid::new_v4()));
         // 单引号转义：' → '\''
         let escaped = password.replace('\'', "'\\''");
         let content = format!("#!/bin/sh\nprintf '%s' '{}'\n", escaped);

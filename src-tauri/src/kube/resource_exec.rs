@@ -1,17 +1,17 @@
 //! Pod Exec：在 Pod 容器内执行交互式 shell，支持 TTY、stdin/stdout、resize。
 //! 通过 Tauri 事件推送 stdout，通过 invoke 接收 stdin 与 resize。
 
-use std::sync::Arc;
 use crate::config::LogLevel;
 use crate::debug_log::{self, DebugEntry};
+use crate::kube::session_store::{SessionHandle, SessionStore};
 use futures::SinkExt;
+use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, AttachParams};
 use kube::Client;
-use k8s_openapi::api::core::v1::Pod;
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
-use crate::kube::session_store::{SessionHandle, SessionStore};
 
 const POD_EXEC_CHUNK_EVENT: &str = "pod-exec-chunk";
 const POD_EXEC_END_EVENT: &str = "pod-exec-end";
@@ -65,9 +65,15 @@ pub struct PodExecSession {
 }
 
 impl SessionHandle for PodExecSession {
-    fn abort_handle(&self) -> &tokio::task::AbortHandle { &self.abort_handle }
-    fn stdin_tx(&self) -> &mpsc::Sender<Vec<u8>> { &self.stdin_tx }
-    fn resize_tx(&self) -> Option<&mpsc::Sender<(u16, u16)>> { self.resize_tx.as_ref() }
+    fn abort_handle(&self) -> &tokio::task::AbortHandle {
+        &self.abort_handle
+    }
+    fn stdin_tx(&self) -> &mpsc::Sender<Vec<u8>> {
+        &self.stdin_tx
+    }
+    fn resize_tx(&self) -> Option<&mpsc::Sender<(u16, u16)>> {
+        self.resize_tx.as_ref()
+    }
 }
 
 /// 按 stream_id 存储活跃的 Pod exec 会话。

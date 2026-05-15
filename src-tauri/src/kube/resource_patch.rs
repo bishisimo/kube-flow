@@ -2,9 +2,9 @@
 
 use crate::kube::resource_get;
 use crate::kube::resources::ResourceError;
+use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, StatefulSet};
 use kube::api::{Api, Patch, PatchParams};
 use kube::Client;
-use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, StatefulSet};
 use serde::Deserialize;
 
 const IMAGE_PATCH_KINDS: &[&str] = &["Deployment", "StatefulSet", "DaemonSet"];
@@ -33,7 +33,9 @@ pub async fn patch_container_images(
         return Err(ResourceError::UnsupportedKind(kind.to_string()));
     }
     if patches.is_empty() {
-        return Err(ResourceError::Serialize("patches cannot be empty".to_string()));
+        return Err(ResourceError::Serialize(
+            "patches cannot be empty".to_string(),
+        ));
     }
 
     let yaml_str = resource_get::get_resource_yaml(client, kind, name, namespace).await?;
@@ -46,7 +48,9 @@ pub async fn patch_container_images(
         .and_then(|t| t.get("spec"))
         .and_then(|s| s.get("containers"))
         .and_then(|c| c.as_array())
-        .ok_or_else(|| ResourceError::Serialize("missing spec.template.spec.containers".to_string()))?;
+        .ok_or_else(|| {
+            ResourceError::Serialize("missing spec.template.spec.containers".to_string())
+        })?;
 
     let patch_containers: Vec<serde_json::Value> = patches
         .iter()
@@ -57,7 +61,10 @@ pub async fn patch_container_images(
                     .and_then(|v| v.as_str())
                     == Some(p.container_name.as_str())
             }) {
-                return Err(ResourceError::Serialize(format!("container '{}' not found", p.container_name)));
+                return Err(ResourceError::Serialize(format!(
+                    "container '{}' not found",
+                    p.container_name
+                )));
             }
             Ok(serde_json::json!({
                 "name": p.container_name,

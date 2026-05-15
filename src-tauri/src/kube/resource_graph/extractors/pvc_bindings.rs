@@ -4,7 +4,9 @@
 //! - StatefulSet volumeClaimTemplates → PVC（动态，需要 list PVC）
 //! - Workload ← PVC 反向（workload 挂载了哪些 PVC 由 WorkloadMountsExtractor 处理）
 
-use crate::kube::resource_graph::{extractor::RelationExtractor, RelationType, ResourceEdge, ResourceRef};
+use crate::kube::resource_graph::{
+    extractor::RelationExtractor, RelationType, ResourceEdge, ResourceRef,
+};
 use crate::kube::resources::list_persistent_volume_claims;
 use async_trait::async_trait;
 use kube::Client;
@@ -16,9 +18,16 @@ fn statefulset_volume_claim_template_names(value: &serde_json::Value) -> Vec<Str
         .get("spec")
         .and_then(|v| v.get("volumeClaimTemplates"))
         .and_then(|v| v.as_array());
-    let Some(templates) = templates else { return vec![] };
-    templates.iter()
-        .filter_map(|t| t.get("metadata").and_then(|m| m.get("name")).and_then(|v| v.as_str()))
+    let Some(templates) = templates else {
+        return vec![];
+    };
+    templates
+        .iter()
+        .filter_map(|t| {
+            t.get("metadata")
+                .and_then(|m| m.get("name"))
+                .and_then(|v| v.as_str())
+        })
         .filter(|n| !n.is_empty())
         .map(String::from)
         .collect()
@@ -30,8 +39,14 @@ impl RelationExtractor for PvcBindingsExtractor {
         &["PersistentVolumeClaim", "StatefulSet"]
     }
 
-    fn extract_static(&self, node_ref: &ResourceRef, value: &serde_json::Value) -> Vec<ResourceEdge> {
-        if node_ref.kind != "PersistentVolumeClaim" { return vec![]; }
+    fn extract_static(
+        &self,
+        node_ref: &ResourceRef,
+        value: &serde_json::Value,
+    ) -> Vec<ResourceEdge> {
+        if node_ref.kind != "PersistentVolumeClaim" {
+            return vec![];
+        }
 
         let mut edges = Vec::new();
         let spec = match value.get("spec").and_then(|v| v.as_object()) {
@@ -45,7 +60,8 @@ impl RelationExtractor for PvcBindingsExtractor {
                     from: node_ref.clone(),
                     to: ResourceRef::new("PersistentVolume", None, pv),
                     relation_type: RelationType::BoundVolume,
-                    label_selector: None, to_display: None,
+                    label_selector: None,
+                    to_display: None,
                 });
             }
         }
@@ -55,7 +71,8 @@ impl RelationExtractor for PvcBindingsExtractor {
                     from: node_ref.clone(),
                     to: ResourceRef::new("StorageClass", None, sc),
                     relation_type: RelationType::StorageClass,
-                    label_selector: None, to_display: None,
+                    label_selector: None,
+                    to_display: None,
                 });
             }
         }
@@ -71,10 +88,14 @@ impl RelationExtractor for PvcBindingsExtractor {
         client: &Client,
         namespace: Option<&str>,
     ) -> Vec<ResourceEdge> {
-        if node_ref.kind != "StatefulSet" { return vec![]; }
+        if node_ref.kind != "StatefulSet" {
+            return vec![];
+        }
 
         let template_names = statefulset_volume_claim_template_names(value);
-        if template_names.is_empty() { return vec![]; }
+        if template_names.is_empty() {
+            return vec![];
+        }
 
         let ns = namespace.unwrap_or("default");
         let pvcs = match list_persistent_volume_claims(client, Some(ns), None).await {
@@ -84,15 +105,20 @@ impl RelationExtractor for PvcBindingsExtractor {
 
         pvcs.iter()
             .filter(|pvc| {
-                template_names.iter().any(|t| {
-                    pvc.name.starts_with(&format!("{}-{}-", t, node_ref.name))
-                })
+                template_names
+                    .iter()
+                    .any(|t| pvc.name.starts_with(&format!("{}-{}-", t, node_ref.name)))
             })
             .map(|pvc| ResourceEdge {
                 from: node_ref.clone(),
-                to: ResourceRef::new("PersistentVolumeClaim", node_ref.namespace.clone(), &pvc.name),
+                to: ResourceRef::new(
+                    "PersistentVolumeClaim",
+                    node_ref.namespace.clone(),
+                    &pvc.name,
+                ),
                 relation_type: RelationType::Volume,
-                label_selector: None, to_display: None,
+                label_selector: None,
+                to_display: None,
             })
             .collect()
     }

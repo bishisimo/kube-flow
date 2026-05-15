@@ -40,14 +40,22 @@ impl<S: SessionHandle> SessionStore<S> {
     /// 向指定会话发送 stdin 数据。
     pub async fn send_stdin(&self, stream_id: &str, data: Vec<u8>) -> Result<(), String> {
         let guard = self.sessions.read().await;
-        let session = guard.get(stream_id).ok_or_else(|| "session not found".to_string())?;
-        session.stdin_tx().send(data).await.map_err(|e| e.to_string())
+        let session = guard
+            .get(stream_id)
+            .ok_or_else(|| "session not found".to_string())?;
+        session
+            .stdin_tx()
+            .send(data)
+            .await
+            .map_err(|e| e.to_string())
     }
 
     /// 向指定会话发送终端 resize 事件；会话无 TTY 时返回 Err。
     pub async fn send_resize(&self, stream_id: &str, cols: u16, rows: u16) -> Result<(), String> {
         let guard = self.sessions.read().await;
-        let session = guard.get(stream_id).ok_or_else(|| "session not found".to_string())?;
+        let session = guard
+            .get(stream_id)
+            .ok_or_else(|| "session not found".to_string())?;
         if let Some(tx) = session.resize_tx() {
             tx.send((cols, rows)).await.map_err(|e| e.to_string())
         } else {

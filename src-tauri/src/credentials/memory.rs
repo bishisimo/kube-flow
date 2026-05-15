@@ -11,19 +11,31 @@ pub struct MemoryCache {
 
 impl MemoryCache {
     pub fn new() -> Self {
-        Self { store: Mutex::new(HashMap::new()) }
+        Self {
+            store: Mutex::new(HashMap::new()),
+        }
     }
 
     pub fn get(&self, key: &CredentialKey) -> Option<String> {
-        self.store.lock().unwrap_or_else(|p| p.into_inner()).get(key).cloned()
+        self.store
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(key)
+            .cloned()
     }
 
     pub fn set(&self, key: CredentialKey, password: String) {
-        self.store.lock().unwrap_or_else(|p| p.into_inner()).insert(key, password);
+        self.store
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(key, password);
     }
 
     pub fn remove(&self, key: &CredentialKey) {
-        self.store.lock().unwrap_or_else(|p| p.into_inner()).remove(key);
+        self.store
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(key);
     }
 
     pub fn clear(&self) {

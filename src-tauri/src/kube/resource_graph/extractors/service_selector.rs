@@ -16,7 +16,11 @@ impl RelationExtractor for ServiceSelectorExtractor {
         &["Service"]
     }
 
-    fn extract_static(&self, _node_ref: &ResourceRef, _value: &serde_json::Value) -> Vec<ResourceEdge> {
+    fn extract_static(
+        &self,
+        _node_ref: &ResourceRef,
+        _value: &serde_json::Value,
+    ) -> Vec<ResourceEdge> {
         vec![]
     }
 
@@ -27,7 +31,8 @@ impl RelationExtractor for ServiceSelectorExtractor {
         client: &Client,
         namespace: Option<&str>,
     ) -> Vec<ResourceEdge> {
-        let sel_map = match value.get("spec")
+        let sel_map = match value
+            .get("spec")
             .and_then(|v| v.get("selector"))
             .and_then(|v| v.as_object())
         {
@@ -39,7 +44,10 @@ impl RelationExtractor for ServiceSelectorExtractor {
             None => return vec![],
         };
 
-        let count = list_pods(client, namespace, Some(&ls)).await.map(|v| v.len()).unwrap_or(0);
+        let count = list_pods(client, namespace, Some(&ls))
+            .await
+            .map(|v| v.len())
+            .unwrap_or(0);
         let set_id = set_id_for_label_aggregate("Pod", node_ref.namespace.as_deref(), &ls);
 
         vec![ResourceEdge {

@@ -17,7 +17,11 @@ impl RelationExtractor for WorkloadSelectorExtractor {
         &["Deployment", "StatefulSet", "DaemonSet"]
     }
 
-    fn extract_static(&self, _node_ref: &ResourceRef, _value: &serde_json::Value) -> Vec<ResourceEdge> {
+    fn extract_static(
+        &self,
+        _node_ref: &ResourceRef,
+        _value: &serde_json::Value,
+    ) -> Vec<ResourceEdge> {
         vec![]
     }
 
@@ -37,7 +41,10 @@ impl RelationExtractor for WorkloadSelectorExtractor {
             None => return vec![],
         };
 
-        let count = list_pods(client, namespace, Some(&ls)).await.map(|v| v.len()).unwrap_or(0);
+        let count = list_pods(client, namespace, Some(&ls))
+            .await
+            .map(|v| v.len())
+            .unwrap_or(0);
         let set_id = set_id_for_label_aggregate("Pod", node_ref.namespace.as_deref(), &ls);
 
         vec![ResourceEdge {

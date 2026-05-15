@@ -62,13 +62,17 @@ impl ResourceAliasCacheStore {
     }
 
     /// 遍历 /api 与 /apis 下各版本的 APIResourceList，建立别名索引与搜索目录。
-    pub async fn refresh(&self, env_id: &str, client: &Client) -> Result<ResourceAliasRefreshResult, kube::Error> {
+    pub async fn refresh(
+        &self,
+        env_id: &str,
+        client: &Client,
+    ) -> Result<ResourceAliasRefreshResult, kube::Error> {
         let (map, catalog, resource_count) = build_alias_map(client).await?;
         let alias_key_count = map.len();
-        self.inner.lock().await.insert(
-            env_id.to_string(),
-            EnvAliasCache { map, catalog },
-        );
+        self.inner
+            .lock()
+            .await
+            .insert(env_id.to_string(), EnvAliasCache { map, catalog });
         Ok(ResourceAliasRefreshResult {
             resource_count,
             alias_key_count,
@@ -95,7 +99,11 @@ impl ResourceAliasCacheStore {
             return Ok(vec![]);
         }
         if let Some(pg) = preferred_group.map(str::trim).filter(|s| !s.is_empty()) {
-            let filtered: Vec<_> = candidates.iter().filter(|c| c.group == pg).cloned().collect();
+            let filtered: Vec<_> = candidates
+                .iter()
+                .filter(|c| c.group == pg)
+                .cloned()
+                .collect();
             if !filtered.is_empty() {
                 candidates = filtered;
             }
@@ -104,7 +112,12 @@ impl ResourceAliasCacheStore {
     }
 
     /// 按查询串搜索扩展资源类型，返回最多 `limit` 条（相关度降序）。
-    pub async fn search(&self, env_id: &str, query: &str, limit: usize) -> Result<Vec<ResolvedAliasTarget>, String> {
+    pub async fn search(
+        &self,
+        env_id: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<ResolvedAliasTarget>, String> {
         let q = query.trim();
         if q.is_empty() {
             return Ok(vec![]);
@@ -159,27 +172,39 @@ fn score_match(char_count: usize, qc: &str, entry: &CatalogEntry) -> Option<i32>
     let av_l = entry.target.api_version.to_lowercase();
     let mut best: i32 = 0;
 
-    if kind_l.contains(qc) {
-        let mut s = 120;
-        if kind_l.starts_with(qc) {
-            s += 40;
-        }
-        best = best.max(s);
+    if kind_l == qc {
+        best = best.max(300);
+    } else if kind_l.starts_with(qc) {
+        best = best.max(240);
+    } else if kind_l.contains(qc) {
+        best = best.max(180);
     } else if subsequence_match(qc, &kind_l) {
         best = best.max(90);
     }
 
-    if plural_l.contains(qc) {
+    if plural_l == qc {
+        best = best.max(260);
+    } else if plural_l.starts_with(qc) {
+        best = best.max(220);
+    } else if plural_l.contains(qc) {
         best = best.max(100);
     }
     if let Some(sg) = entry.singular.as_ref().map(|s| s.to_lowercase()) {
-        if sg.contains(qc) {
+        if sg == qc {
+            best = best.max(250);
+        } else if sg.starts_with(qc) {
+            best = best.max(210);
+        } else if sg.contains(qc) {
             best = best.max(95);
         }
     }
     for sn in &entry.short_names {
         let sl = sn.to_lowercase();
-        if sl.contains(qc) {
+        if sl == qc {
+            best = best.max(245);
+        } else if sl.starts_with(qc) {
+            best = best.max(205);
+        } else if sl.contains(qc) {
             best = best.max(88);
         }
     }
@@ -190,7 +215,11 @@ fn score_match(char_count: usize, qc: &str, entry: &CatalogEntry) -> Option<i32>
         best = best.max(55);
     }
 
-    if best > 0 { Some(best) } else { None }
+    if best > 0 {
+        Some(best)
+    } else {
+        None
+    }
 }
 
 fn subsequence_match(q: &str, text: &str) -> bool {
@@ -213,7 +242,11 @@ fn subsequence_match(q: &str, text: &str) -> bool {
     true
 }
 
-fn push_target(map: &mut HashMap<String, Vec<ResolvedAliasTarget>>, key: &str, t: ResolvedAliasTarget) {
+fn push_target(
+    map: &mut HashMap<String, Vec<ResolvedAliasTarget>>,
+    key: &str,
+    t: ResolvedAliasTarget,
+) {
     let key = key.to_lowercase();
     let v = map.entry(key).or_default();
     if !v.iter().any(|x| x == &t) {
@@ -227,7 +260,10 @@ fn catalog_merge(
     singular: Option<String>,
     short_names: &[String],
 ) {
-    let key = format!("{}\x1f{}\x1f{}", target.api_version, target.kind, target.plural);
+    let key = format!(
+        "{}\x1f{}\x1f{}",
+        target.api_version, target.kind, target.plural
+    );
     let entry = catalog_map.entry(key).or_insert_with(|| CatalogEntry {
         target: target.clone(),
         short_names: Vec::new(),
@@ -299,7 +335,14 @@ fn index_resource(
 
 async fn build_alias_map(
     client: &Client,
-) -> Result<(HashMap<String, Vec<ResolvedAliasTarget>>, Vec<CatalogEntry>, usize), kube::Error> {
+) -> Result<
+    (
+        HashMap<String, Vec<ResolvedAliasTarget>>,
+        Vec<CatalogEntry>,
+        usize,
+    ),
+    kube::Error,
+> {
     let mut map: HashMap<String, Vec<ResolvedAliasTarget>> = HashMap::new();
     let mut catalog_map: HashMap<String, CatalogEntry> = HashMap::new();
     let mut resource_count = 0usize;
@@ -340,4 +383,70 @@ async fn build_alias_map(
             .then_with(|| a.target.kind.cmp(&b.target.kind))
     });
     Ok((map, catalog, resource_count))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(
+        kind: &str,
+        plural: &str,
+        group: &str,
+        short_names: &[&str],
+        singular: Option<&str>,
+    ) -> CatalogEntry {
+        CatalogEntry {
+            target: ResolvedAliasTarget {
+                group: group.to_string(),
+                version: "v1".to_string(),
+                api_version: if group.is_empty() {
+                    "v1".to_string()
+                } else {
+                    format!("{group}/v1")
+                },
+                kind: kind.to_string(),
+                plural: plural.to_string(),
+                namespaced: true,
+                short_names: Vec::new(),
+                singular: None,
+            },
+            short_names: short_names.iter().map(|s| s.to_string()).collect(),
+            singular: singular.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn exact_kind_scores_above_group_or_subsequence_matches() {
+        let node = entry("Node", "nodes", "", &["no"], Some("node"));
+        let binding = entry(
+            "ClusterRoleBinding",
+            "clusterrolebindings",
+            "rbac.authorization.k8s.io",
+            &[],
+            Some("clusterrolebinding"),
+        );
+
+        let node_score = score_match(4, "node", &node).expect("node should match exactly");
+        let binding_score = score_match(4, "node", &binding).unwrap_or_default();
+
+        assert!(node_score > binding_score);
+    }
+
+    #[test]
+    fn plural_prefix_scores_above_plain_substring() {
+        let nodes = entry("Node", "nodes", "", &["no"], Some("node"));
+        let policies = entry(
+            "NetworkPolicy",
+            "networkpolicies",
+            "networking.k8s.io",
+            &["netpol"],
+            Some("networkpolicy"),
+        );
+
+        let nodes_score = score_match(3, "nod", &nodes).expect("nodes should match by prefix");
+        let policies_score = score_match(3, "nod", &policies).unwrap_or_default();
+
+        assert!(nodes_score > policies_score);
+    }
 }

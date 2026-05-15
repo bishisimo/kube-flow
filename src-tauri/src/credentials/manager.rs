@@ -52,7 +52,12 @@ impl CredentialManager {
     }
 
     /// 写入持久化后端，同时更新内存缓存。
-    pub fn save(&self, key: &CredentialKey, password: &str, cfg: &SecurityConfig) -> Result<(), String> {
+    pub fn save(
+        &self,
+        key: &CredentialKey,
+        password: &str,
+        cfg: &SecurityConfig,
+    ) -> Result<(), String> {
         self.save_to_backend(key, password, cfg)?;
         self.memory.set(key.clone(), password.to_string());
         Ok(())
@@ -69,9 +74,11 @@ impl CredentialManager {
     pub fn exists_in_backend(&self, key: &CredentialKey, cfg: &SecurityConfig) -> bool {
         match cfg.credential_store {
             CredentialStoreKind::OsKeychain => OsKeychainBackend::exists(key),
-            CredentialStoreKind::Stronghold => {
-                self.stronghold.lock().unwrap_or_else(|p| p.into_inner()).exists(key)
-            }
+            CredentialStoreKind::Stronghold => self
+                .stronghold
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .exists(key),
         }
     }
 
@@ -83,12 +90,17 @@ impl CredentialManager {
                 // OS 钥匙串无法枚举，只返回空列表（UI 通过 has_saved_credential 标记展示）
                 vec![]
             }
-            CredentialStoreKind::Stronghold => {
-                self.stronghold.lock().unwrap_or_else(|p| p.into_inner()).list_keys()
-            }
+            CredentialStoreKind::Stronghold => self
+                .stronghold
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .list_keys(),
         };
         keys.into_iter()
-            .map(|tunnel_id| CredentialInfo { tunnel_id, store: store_name.clone() })
+            .map(|tunnel_id| CredentialInfo {
+                tunnel_id,
+                store: store_name.clone(),
+            })
             .collect()
     }
 
@@ -97,25 +109,38 @@ impl CredentialManager {
     // ──────────────────────────────────────────
 
     pub fn stronghold_status(&self) -> StrongholdStatus {
-        self.stronghold.lock().unwrap_or_else(|p| p.into_inner()).status()
+        self.stronghold
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .status()
     }
 
     pub fn stronghold_initialize(&self, master_password: &str) -> Result<(), String> {
-        self.stronghold.lock().map_err(|_| "internal lock error".to_string())?.initialize(master_password)
+        self.stronghold
+            .lock()
+            .map_err(|_| "internal lock error".to_string())?
+            .initialize(master_password)
     }
 
     pub fn stronghold_unlock(&self, master_password: &str) -> Result<(), String> {
-        self.stronghold.lock().map_err(|_| "internal lock error".to_string())?.unlock(master_password)
+        self.stronghold
+            .lock()
+            .map_err(|_| "internal lock error".to_string())?
+            .unlock(master_password)
     }
 
     pub fn stronghold_lock(&self) {
-        self.stronghold.lock().unwrap_or_else(|p| p.into_inner()).lock();
+        self.stronghold
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .lock();
         self.memory.clear();
     }
 
     /// 更新 Stronghold 快照路径（设置变更时调用）；旧凭证不迁移。
     pub fn stronghold_reset_path(&self, new_path: PathBuf) {
-        *self.stronghold.lock().unwrap_or_else(|p| p.into_inner()) = StrongholdBackend::new(new_path);
+        *self.stronghold.lock().unwrap_or_else(|p| p.into_inner()) =
+            StrongholdBackend::new(new_path);
         self.memory.clear();
     }
 
@@ -130,7 +155,11 @@ impl CredentialManager {
     ) -> Result<Option<String>, String> {
         match cfg.credential_store {
             CredentialStoreKind::OsKeychain => OsKeychainBackend::get(key),
-            CredentialStoreKind::Stronghold => self.stronghold.lock().map_err(|_| "internal lock error".to_string())?.get(key),
+            CredentialStoreKind::Stronghold => self
+                .stronghold
+                .lock()
+                .map_err(|_| "internal lock error".to_string())?
+                .get(key),
         }
     }
 
@@ -142,14 +171,22 @@ impl CredentialManager {
     ) -> Result<(), String> {
         match cfg.credential_store {
             CredentialStoreKind::OsKeychain => OsKeychainBackend::set(key, password),
-            CredentialStoreKind::Stronghold => self.stronghold.lock().map_err(|_| "internal lock error".to_string())?.set(key, password),
+            CredentialStoreKind::Stronghold => self
+                .stronghold
+                .lock()
+                .map_err(|_| "internal lock error".to_string())?
+                .set(key, password),
         }
     }
 
     fn delete_from_backend(&self, key: &CredentialKey, cfg: &SecurityConfig) -> Result<(), String> {
         match cfg.credential_store {
             CredentialStoreKind::OsKeychain => OsKeychainBackend::delete(key),
-            CredentialStoreKind::Stronghold => self.stronghold.lock().map_err(|_| "internal lock error".to_string())?.delete(key),
+            CredentialStoreKind::Stronghold => self
+                .stronghold
+                .lock()
+                .map_err(|_| "internal lock error".to_string())?
+                .delete(key),
         }
     }
 }

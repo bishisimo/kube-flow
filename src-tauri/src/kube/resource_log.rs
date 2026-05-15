@@ -2,9 +2,9 @@
 //! 支持一次性拉取与流式 follow。
 
 use futures::{AsyncBufReadExt, TryStreamExt};
+use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, LogParams};
 use kube::Client;
-use k8s_openapi::api::core::v1::Pod;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};

@@ -81,7 +81,9 @@ pub fn env_set_current_context(args: EnvSetCurrentContextArgs) -> CommandResult<
 }
 
 #[tauri::command]
-pub fn env_list_contexts_from_kubeconfig(kubeconfig_path: String) -> CommandResult<Vec<KubeContextInfo>> {
+pub fn env_list_contexts_from_kubeconfig(
+    kubeconfig_path: String,
+) -> CommandResult<Vec<KubeContextInfo>> {
     EnvService::list_contexts_from_kubeconfig(&kubeconfig_path).map_err(err_str)
 }
 
@@ -115,7 +117,7 @@ pub fn env_create_ssh(args: EnvCreateSshArgs) -> CommandResult<Environment> {
         args.tags,
         args.ssh_idle_protection,
     )
-        .map_err(err_str)
+    .map_err(err_str)
 }
 
 #[tauri::command]
@@ -142,7 +144,9 @@ pub(crate) struct EnvEnsureSshTunnelForHostArgs {
 }
 
 #[tauri::command]
-pub fn env_ensure_ssh_tunnel_for_host(args: EnvEnsureSshTunnelForHostArgs) -> CommandResult<String> {
+pub fn env_ensure_ssh_tunnel_for_host(
+    args: EnvEnsureSshTunnelForHostArgs,
+) -> CommandResult<String> {
     EnvService::ensure_ssh_tunnel_for_host(
         args.ssh_host,
         args.remote_kubeconfig_path,

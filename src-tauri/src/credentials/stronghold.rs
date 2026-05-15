@@ -68,7 +68,10 @@ impl StrongholdBackend {
         } else {
             StrongholdState::Uninitialized
         };
-        Self { path, state: Mutex::new(state) }
+        Self {
+            path,
+            state: Mutex::new(state),
+        }
     }
 
     pub fn status(&self) -> StrongholdStatus {
@@ -91,7 +94,10 @@ impl StrongholdBackend {
         let empty_data: HashMap<String, String> = HashMap::new();
         self.write_file(&empty_data, &key, &salt)?;
 
-        *self.state.lock().map_err(|_| "internal lock error".to_string())? = StrongholdState::Unlocked {
+        *self
+            .state
+            .lock()
+            .map_err(|_| "internal lock error".to_string())? = StrongholdState::Unlocked {
             data: empty_data,
             key,
             salt: salt.to_vec(),
@@ -131,7 +137,11 @@ impl StrongholdBackend {
         let data: HashMap<String, String> = serde_json::from_slice(&plaintext)
             .map_err(|_| "凭证库内容异常，无法完成解锁".to_string())?;
 
-        *self.state.lock().map_err(|_| "internal lock error".to_string())? = StrongholdState::Unlocked { data, key, salt };
+        *self
+            .state
+            .lock()
+            .map_err(|_| "internal lock error".to_string())? =
+            StrongholdState::Unlocked { data, key, salt };
         Ok(())
     }
 
@@ -145,10 +155,12 @@ impl StrongholdBackend {
 
     /// 读取凭证；Uninitialized 时返回 None，Locked 时返回 Err。
     pub fn get(&self, key: &CredentialKey) -> Result<Option<String>, String> {
-        match &*self.state.lock().map_err(|_| "internal lock error".to_string())? {
-            StrongholdState::Unlocked { data, .. } => {
-                Ok(data.get(&key.stronghold_key()).cloned())
-            }
+        match &*self
+            .state
+            .lock()
+            .map_err(|_| "internal lock error".to_string())?
+        {
+            StrongholdState::Unlocked { data, .. } => Ok(data.get(&key.stronghold_key()).cloned()),
             StrongholdState::Locked => Err("Stronghold 已锁定，请先输入主密码解锁".to_string()),
             StrongholdState::Uninitialized => Ok(None),
         }
@@ -157,9 +169,16 @@ impl StrongholdBackend {
     /// 保存凭证并立即将变更写入磁盘。
     pub fn set(&self, key: &CredentialKey, password: &str) -> Result<(), String> {
         let (data_snapshot, key_bytes, salt) = {
-            let mut guard = self.state.lock().map_err(|_| "internal lock error".to_string())?;
+            let mut guard = self
+                .state
+                .lock()
+                .map_err(|_| "internal lock error".to_string())?;
             match &mut *guard {
-                StrongholdState::Unlocked { data, key: k, salt: s } => {
+                StrongholdState::Unlocked {
+                    data,
+                    key: k,
+                    salt: s,
+                } => {
                     data.insert(key.stronghold_key(), password.to_string());
                     (data.clone(), *k, s.clone())
                 }
@@ -177,9 +196,16 @@ impl StrongholdBackend {
     /// 删除凭证并写入磁盘；条目不存在时视为成功。
     pub fn delete(&self, key: &CredentialKey) -> Result<(), String> {
         let (data_snapshot, key_bytes, salt) = {
-            let mut guard = self.state.lock().map_err(|_| "internal lock error".to_string())?;
+            let mut guard = self
+                .state
+                .lock()
+                .map_err(|_| "internal lock error".to_string())?;
             match &mut *guard {
-                StrongholdState::Unlocked { data, key: k, salt: s } => {
+                StrongholdState::Unlocked {
+                    data,
+                    key: k,
+                    salt: s,
+                } => {
                     data.remove(&key.stronghold_key());
                     (data.clone(), *k, s.clone())
                 }

@@ -70,12 +70,10 @@ pub async fn get_resource_yaml_by_kind(
 ) -> Result<String, ResourceError> {
     let (ar, caps) = resolve_by_kind(client, kind).await?;
     let obj = match caps.scope {
-        Scope::Cluster => {
-            Api::<DynamicObject>::all_with(client.clone(), &ar)
-                .get(name)
-                .await
-                .map_err(ResourceError::Kube)?
-        }
+        Scope::Cluster => Api::<DynamicObject>::all_with(client.clone(), &ar)
+            .get(name)
+            .await
+            .map_err(ResourceError::Kube)?,
         Scope::Namespaced => {
             let ns = namespace.unwrap_or("default");
             Api::<DynamicObject>::namespaced_with(client.clone(), ns, &ar)
@@ -126,12 +124,10 @@ pub async fn list_crd_instances(
     let (ar, caps) = resolve_gvk(client, api_version, kind).await?;
     let lp = build_list_params(label_selector);
     let list = match caps.scope {
-        Scope::Cluster => {
-            Api::<DynamicObject>::all_with(client.clone(), &ar)
-                .list(&lp)
-                .await
-                .map_err(ResourceError::Kube)?
-        }
+        Scope::Cluster => Api::<DynamicObject>::all_with(client.clone(), &ar)
+            .list(&lp)
+            .await
+            .map_err(ResourceError::Kube)?,
         Scope::Namespaced => {
             let all_ns = namespace.map(|n| n == "__all__").unwrap_or(true);
             if all_ns {
@@ -169,12 +165,10 @@ pub async fn get_dynamic_resource_yaml(
 ) -> Result<String, ResourceError> {
     let (ar, caps) = resolve_gvk(client, api_version, kind).await?;
     let obj = match caps.scope {
-        Scope::Cluster => {
-            Api::<DynamicObject>::all_with(client.clone(), &ar)
-                .get(name)
-                .await
-                .map_err(ResourceError::Kube)?
-        }
+        Scope::Cluster => Api::<DynamicObject>::all_with(client.clone(), &ar)
+            .get(name)
+            .await
+            .map_err(ResourceError::Kube)?,
         Scope::Namespaced => {
             let ns = namespace.unwrap_or("default");
             Api::<DynamicObject>::namespaced_with(client.clone(), ns, &ar)

@@ -31,7 +31,10 @@ pub struct ResourceQuotaItem {
 }
 
 impl SimpleNamespacedItem for ResourceQuotaItem {
-    fn from_meta(meta: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta, default_ns: &str) -> Self {
+    fn from_meta(
+        meta: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta,
+        default_ns: &str,
+    ) -> Self {
         Self {
             name: meta.name.unwrap_or_default(),
             namespace: meta.namespace.unwrap_or_else(|| default_ns.to_string()),
@@ -49,7 +52,10 @@ pub struct LimitRangeItem {
 }
 
 impl SimpleNamespacedItem for LimitRangeItem {
-    fn from_meta(meta: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta, default_ns: &str) -> Self {
+    fn from_meta(
+        meta: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta,
+        default_ns: &str,
+    ) -> Self {
         Self {
             name: meta.name.unwrap_or_default(),
             namespace: meta.namespace.unwrap_or_else(|| default_ns.to_string()),
@@ -104,7 +110,10 @@ pub async fn list_priority_classes(
     label_selector: Option<&str>,
 ) -> Result<Vec<PriorityClassItem>, ResourceError> {
     let api: Api<PriorityClass> = Api::all(client.clone());
-    let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
+    let list = api
+        .list(&build_list_params(label_selector))
+        .await
+        .map_err(ResourceError::Kube)?;
     let items = list
         .items
         .into_iter()
@@ -125,7 +134,10 @@ pub async fn list_horizontal_pod_autoscalers(
 ) -> Result<Vec<HorizontalPodAutoscalerItem>, ResourceError> {
     let ns = namespace.unwrap_or("default");
     let api: Api<HorizontalPodAutoscaler> = Api::namespaced(client.clone(), ns);
-    let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
+    let list = api
+        .list(&build_list_params(label_selector))
+        .await
+        .map_err(ResourceError::Kube)?;
     let items = list
         .items
         .into_iter()
@@ -162,15 +174,26 @@ pub async fn list_pod_disruption_budgets(
 ) -> Result<Vec<PodDisruptionBudgetItem>, ResourceError> {
     let ns = namespace.unwrap_or("default");
     let api: Api<PodDisruptionBudget> = Api::namespaced(client.clone(), ns);
-    let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
+    let list = api
+        .list(&build_list_params(label_selector))
+        .await
+        .map_err(ResourceError::Kube)?;
     let items = list
         .items
         .into_iter()
         .map(|p| {
             let status = p.status.as_ref();
             let allowed = status.map(|s| s.disruptions_allowed);
-            let min_avail = p.spec.as_ref().and_then(|s| s.min_available.as_ref()).map(int_or_string_to_str);
-            let max_unavail = p.spec.as_ref().and_then(|s| s.max_unavailable.as_ref()).map(int_or_string_to_str);
+            let min_avail = p
+                .spec
+                .as_ref()
+                .and_then(|s| s.min_available.as_ref())
+                .map(int_or_string_to_str);
+            let max_unavail = p
+                .spec
+                .as_ref()
+                .and_then(|s| s.max_unavailable.as_ref())
+                .map(int_or_string_to_str);
             PodDisruptionBudgetItem {
                 name: p.metadata.name.unwrap_or_default(),
                 namespace: p.metadata.namespace.unwrap_or_else(|| ns.to_string()),

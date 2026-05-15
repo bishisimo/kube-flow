@@ -2,18 +2,12 @@
 
 use super::extractor::RelationExtractor;
 use super::extractors::{
-    hpa_ref::HpaRefExtractor,
-    ingress_backend::IngressBackendExtractor,
-    owner_ref::OwnerRefExtractor,
-    pod_service_link::PodServiceLinkExtractor,
-    pvc_bindings::PvcBindingsExtractor,
-    rbac_refs::RbacRefsExtractor,
-    sa_bindings_reverse::SaBindingsReverseExtractor,
-    selector::WorkloadSelectorExtractor,
-    service_account::ServiceAccountExtractor,
-    service_reverse::ServiceReverseExtractor,
-    service_selector::ServiceSelectorExtractor,
-    workload_mounts::WorkloadMountsExtractor,
+    hpa_ref::HpaRefExtractor, ingress_backend::IngressBackendExtractor,
+    owner_ref::OwnerRefExtractor, pod_service_link::PodServiceLinkExtractor,
+    pvc_bindings::PvcBindingsExtractor, rbac_refs::RbacRefsExtractor,
+    sa_bindings_reverse::SaBindingsReverseExtractor, selector::WorkloadSelectorExtractor,
+    service_account::ServiceAccountExtractor, service_reverse::ServiceReverseExtractor,
+    service_selector::ServiceSelectorExtractor, workload_mounts::WorkloadMountsExtractor,
     workload_service_link::WorkloadServiceLinkExtractor,
 };
 

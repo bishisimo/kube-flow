@@ -42,6 +42,51 @@ function fuzzyFilter<T>(query: string, items: T[], getText: (t: T) => string, ma
   return scored.slice(0, max).map((x) => x.item);
 }
 
+function normalizeSearchText(s: string): string {
+  return s.trim().toLowerCase();
+}
+
+function scoreKindValue(query: string, item: TokenValueCandidate): number {
+  const q = normalizeSearchText(query);
+  if (!q) return 0;
+
+  const title = normalizeSearchText(item.title);
+  const value = normalizeSearchText(item.value);
+  const hint = normalizeSearchText(item.hint ?? "");
+  const keywords = (item.keywords ?? []).map(normalizeSearchText).filter(Boolean);
+  const aliases = [title, value, hint, ...keywords].filter(Boolean);
+
+  let best = 0;
+  for (const alias of aliases) {
+    const fuzzy = fuzzyMatch(q, alias).score;
+    let score = fuzzy;
+    if (alias === q) score += 10_000;
+    else if (alias.startsWith(q)) score += 5_000;
+    else if (alias.includes(q)) score += 1_000;
+    best = Math.max(best, score);
+  }
+  return best;
+}
+
+function filterKindValues(query: string, items: TokenValueCandidate[], max = 120): TokenValueCandidate[] {
+  const q = query.trim();
+  if (!q) return items.slice(0, max);
+
+  return items
+    .map((item) => ({ item, score: scoreKindValue(q, item) }))
+    .filter((x) => x.score > 0)
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      const pinDelta = Number(Boolean(b.item.pinned)) - Number(Boolean(a.item.pinned));
+      if (pinDelta !== 0) return pinDelta;
+      const orderDelta = (a.item.order ?? 0) - (b.item.order ?? 0);
+      if (orderDelta !== 0) return orderDelta;
+      return a.item.title.localeCompare(b.item.title);
+    })
+    .slice(0, max)
+    .map((x) => x.item);
+}
+
 export function buildWorkbenchTokenSpecs(): TokenSpec[] {
   const { currentId } = useEnvStore();
 
@@ -152,12 +197,7 @@ export function buildWorkbenchTokenSpecs(): TokenSpec[] {
           keywords: [t.kind, t.plural, t.group, ...(t.short_names ?? [])],
         });
       }
-      return fuzzyFilter(
-        query,
-        pool,
-        (x) => `${x.title} ${x.subtitle ?? ""} ${x.value} ${x.keywords?.join(" ") ?? ""}`,
-        120
-      );
+      return filterKindValues(query, pool, 120);
     },
     resolveValue: (raw) => {
       if (raw.startsWith("ext:")) {

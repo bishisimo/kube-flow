@@ -42,7 +42,10 @@ pub struct ServiceAccountItem {
 }
 
 impl SimpleNamespacedItem for ServiceAccountItem {
-    fn from_meta(meta: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta, default_ns: &str) -> Self {
+    fn from_meta(
+        meta: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta,
+        default_ns: &str,
+    ) -> Self {
         Self {
             name: meta.name.unwrap_or_default(),
             namespace: meta.namespace.unwrap_or_else(|| default_ns.to_string()),
@@ -61,7 +64,10 @@ pub async fn list_config_maps(
 ) -> Result<Vec<ConfigMapItem>, ResourceError> {
     let ns = namespace.unwrap_or("default");
     let api: Api<ConfigMap> = Api::namespaced(client.clone(), ns);
-    let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
+    let list = api
+        .list(&build_list_params(label_selector))
+        .await
+        .map_err(ResourceError::Kube)?;
     let items = list
         .items
         .into_iter()
@@ -86,7 +92,10 @@ pub async fn list_secrets(
 ) -> Result<Vec<SecretItem>, ResourceError> {
     let ns = namespace.unwrap_or("default");
     let api: Api<Secret> = Api::namespaced(client.clone(), ns);
-    let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
+    let list = api
+        .list(&build_list_params(label_selector))
+        .await
+        .map_err(ResourceError::Kube)?;
     let items = list
         .items
         .into_iter()

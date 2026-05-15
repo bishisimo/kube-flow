@@ -145,7 +145,12 @@ fn format_request_ratio(used: i64, total: i64, formatter: fn(i64) -> String) -> 
         return None;
     }
     let percent = ((used as f64 / total as f64) * 100.0).round() as i64;
-    Some(format!("{} / {} ({}%)", formatter(used), formatter(total), percent.clamp(0, 999)))
+    Some(format!(
+        "{} / {} ({}%)",
+        formatter(used),
+        formatter(total),
+        percent.clamp(0, 999)
+    ))
 }
 
 fn is_gpu_resource_name(name: &str, gpu_resource_names: &HashSet<String>) -> bool {
@@ -171,7 +176,10 @@ pub async fn list_namespaces(
     label_selector: Option<&str>,
 ) -> Result<Vec<NamespaceItem>, ResourceError> {
     let api: Api<Namespace> = Api::all(client.clone());
-    let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
+    let list = api
+        .list(&build_list_params(label_selector))
+        .await
+        .map_err(ResourceError::Kube)?;
     let items = list
         .items
         .into_iter()
@@ -191,8 +199,14 @@ pub async fn list_nodes(
 ) -> Result<Vec<NodeItem>, ResourceError> {
     let api: Api<Node> = Api::all(client.clone());
     let pods_api: Api<Pod> = Api::all(client.clone());
-    let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
-    let pod_list = pods_api.list(&ListParams::default()).await.map_err(ResourceError::Kube)?;
+    let list = api
+        .list(&build_list_params(label_selector))
+        .await
+        .map_err(ResourceError::Kube)?;
+    let pod_list = pods_api
+        .list(&ListParams::default())
+        .await
+        .map_err(ResourceError::Kube)?;
     let gpu_resource_names: HashSet<String> = gpu_resource_names
         .iter()
         .map(|name| name.trim().to_lowercase())
@@ -205,14 +219,19 @@ pub async fn list_nodes(
             let node_name = n.metadata.name.clone().unwrap_or_default();
             let status = n.status.as_ref().and_then(|s| {
                 s.conditions.as_ref().and_then(|conds| {
-                    conds.iter()
-                        .find(|c| c.type_ == "Ready")
-                        .map(|c| if c.status == "True" { "Ready".to_string() } else { "NotReady".to_string() })
+                    conds.iter().find(|c| c.type_ == "Ready").map(|c| {
+                        if c.status == "True" {
+                            "Ready".to_string()
+                        } else {
+                            "NotReady".to_string()
+                        }
+                    })
                 })
             });
             let internal_ip = n.status.as_ref().and_then(|s| {
                 s.addresses.as_ref().and_then(|addrs| {
-                    addrs.iter()
+                    addrs
+                        .iter()
                         .find(|a| a.type_ == "InternalIP")
                         .map(|a| a.address.clone())
                 })
@@ -246,46 +265,53 @@ pub async fn list_nodes(
                         .sum::<i64>()
                 })
                 .unwrap_or(0);
-            let (cpu_req_sum, mem_req_sum, gpu_req_sum) = pod_list.items.iter().fold((0i64, 0i64, 0i64), |acc, pod| {
-                let assigned = pod
-                    .spec
-                    .as_ref()
-                    .and_then(|s| s.node_name.as_deref())
-                    .map(|name| name == node_name)
-                    .unwrap_or(false);
-                if !assigned {
-                    return acc;
-                }
-                let phase = pod.status.as_ref().and_then(|s| s.phase.as_deref()).unwrap_or("");
-                if matches!(phase, "Succeeded" | "Failed") {
-                    return acc;
-                }
-                let mut cpu = 0i64;
-                let mut mem = 0i64;
-                let mut gpu = 0i64;
-                if let Some(spec) = &pod.spec {
-                    for container in &spec.containers {
-                        if let Some(resources) = &container.resources {
-                            if let Some(req) = &resources.requests {
-                                cpu += quantity_cpu_millis(req.get("cpu"));
-                                mem += quantity_mem_bytes(req.get("memory"));
-                            }
-                            if let Some(limits) = &resources.limits {
-                                gpu += limits
-                                    .iter()
-                                    .filter(|(name, _)| is_gpu_resource_name(name, &gpu_resource_names))
-                                    .map(|(_, quantity)| quantity_scalar_units(Some(quantity)))
-                                    .sum::<i64>();
+            let (cpu_req_sum, mem_req_sum, gpu_req_sum) =
+                pod_list.items.iter().fold((0i64, 0i64, 0i64), |acc, pod| {
+                    let assigned = pod
+                        .spec
+                        .as_ref()
+                        .and_then(|s| s.node_name.as_deref())
+                        .map(|name| name == node_name)
+                        .unwrap_or(false);
+                    if !assigned {
+                        return acc;
+                    }
+                    let phase = pod
+                        .status
+                        .as_ref()
+                        .and_then(|s| s.phase.as_deref())
+                        .unwrap_or("");
+                    if matches!(phase, "Succeeded" | "Failed") {
+                        return acc;
+                    }
+                    let mut cpu = 0i64;
+                    let mut mem = 0i64;
+                    let mut gpu = 0i64;
+                    if let Some(spec) = &pod.spec {
+                        for container in &spec.containers {
+                            if let Some(resources) = &container.resources {
+                                if let Some(req) = &resources.requests {
+                                    cpu += quantity_cpu_millis(req.get("cpu"));
+                                    mem += quantity_mem_bytes(req.get("memory"));
+                                }
+                                if let Some(limits) = &resources.limits {
+                                    gpu += limits
+                                        .iter()
+                                        .filter(|(name, _)| {
+                                            is_gpu_resource_name(name, &gpu_resource_names)
+                                        })
+                                        .map(|(_, quantity)| quantity_scalar_units(Some(quantity)))
+                                        .sum::<i64>();
+                                }
                             }
                         }
+                        if let Some(overhead) = &spec.overhead {
+                            cpu += quantity_cpu_millis(overhead.get("cpu"));
+                            mem += quantity_mem_bytes(overhead.get("memory"));
+                        }
                     }
-                    if let Some(overhead) = &spec.overhead {
-                        cpu += quantity_cpu_millis(overhead.get("cpu"));
-                        mem += quantity_mem_bytes(overhead.get("memory"));
-                    }
-                }
-                (acc.0 + cpu, acc.1 + mem, acc.2 + gpu)
-            });
+                    (acc.0 + cpu, acc.1 + mem, acc.2 + gpu)
+                });
             NodeItem {
                 name: node_name,
                 status,

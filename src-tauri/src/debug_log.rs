@@ -1,6 +1,8 @@
 //! 调试日志：按配置级别写入“本次启动日志文件”，每行一条 JSON。
 
-use crate::config::{app_settings_config_path, debug_log_path, debug_logs_dir, AppSettingsConfig, LogLevel};
+use crate::config::{
+    app_settings_config_path, debug_log_path, debug_logs_dir, AppSettingsConfig, LogLevel,
+};
 use serde::Serialize;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -189,7 +191,10 @@ pub fn log_virtual_kubeconfig(
     level: LogLevel,
 ) {
     let detail = match default_ns {
-        Some(ns) => format!("context={}, server={}, default_namespace={}", context, server, ns),
+        Some(ns) => format!(
+            "context={}, server={}, default_namespace={}",
+            context, server, ns
+        ),
         None => format!("context={}, server={}", context, server),
     };
     log_debug_entry(DebugEntry {

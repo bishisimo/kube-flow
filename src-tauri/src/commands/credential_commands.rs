@@ -14,7 +14,9 @@ use tauri::{Manager, State};
 
 use crate::commands::kube_command_context::{err_str, load_app_settings, CommandResult};
 use crate::config::{app_settings_config_path, ensure_app_data_dir, SecurityConfig};
-use crate::credentials::{CredentialInfo, CredentialKey, CredentialManager, CredentialStoreKind, StrongholdStatus};
+use crate::credentials::{
+    CredentialInfo, CredentialKey, CredentialManager, CredentialStoreKind, StrongholdStatus,
+};
 
 /// Stronghold 自动锁定调度器：通过递增序号取消旧计时任务。
 pub struct StrongholdAutoLockController {
@@ -135,7 +137,11 @@ pub fn security_set_auto_lock_minutes(
 
 /// 保存 SSH 隧道密码到持久化后端，同时更新 TOML 中的 has_saved_credential 标记。
 #[tauri::command]
-pub fn credential_save(tunnel_id: String, password: String, manager: State<'_, CredentialManager>) -> CommandResult<()> {
+pub fn credential_save(
+    tunnel_id: String,
+    password: String,
+    manager: State<'_, CredentialManager>,
+) -> CommandResult<()> {
     let cfg = load_app_settings()?;
     let key = CredentialKey::new(&tunnel_id);
     manager.save(&key, &password, &cfg.security)?;
@@ -146,7 +152,10 @@ pub fn credential_save(tunnel_id: String, password: String, manager: State<'_, C
 
 /// 从持久化后端删除凭证，同时清除内存缓存和 TOML 标记。
 #[tauri::command]
-pub fn credential_delete(tunnel_id: String, manager: State<'_, CredentialManager>) -> CommandResult<()> {
+pub fn credential_delete(
+    tunnel_id: String,
+    manager: State<'_, CredentialManager>,
+) -> CommandResult<()> {
     let cfg = load_app_settings()?;
     let key = CredentialKey::new(&tunnel_id);
     manager.delete(&key, &cfg.security)?;
@@ -156,7 +165,10 @@ pub fn credential_delete(tunnel_id: String, manager: State<'_, CredentialManager
 
 /// 检查指定隧道在持久化后端中是否有已保存的凭证。
 #[tauri::command]
-pub fn credential_exists(tunnel_id: String, manager: State<'_, CredentialManager>) -> CommandResult<bool> {
+pub fn credential_exists(
+    tunnel_id: String,
+    manager: State<'_, CredentialManager>,
+) -> CommandResult<bool> {
     let cfg = load_app_settings()?;
     let key = CredentialKey::new(&tunnel_id);
     Ok(manager.exists_in_backend(&key, &cfg.security))
@@ -164,7 +176,10 @@ pub fn credential_exists(tunnel_id: String, manager: State<'_, CredentialManager
 
 /// 读取指定 key 对应的凭证内容；不存在时返回 None。
 #[tauri::command]
-pub fn credential_get(tunnel_id: String, manager: State<'_, CredentialManager>) -> CommandResult<Option<String>> {
+pub fn credential_get(
+    tunnel_id: String,
+    manager: State<'_, CredentialManager>,
+) -> CommandResult<Option<String>> {
     let cfg = load_app_settings()?;
     let key = CredentialKey::new(&tunnel_id);
     manager.get(&key, &cfg.security)
@@ -172,14 +187,20 @@ pub fn credential_get(tunnel_id: String, manager: State<'_, CredentialManager>) 
 
 /// 列出持久化后端中所有已保存凭证的摘要（不含密码）。
 #[tauri::command]
-pub fn credential_list(manager: State<'_, CredentialManager>) -> CommandResult<Vec<CredentialInfo>> {
+pub fn credential_list(
+    manager: State<'_, CredentialManager>,
+) -> CommandResult<Vec<CredentialInfo>> {
     let cfg = load_app_settings()?;
     Ok(manager.list(&cfg.security))
 }
 
 /// 仅将密码存入内存缓存（交互弹窗输入后调用），不写持久化后端。
 #[tauri::command]
-pub fn credential_cache_only(tunnel_id: String, password: String, manager: State<'_, CredentialManager>) {
+pub fn credential_cache_only(
+    tunnel_id: String,
+    password: String,
+    manager: State<'_, CredentialManager>,
+) {
     manager.cache_only(CredentialKey::new(tunnel_id), password);
 }
 
@@ -237,7 +258,7 @@ pub fn stronghold_lock(
 
 /// 更新指定隧道的 has_saved_credential 字段并写回 TOML。
 fn update_has_saved_credential(tunnel_id: &str, value: bool) -> CommandResult<()> {
-    use crate::config::{KubeFlowConfigFile, kube_flow_config_path};
+    use crate::config::{kube_flow_config_path, KubeFlowConfigFile};
     let path = kube_flow_config_path().ok_or("config path unavailable")?;
     let mut cfg = KubeFlowConfigFile::load(&path).map_err(err_str)?;
     if let Some(t) = cfg.ssh_tunnels.iter_mut().find(|t| t.id == tunnel_id) {

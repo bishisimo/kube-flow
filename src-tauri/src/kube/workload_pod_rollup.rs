@@ -64,7 +64,11 @@ fn all_workload_containers_ready(pod: &Pod) -> bool {
     if spec_n == 0 {
         return false;
     }
-    let Some(statuses) = pod.status.as_ref().and_then(|s| s.container_statuses.as_ref()) else {
+    let Some(statuses) = pod
+        .status
+        .as_ref()
+        .and_then(|s| s.container_statuses.as_ref())
+    else {
         return false;
     };
     if statuses.len() < spec_n {
@@ -106,7 +110,10 @@ fn classify_pod(pod: &Pod) -> RollupBucket {
 
 fn pod_labels_match_selector(labels: &BTreeMap<String, String>, sel: &LabelSelector) -> bool {
     let has_ml = sel.match_labels.as_ref().is_some_and(|m| !m.is_empty());
-    let has_me = sel.match_expressions.as_ref().is_some_and(|e| !e.is_empty());
+    let has_me = sel
+        .match_expressions
+        .as_ref()
+        .is_some_and(|e| !e.is_empty());
     if !has_ml && !has_me {
         return false;
     }
@@ -152,10 +159,7 @@ fn pod_labels_match_selector(labels: &BTreeMap<String, String>, sel: &LabelSelec
     true
 }
 
-fn bump_max_finished(
-    statuses: Option<&Vec<ContainerStatus>>,
-    best: &mut Option<Time>,
-) {
+fn bump_max_finished(statuses: Option<&Vec<ContainerStatus>>, best: &mut Option<Time>) {
     let Some(statuses) = statuses else { return };
     for cs in statuses {
         if let Some(ft) = cs
@@ -187,7 +191,11 @@ fn pod_max_finished_time(pod: &Pod) -> Option<Time> {
 }
 
 /// 将同一 namespace 下、命中 workload selector 的 Pod 聚合为表格用态势。
-pub fn compute_workload_pod_rollup(pods: &[Pod], workload_ns: &str, selector: &LabelSelector) -> WorkloadPodRollup {
+pub fn compute_workload_pod_rollup(
+    pods: &[Pod],
+    workload_ns: &str,
+    selector: &LabelSelector,
+) -> WorkloadPodRollup {
     let mut r = WorkloadPodRollup::default();
     let mut global_best: Option<Time> = None;
 
@@ -226,6 +234,8 @@ pub fn compute_workload_pod_rollup(pods: &[Pod], workload_ns: &str, selector: &L
         }
     }
 
-    r.last_container_restart = global_best.as_ref().and_then(|t| format_creation_time(Some(t)));
+    r.last_container_restart = global_best
+        .as_ref()
+        .and_then(|t| format_creation_time(Some(t)));
     r
 }

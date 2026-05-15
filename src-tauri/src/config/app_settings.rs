@@ -274,7 +274,9 @@ impl AppSettingsConfig {
     }
 
     pub fn set_resource_deploy_strategy(&mut self, strategy: &str) {
-        self.resource_deploy_strategy = ResourceDeployStrategy::from_str(strategy).as_str().to_string();
+        self.resource_deploy_strategy = ResourceDeployStrategy::from_str(strategy)
+            .as_str()
+            .to_string();
     }
 
     pub fn node_resource_usage_enabled(&self) -> bool {
@@ -345,7 +347,6 @@ impl AppSettingsConfig {
         }
         self.custom_gpu_resource_rules = out;
     }
-
 }
 
 /// 日志显示顺序：asc=正序（旧→新），desc=倒序（新→旧）。

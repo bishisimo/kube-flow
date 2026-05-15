@@ -2,8 +2,8 @@
 
 use super::super::kube_command_context::{self, err_str, CommandResult};
 use crate::kube::{
-    start_watch, KubeClientStore, ResourceAliasCacheStore, ResourceAliasRefreshResult,
-    ResolvedAliasTarget, WatchStore,
+    start_watch, KubeClientStore, ResolvedAliasTarget, ResourceAliasCacheStore,
+    ResourceAliasRefreshResult, WatchStore,
 };
 use std::sync::Arc;
 use tauri::{AppHandle, State};

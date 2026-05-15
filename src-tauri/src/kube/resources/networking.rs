@@ -80,7 +80,10 @@ pub struct NetworkPolicyItem {
 }
 
 impl SimpleNamespacedItem for NetworkPolicyItem {
-    fn from_meta(meta: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta, default_ns: &str) -> Self {
+    fn from_meta(
+        meta: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta,
+        default_ns: &str,
+    ) -> Self {
         Self {
             name: meta.name.unwrap_or_default(),
             namespace: meta.namespace.unwrap_or_else(|| default_ns.to_string()),
@@ -99,7 +102,10 @@ pub async fn list_services(
 ) -> Result<Vec<ServiceItem>, ResourceError> {
     let ns = namespace.unwrap_or("default");
     let api: Api<Service> = Api::namespaced(client.clone(), ns);
-    let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
+    let list = api
+        .list(&build_list_params(label_selector))
+        .await
+        .map_err(ResourceError::Kube)?;
     let items = list
         .items
         .into_iter()
@@ -150,7 +156,10 @@ pub async fn list_endpoints(
 ) -> Result<Vec<EndpointsItem>, ResourceError> {
     let ns = namespace.unwrap_or("default");
     let api: Api<Endpoints> = Api::namespaced(client.clone(), ns);
-    let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
+    let list = api
+        .list(&build_list_params(label_selector))
+        .await
+        .map_err(ResourceError::Kube)?;
     let items = list
         .items
         .into_iter()
@@ -175,7 +184,10 @@ pub async fn list_endpoint_slices(
 ) -> Result<Vec<EndpointSliceItem>, ResourceError> {
     let ns = namespace.unwrap_or("default");
     let api: Api<EndpointSlice> = Api::namespaced(client.clone(), ns);
-    let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
+    let list = api
+        .list(&build_list_params(label_selector))
+        .await
+        .map_err(ResourceError::Kube)?;
     let items = list
         .items
         .into_iter()
@@ -201,7 +213,10 @@ pub async fn list_ingresses(
 ) -> Result<Vec<IngressItem>, ResourceError> {
     let ns = namespace.unwrap_or("default");
     let api: Api<Ingress> = Api::namespaced(client.clone(), ns);
-    let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
+    let list = api
+        .list(&build_list_params(label_selector))
+        .await
+        .map_err(ResourceError::Kube)?;
     let items = list
         .items
         .into_iter()
@@ -211,7 +226,12 @@ pub async fn list_ingresses(
                 .spec
                 .as_ref()
                 .and_then(|s| s.rules.as_ref())
-                .map(|r| r.iter().filter_map(|rule| rule.host.clone()).collect::<Vec<_>>().join(", "))
+                .map(|r| {
+                    r.iter()
+                        .filter_map(|rule| rule.host.clone())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
                 .filter(|s| !s.is_empty());
             IngressItem {
                 name: i.metadata.name.unwrap_or_default(),
@@ -231,7 +251,10 @@ pub async fn list_ingress_classes(
     label_selector: Option<&str>,
 ) -> Result<Vec<IngressClassItem>, ResourceError> {
     let api: Api<IngressClass> = Api::all(client.clone());
-    let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
+    let list = api
+        .list(&build_list_params(label_selector))
+        .await
+        .map_err(ResourceError::Kube)?;
     let items = list
         .items
         .into_iter()

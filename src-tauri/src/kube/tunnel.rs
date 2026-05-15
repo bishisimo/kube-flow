@@ -4,8 +4,8 @@
 use crate::config::{ssh_config_get_host_config, ssh_config_resolve_proxy_command, LogLevel};
 use crate::debug_log;
 use crate::env::TunnelMappingMode;
-use serde::Serialize;
 use serde::Deserialize;
+use serde::Serialize;
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -68,7 +68,10 @@ fn strip_ssh_warnings(stderr: &str) -> String {
 
 /// 从 kubeconfig YAML 中解析出指定 context 对应 cluster 的 server 的 host 与 port（用于端口转发）。
 /// context_override: 若提供则使用，否则用 current-context。
-fn server_host_port_from_kubeconfig(yaml: &str, context_override: Option<&str>) -> Result<(String, u16, String, String), TunnelError> {
+fn server_host_port_from_kubeconfig(
+    yaml: &str,
+    context_override: Option<&str>,
+) -> Result<(String, u16, String, String), TunnelError> {
     let yaml = trim_kubeconfig_pollution(yaml);
     let root: KubeconfigRoot = serde_yaml::from_str(yaml).map_err(|e| {
         let preview: String = yaml.chars().take(150).collect();
@@ -138,17 +141,29 @@ struct ClusterInner {
 
 /// 将 kubeconfig YAML 中指定 context 对应 cluster 的 server 替换为 https://127.0.0.1:local_port，并设置 insecure-skip-tls-verify。
 /// context_override: 若提供则使用，否则用 current-context。
-fn replace_server_in_kubeconfig(yaml: &str, local_port: u16, context_override: Option<&str>) -> Result<String, TunnelError> {
+fn replace_server_in_kubeconfig(
+    yaml: &str,
+    local_port: u16,
+    context_override: Option<&str>,
+) -> Result<String, TunnelError> {
     let yaml = trim_kubeconfig_pollution(yaml);
-    let mut root: serde_yaml::Value = serde_yaml::from_str(yaml).map_err(|e| TunnelError::Kubeconfig(e.to_string()))?;
+    let mut root: serde_yaml::Value =
+        serde_yaml::from_str(yaml).map_err(|e| TunnelError::Kubeconfig(e.to_string()))?;
     let current = context_override
         .or_else(|| root.get("current-context").and_then(|v| v.as_str()))
         .ok_or_else(|| TunnelError::Kubeconfig("no current-context".into()))?;
     let cluster_name: String = root
         .get("contexts")
         .and_then(|c| c.as_sequence())
-        .and_then(|s| s.iter().find(|e| e.get("name").and_then(|n| n.as_str()) == Some(current)))
-        .and_then(|e| e.get("context").and_then(|c| c.get("cluster")).and_then(|c| c.as_str()))
+        .and_then(|s| {
+            s.iter()
+                .find(|e| e.get("name").and_then(|n| n.as_str()) == Some(current))
+        })
+        .and_then(|e| {
+            e.get("context")
+                .and_then(|c| c.get("cluster"))
+                .and_then(|c| c.as_str())
+        })
         .map(String::from)
         .ok_or_else(|| TunnelError::Kubeconfig("context or cluster not found".into()))?;
     let clusters = root
@@ -256,7 +271,9 @@ fn append_idle_protection_ssh_args(cmd: &mut Command, enabled: bool) {
 
 /// 通过 ProxyCommand 建立连接；仅 Unix。返回 UnixStream 供 libssh2 使用。
 #[cfg(unix)]
-fn connect_via_proxy(proxy_args: Vec<String>) -> Result<std::os::unix::net::UnixStream, TunnelError> {
+fn connect_via_proxy(
+    proxy_args: Vec<String>,
+) -> Result<std::os::unix::net::UnixStream, TunnelError> {
     use std::os::unix::net::UnixStream;
 
     let (mut proxy_end, libssh2_end) = UnixStream::pair().map_err(TunnelError::Io)?;
@@ -273,8 +290,14 @@ fn connect_via_proxy(proxy_args: Vec<String>) -> Result<std::os::unix::net::Unix
         .spawn()
         .map_err(|e| TunnelError::Ssh(format!("启动 ProxyCommand 失败: {}", e)))?;
 
-    let mut child_stdin = child.stdin.take().ok_or_else(|| TunnelError::Ssh("无法获取 ProxyCommand stdin".into()))?;
-    let mut child_stdout = child.stdout.take().ok_or_else(|| TunnelError::Ssh("无法获取 ProxyCommand stdout".into()))?;
+    let mut child_stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| TunnelError::Ssh("无法获取 ProxyCommand stdin".into()))?;
+    let mut child_stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| TunnelError::Ssh("无法获取 ProxyCommand stdout".into()))?;
 
     let mut proxy_end_clone = proxy_end.try_clone().map_err(TunnelError::Io)?;
 
@@ -308,8 +331,12 @@ fn connect_via_proxy(proxy_args: Vec<String>) -> Result<std::os::unix::net::Unix
         }
     });
 
-    libssh2_end.set_read_timeout(Some(Duration::from_secs(30))).ok();
-    libssh2_end.set_write_timeout(Some(Duration::from_secs(30))).ok();
+    libssh2_end
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .ok();
+    libssh2_end
+        .set_write_timeout(Some(Duration::from_secs(30)))
+        .ok();
     Ok(libssh2_end)
 }
 
@@ -377,18 +404,44 @@ fn run_tunnel_ssh(
 ) -> Result<(), TunnelError> {
     let _ = ssh_config_get_host_config(&ssh_host).ok_or_else(|| {
         let e = TunnelError::SshConfig(format!("~/.ssh/config 中未找到 Host: {}", ssh_host));
-        emit_error_progress(&progress_tx, &env_id, "ssh_config", "解析 SSH 配置", &e.to_string());
+        emit_error_progress(
+            &progress_tx,
+            &env_id,
+            "ssh_config",
+            "解析 SSH 配置",
+            &e.to_string(),
+        );
         e
     })?;
 
-    emit_progress(&progress_tx, &env_id, "ssh_config", "解析 SSH 配置", "success", None, "connecting");
-    emit_progress(&progress_tx, &env_id, "fetch_kubeconfig", "通过 SSH 获取 kubeconfig", "running", Some(&format!("Host {}", ssh_host)), "connecting");
+    emit_progress(
+        &progress_tx,
+        &env_id,
+        "ssh_config",
+        "解析 SSH 配置",
+        "success",
+        None,
+        "connecting",
+    );
+    emit_progress(
+        &progress_tx,
+        &env_id,
+        "fetch_kubeconfig",
+        "通过 SSH 获取 kubeconfig",
+        "running",
+        Some(&format!("Host {}", ssh_host)),
+        "connecting",
+    );
 
     let cat_cmd = format!("cat {}", shell_escape(&remote_kubeconfig_path));
     debug_log::log_tunnel(
         Some(&env_id),
         "connect",
-        Some(&format!("Host {} (ssh cat, has_password={})", ssh_host, password.is_some())),
+        Some(&format!(
+            "Host {} (ssh cat, has_password={})",
+            ssh_host,
+            password.is_some()
+        )),
         LogLevel::Info,
     );
 
@@ -409,7 +462,13 @@ fn run_tunnel_ssh(
                 }
                 Err(e) => {
                     let msg = format!("创建 SSH_ASKPASS 脚本失败: {}", e);
-                    emit_error_progress(&progress_tx, &env_id, "fetch_kubeconfig", "通过 SSH 获取 kubeconfig", &msg);
+                    emit_error_progress(
+                        &progress_tx,
+                        &env_id,
+                        "fetch_kubeconfig",
+                        "通过 SSH 获取 kubeconfig",
+                        &msg,
+                    );
                     return Err(TunnelError::Ssh(msg));
                 }
             }
@@ -436,18 +495,21 @@ fn run_tunnel_ssh(
             .env("DISPLAY", ":0");
     } else {
         // 无密码：批处理模式快速失败，避免卡在 TTY 等待
-        cat_cmd_builder
-            .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]);
+        cat_cmd_builder.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]);
     }
     cat_cmd_builder.args([&ssh_host, &cat_cmd]);
 
-    let output = cat_cmd_builder
-        .output()
-        .map_err(|e| {
-            let msg = format!("ssh cat 失败: {}", e);
-            emit_error_progress(&progress_tx, &env_id, "fetch_kubeconfig", "通过 SSH 获取 kubeconfig", &msg);
-            TunnelError::Ssh(msg)
-        })?;
+    let output = cat_cmd_builder.output().map_err(|e| {
+        let msg = format!("ssh cat 失败: {}", e);
+        emit_error_progress(
+            &progress_tx,
+            &env_id,
+            "fetch_kubeconfig",
+            "通过 SSH 获取 kubeconfig",
+            &msg,
+        );
+        TunnelError::Ssh(msg)
+    })?;
 
     // 以 stdout 中是否存在 apiVersion: 作为成功判据：
     // 部分 SSH 客户端因安全 WARNING 退出非零，但实际已成功输出 kubeconfig，
@@ -460,7 +522,11 @@ fn run_tunnel_ssh(
         debug_log::log_tunnel(
             Some(&env_id),
             "ssh_cat_stderr",
-            Some(&format!("exit={:?} stderr={}", output.status.code(), stderr.trim())),
+            Some(&format!(
+                "exit={:?} stderr={}",
+                output.status.code(),
+                stderr.trim()
+            )),
             LogLevel::Error,
         );
         let real_stderr = strip_ssh_warnings(&stderr);
@@ -473,18 +539,41 @@ fn run_tunnel_ssh(
                 || real_lower.contains("no supported authentication"));
         if is_auth_failure {
             let msg = "SSH 认证需要密码，请输入密码后重试".to_string();
-            emit_error_progress(&progress_tx, &env_id, "fetch_kubeconfig", "通过 SSH 获取 kubeconfig", &msg);
+            emit_error_progress(
+                &progress_tx,
+                &env_id,
+                "fetch_kubeconfig",
+                "通过 SSH 获取 kubeconfig",
+                &msg,
+            );
             return Err(TunnelError::AuthRequired(tunnel_id));
         }
-        let first_line = real_stderr.trim().lines().next().unwrap_or("无输出").to_string();
+        let first_line = real_stderr
+            .trim()
+            .lines()
+            .next()
+            .unwrap_or("无输出")
+            .to_string();
         let msg = format!("ssh cat 失败: {}", first_line);
-        emit_error_progress(&progress_tx, &env_id, "fetch_kubeconfig", "通过 SSH 获取 kubeconfig", &msg);
+        emit_error_progress(
+            &progress_tx,
+            &env_id,
+            "fetch_kubeconfig",
+            "通过 SSH 获取 kubeconfig",
+            &msg,
+        );
         return Err(TunnelError::Ssh(msg));
     }
 
     let content = String::from_utf8(output.stdout).map_err(|_| {
         let msg = "ssh cat 输出非 UTF-8".to_string();
-        emit_error_progress(&progress_tx, &env_id, "fetch_kubeconfig", "通过 SSH 获取 kubeconfig", &msg);
+        emit_error_progress(
+            &progress_tx,
+            &env_id,
+            "fetch_kubeconfig",
+            "通过 SSH 获取 kubeconfig",
+            &msg,
+        );
         TunnelError::Ssh(msg)
     })?;
 
@@ -498,12 +587,34 @@ fn run_tunnel_ssh(
         )),
         LogLevel::Info,
     );
-    emit_progress(&progress_tx, &env_id, "fetch_kubeconfig", "通过 SSH 获取 kubeconfig", "success", None, "connecting");
-    emit_progress(&progress_tx, &env_id, "parse_kubeconfig", "解析 kubeconfig", "running", None, "connecting");
+    emit_progress(
+        &progress_tx,
+        &env_id,
+        "fetch_kubeconfig",
+        "通过 SSH 获取 kubeconfig",
+        "success",
+        None,
+        "connecting",
+    );
+    emit_progress(
+        &progress_tx,
+        &env_id,
+        "parse_kubeconfig",
+        "解析 kubeconfig",
+        "running",
+        None,
+        "connecting",
+    );
 
     let (remote_host, remote_port, ctx_used, cluster_name) =
         server_host_port_from_kubeconfig(&content, preferred_context.as_deref()).map_err(|e| {
-            emit_error_progress(&progress_tx, &env_id, "parse_kubeconfig", "解析 kubeconfig", &e.to_string());
+            emit_error_progress(
+                &progress_tx,
+                &env_id,
+                "parse_kubeconfig",
+                "解析 kubeconfig",
+                &e.to_string(),
+            );
             e
         })?;
 
@@ -516,8 +627,24 @@ fn run_tunnel_ssh(
         )),
         LogLevel::Info,
     );
-    emit_progress(&progress_tx, &env_id, "parse_kubeconfig", "解析 kubeconfig", "success", Some(&format!("{}:{}", remote_host, remote_port)), "connecting");
-    emit_progress(&progress_tx, &env_id, "create_tunnel", "创建 SSH 隧道", "running", None, "connecting");
+    emit_progress(
+        &progress_tx,
+        &env_id,
+        "parse_kubeconfig",
+        "解析 kubeconfig",
+        "success",
+        Some(&format!("{}:{}", remote_host, remote_port)),
+        "connecting",
+    );
+    emit_progress(
+        &progress_tx,
+        &env_id,
+        "create_tunnel",
+        "创建 SSH 隧道",
+        "running",
+        None,
+        "connecting",
+    );
 
     let local_port = match local_port {
         Some(p) => p,
@@ -529,16 +656,30 @@ fn run_tunnel_ssh(
         }
     };
 
-    let virtual_yaml = replace_server_in_kubeconfig(&content, local_port, preferred_context.as_deref()).map_err(|e| {
-        emit_error_progress(&progress_tx, &env_id, "parse_kubeconfig", "解析 kubeconfig", &e.to_string());
-        e
-    })?;
+    let virtual_yaml =
+        replace_server_in_kubeconfig(&content, local_port, preferred_context.as_deref()).map_err(
+            |e| {
+                emit_error_progress(
+                    &progress_tx,
+                    &env_id,
+                    "parse_kubeconfig",
+                    "解析 kubeconfig",
+                    &e.to_string(),
+                );
+                e
+            },
+        )?;
 
     let ssh_tunnel_cmd = format!(
         "ssh -L {}:{}:{} {} -N",
         local_port, remote_host, remote_port, ssh_host
     );
-    debug_log::log_tunnel(Some(&env_id), "ssh_cmd", Some(&ssh_tunnel_cmd), LogLevel::Info);
+    debug_log::log_tunnel(
+        Some(&env_id),
+        "ssh_cmd",
+        Some(&ssh_tunnel_cmd),
+        LogLevel::Info,
+    );
     debug_log::log_tunnel(
         Some(&env_id),
         "ok",
@@ -548,8 +689,24 @@ fn run_tunnel_ssh(
         )),
         LogLevel::Info,
     );
-    emit_progress(&progress_tx, &env_id, "create_tunnel", "创建 SSH 隧道", "success", Some(&format!("127.0.0.1:{}", local_port)), "connecting");
-    emit_progress(&progress_tx, &env_id, "create_client", "创建 K8s 客户端", "running", None, "connecting");
+    emit_progress(
+        &progress_tx,
+        &env_id,
+        "create_tunnel",
+        "创建 SSH 隧道",
+        "success",
+        Some(&format!("127.0.0.1:{}", local_port)),
+        "connecting",
+    );
+    emit_progress(
+        &progress_tx,
+        &env_id,
+        "create_client",
+        "创建 K8s 客户端",
+        "running",
+        None,
+        "connecting",
+    );
 
     // 启动 ssh -L -N 端口转发子进程，同样注入 SSH_ASKPASS（如有）
     let mut tunnel_cmd = std::process::Command::new("ssh");
@@ -575,7 +732,13 @@ fn run_tunnel_ssh(
 
     let mut child = tunnel_cmd.spawn().map_err(|e| {
         let msg = format!("启动 ssh -L 子进程失败: {}", e);
-        emit_error_progress(&progress_tx, &env_id, "create_tunnel", "创建 SSH 隧道", &msg);
+        emit_error_progress(
+            &progress_tx,
+            &env_id,
+            "create_tunnel",
+            "创建 SSH 隧道",
+            &msg,
+        );
         TunnelError::Ssh(msg)
     })?;
 
@@ -586,12 +749,15 @@ fn run_tunnel_ssh(
         // 子进程提前退出说明 ssh -L 连接失败
         match child.try_wait() {
             Ok(Some(exit_status)) => {
-                let msg = format!(
-                    "ssh -L 子进程提前退出 (exit={}), 隧道建立失败",
-                    exit_status
-                );
+                let msg = format!("ssh -L 子进程提前退出 (exit={}), 隧道建立失败", exit_status);
                 debug_log::log_tunnel_err(Some(&env_id), &msg, LogLevel::Error);
-                emit_error_progress(&progress_tx, &env_id, "create_tunnel", "创建 SSH 隧道", &msg);
+                emit_error_progress(
+                    &progress_tx,
+                    &env_id,
+                    "create_tunnel",
+                    "创建 SSH 隧道",
+                    &msg,
+                );
                 let _ = tx.send(Err(msg.clone()));
                 return Ok(());
             }
@@ -617,15 +783,33 @@ fn run_tunnel_ssh(
             local_port
         );
         debug_log::log_tunnel_err(Some(&env_id), &msg, LogLevel::Error);
-        emit_error_progress(&progress_tx, &env_id, "create_tunnel", "创建 SSH 隧道", &msg);
+        emit_error_progress(
+            &progress_tx,
+            &env_id,
+            "create_tunnel",
+            "创建 SSH 隧道",
+            &msg,
+        );
         let _ = tx.send(Err(msg));
         return Ok(());
     }
 
-    emit_progress(&progress_tx, &env_id, "create_client", "创建 K8s 客户端", "success", None, "connected");
+    emit_progress(
+        &progress_tx,
+        &env_id,
+        "create_client",
+        "创建 K8s 客户端",
+        "success",
+        None,
+        "connected",
+    );
 
-    tx.send(Ok((local_port, virtual_yaml)))
-        .map_err(|_| TunnelError::Io(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "channel closed")))?;
+    tx.send(Ok((local_port, virtual_yaml))).map_err(|_| {
+        TunnelError::Io(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "channel closed",
+        ))
+    })?;
 
     while !shutdown.load(Ordering::SeqCst) {
         thread::sleep(Duration::from_millis(200));
@@ -649,18 +833,43 @@ fn run_tunnel_builtin(
 ) -> Result<(), TunnelError> {
     let host_config = ssh_config_get_host_config(&ssh_host).ok_or_else(|| {
         let e = TunnelError::SshConfig(format!("~/.ssh/config 中未找到 Host: {}", ssh_host));
-        emit_error_progress(&progress_tx, &env_id, "ssh_config", "解析 SSH 配置", &e.to_string());
+        emit_error_progress(
+            &progress_tx,
+            &env_id,
+            "ssh_config",
+            "解析 SSH 配置",
+            &e.to_string(),
+        );
         e
     })?;
 
-    emit_progress(&progress_tx, &env_id, "ssh_config", "解析 SSH 配置", "success", None, "connecting");
-    emit_progress(&progress_tx, &env_id, "fetch_kubeconfig", "通过 SSH 获取 kubeconfig", "running", None, "connecting");
+    emit_progress(
+        &progress_tx,
+        &env_id,
+        "ssh_config",
+        "解析 SSH 配置",
+        "success",
+        None,
+        "connecting",
+    );
+    emit_progress(
+        &progress_tx,
+        &env_id,
+        "fetch_kubeconfig",
+        "通过 SSH 获取 kubeconfig",
+        "running",
+        None,
+        "connecting",
+    );
 
     let connect_target = format!("{}:{}", host_config.hostname, host_config.port);
     debug_log::log_tunnel(
         Some(&env_id),
         "connect",
-        Some(&format!("Host {} -> {} (builtin)", ssh_host, connect_target)),
+        Some(&format!(
+            "Host {} -> {} (builtin)",
+            ssh_host, connect_target
+        )),
         LogLevel::Info,
     );
 
@@ -678,12 +887,19 @@ fn run_tunnel_builtin(
             let stream = connect_via_proxy(proxy_args)?;
             sess.set_tcp_stream(stream);
         } else {
-            let tcp = std::net::TcpStream::connect((host_config.hostname.as_str(), host_config.port))
-                .map_err(|e| {
-                    let msg = format!("TCP connect to {}: {}", connect_target, e);
-                    emit_error_progress(&progress_tx, &env_id, "fetch_kubeconfig", "通过 SSH 获取 kubeconfig", &msg);
-                    TunnelError::Ssh(msg)
-                })?;
+            let tcp =
+                std::net::TcpStream::connect((host_config.hostname.as_str(), host_config.port))
+                    .map_err(|e| {
+                        let msg = format!("TCP connect to {}: {}", connect_target, e);
+                        emit_error_progress(
+                            &progress_tx,
+                            &env_id,
+                            "fetch_kubeconfig",
+                            "通过 SSH 获取 kubeconfig",
+                            &msg,
+                        );
+                        TunnelError::Ssh(msg)
+                    })?;
             tcp.set_read_timeout(Some(Duration::from_secs(30))).ok();
             tcp.set_write_timeout(Some(Duration::from_secs(30))).ok();
             sess.set_tcp_stream(tcp);
@@ -694,15 +910,27 @@ fn run_tunnel_builtin(
     {
         if ssh_config_resolve_proxy_command(&host_config).is_some() {
             let msg = "ProxyCommand/ProxyJump 仅支持 Unix 平台".to_string();
-            emit_error_progress(&progress_tx, &env_id, "fetch_kubeconfig", "通过 SSH 获取 kubeconfig", &msg);
+            emit_error_progress(
+                &progress_tx,
+                &env_id,
+                "fetch_kubeconfig",
+                "通过 SSH 获取 kubeconfig",
+                &msg,
+            );
             return Err(TunnelError::Ssh(msg));
         }
         let tcp = std::net::TcpStream::connect((host_config.hostname.as_str(), host_config.port))
             .map_err(|e| {
-                let msg = format!("TCP connect to {}: {}", connect_target, e);
-                emit_error_progress(&progress_tx, &env_id, "fetch_kubeconfig", "通过 SSH 获取 kubeconfig", &msg);
-                TunnelError::Ssh(msg)
-            })?;
+            let msg = format!("TCP connect to {}: {}", connect_target, e);
+            emit_error_progress(
+                &progress_tx,
+                &env_id,
+                "fetch_kubeconfig",
+                "通过 SSH 获取 kubeconfig",
+                &msg,
+            );
+            TunnelError::Ssh(msg)
+        })?;
         tcp.set_read_timeout(Some(Duration::from_secs(30))).ok();
         tcp.set_write_timeout(Some(Duration::from_secs(30))).ok();
         sess.set_tcp_stream(tcp);
@@ -710,7 +938,13 @@ fn run_tunnel_builtin(
 
     sess.handshake().map_err(|e| {
         let msg = e.to_string();
-        emit_error_progress(&progress_tx, &env_id, "fetch_kubeconfig", "通过 SSH 获取 kubeconfig", &msg);
+        emit_error_progress(
+            &progress_tx,
+            &env_id,
+            "fetch_kubeconfig",
+            "通过 SSH 获取 kubeconfig",
+            &msg,
+        );
         TunnelError::Ssh(msg)
     })?;
 
@@ -736,29 +970,69 @@ fn run_tunnel_builtin(
     }
     if !sess.authenticated() {
         let msg = "SSH 认证失败。请在 ~/.ssh/config 中为该 Host 设置 IdentityFile，或确保本机存在 ~/.ssh/id_ed25519 / id_rsa，或运行 ssh-add 将密钥加入 agent。".to_string();
-        emit_error_progress(&progress_tx, &env_id, "fetch_kubeconfig", "通过 SSH 获取 kubeconfig", &msg);
+        emit_error_progress(
+            &progress_tx,
+            &env_id,
+            "fetch_kubeconfig",
+            "通过 SSH 获取 kubeconfig",
+            &msg,
+        );
         return Err(TunnelError::Ssh(msg));
     }
 
-    let mut channel = sess.channel_session().map_err(|e| TunnelError::Ssh(e.to_string()))?;
+    let mut channel = sess
+        .channel_session()
+        .map_err(|e| TunnelError::Ssh(e.to_string()))?;
     let cmd = format!("cat {}", shell_escape(&remote_kubeconfig_path));
-    channel.exec(&cmd).map_err(|e| TunnelError::Ssh(e.to_string()))?;
+    channel
+        .exec(&cmd)
+        .map_err(|e| TunnelError::Ssh(e.to_string()))?;
     let mut content = String::new();
-    channel.read_to_string(&mut content).map_err(TunnelError::Io)?;
-    channel.wait_close().map_err(|e| TunnelError::Ssh(e.to_string()))?;
+    channel
+        .read_to_string(&mut content)
+        .map_err(TunnelError::Io)?;
+    channel
+        .wait_close()
+        .map_err(|e| TunnelError::Ssh(e.to_string()))?;
 
     debug_log::log_tunnel(
         Some(&env_id),
         "kubeconfig_fetched",
-        Some(&format!("path={} len={}", remote_kubeconfig_path, content.len())),
+        Some(&format!(
+            "path={} len={}",
+            remote_kubeconfig_path,
+            content.len()
+        )),
         LogLevel::Info,
     );
-    emit_progress(&progress_tx, &env_id, "fetch_kubeconfig", "通过 SSH 获取 kubeconfig", "success", None, "connecting");
-    emit_progress(&progress_tx, &env_id, "parse_kubeconfig", "解析 kubeconfig", "running", None, "connecting");
+    emit_progress(
+        &progress_tx,
+        &env_id,
+        "fetch_kubeconfig",
+        "通过 SSH 获取 kubeconfig",
+        "success",
+        None,
+        "connecting",
+    );
+    emit_progress(
+        &progress_tx,
+        &env_id,
+        "parse_kubeconfig",
+        "解析 kubeconfig",
+        "running",
+        None,
+        "connecting",
+    );
 
     let (remote_host, remote_port, ctx_used, cluster_name) =
         server_host_port_from_kubeconfig(&content, preferred_context.as_deref()).map_err(|e| {
-            emit_error_progress(&progress_tx, &env_id, "parse_kubeconfig", "解析 kubeconfig", &e.to_string());
+            emit_error_progress(
+                &progress_tx,
+                &env_id,
+                "parse_kubeconfig",
+                "解析 kubeconfig",
+                &e.to_string(),
+            );
             e
         })?;
 
@@ -771,15 +1045,33 @@ fn run_tunnel_builtin(
         )),
         LogLevel::Info,
     );
-    emit_progress(&progress_tx, &env_id, "parse_kubeconfig", "解析 kubeconfig", "success", Some(&format!("{}:{}", remote_host, remote_port)), "connecting");
-    emit_progress(&progress_tx, &env_id, "create_tunnel", "创建 SSH 隧道", "running", None, "connecting");
+    emit_progress(
+        &progress_tx,
+        &env_id,
+        "parse_kubeconfig",
+        "解析 kubeconfig",
+        "success",
+        Some(&format!("{}:{}", remote_host, remote_port)),
+        "connecting",
+    );
+    emit_progress(
+        &progress_tx,
+        &env_id,
+        "create_tunnel",
+        "创建 SSH 隧道",
+        "running",
+        None,
+        "connecting",
+    );
 
     let bind_port = local_port.unwrap_or(0);
-    let listener = std::net::TcpListener::bind(format!("127.0.0.1:{}", bind_port)).map_err(TunnelError::Io)?;
+    let listener =
+        std::net::TcpListener::bind(format!("127.0.0.1:{}", bind_port)).map_err(TunnelError::Io)?;
     let local_port = listener.local_addr().map_err(TunnelError::Io)?.port();
     listener.set_nonblocking(true).map_err(TunnelError::Io)?;
 
-    let virtual_yaml = replace_server_in_kubeconfig(&content, local_port, preferred_context.as_deref())?;
+    let virtual_yaml =
+        replace_server_in_kubeconfig(&content, local_port, preferred_context.as_deref())?;
     debug_log::log_tunnel(
         Some(&env_id),
         "ok",
@@ -789,19 +1081,51 @@ fn run_tunnel_builtin(
         )),
         LogLevel::Info,
     );
-    emit_progress(&progress_tx, &env_id, "create_tunnel", "创建 SSH 隧道", "success", Some(&format!("127.0.0.1:{}", local_port)), "connecting");
-    emit_progress(&progress_tx, &env_id, "create_client", "创建 K8s 客户端", "running", None, "connecting");
-    emit_progress(&progress_tx, &env_id, "create_client", "创建 K8s 客户端", "success", None, "connected");
+    emit_progress(
+        &progress_tx,
+        &env_id,
+        "create_tunnel",
+        "创建 SSH 隧道",
+        "success",
+        Some(&format!("127.0.0.1:{}", local_port)),
+        "connecting",
+    );
+    emit_progress(
+        &progress_tx,
+        &env_id,
+        "create_client",
+        "创建 K8s 客户端",
+        "running",
+        None,
+        "connecting",
+    );
+    emit_progress(
+        &progress_tx,
+        &env_id,
+        "create_client",
+        "创建 K8s 客户端",
+        "success",
+        None,
+        "connected",
+    );
 
-    tx.send(Ok((local_port, virtual_yaml)))
-        .map_err(|_| TunnelError::Io(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "channel closed")))?;
+    tx.send(Ok((local_port, virtual_yaml))).map_err(|_| {
+        TunnelError::Io(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "channel closed",
+        ))
+    })?;
 
     while !shutdown.load(Ordering::SeqCst) {
         match listener.accept() {
             Ok((stream, addr)) => {
                 let _ = stream.set_nodelay(true);
                 let src_ip = addr.ip().to_string();
-                match sess.channel_direct_tcpip(&remote_host, remote_port, Some((src_ip.as_str(), addr.port()))) {
+                match sess.channel_direct_tcpip(
+                    &remote_host,
+                    remote_port,
+                    Some((src_ip.as_str(), addr.port())),
+                ) {
                     Ok(channel) => {
                         thread::spawn(move || tunnel_bidirectional_spawn(stream, channel));
                     }
@@ -957,10 +1281,14 @@ impl SshTunnelRunner {
                 return Err(TunnelError::Ssh(s));
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                return Err(TunnelError::Ssh("SSH 隧道建立超时（90 秒），请检查网络与 SSH 配置".into()));
+                return Err(TunnelError::Ssh(
+                    "SSH 隧道建立超时（90 秒），请检查网络与 SSH 配置".into(),
+                ));
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(TunnelError::Ssh("tunnel thread exited without sending".into()));
+                return Err(TunnelError::Ssh(
+                    "tunnel thread exited without sending".into(),
+                ));
             }
         };
         let state = TunnelState {

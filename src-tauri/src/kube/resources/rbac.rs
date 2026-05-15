@@ -20,7 +20,10 @@ pub struct RoleItem {
 }
 
 impl SimpleNamespacedItem for RoleItem {
-    fn from_meta(meta: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta, default_ns: &str) -> Self {
+    fn from_meta(
+        meta: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta,
+        default_ns: &str,
+    ) -> Self {
         Self {
             name: meta.name.unwrap_or_default(),
             namespace: meta.namespace.unwrap_or_else(|| default_ns.to_string()),
@@ -94,7 +97,13 @@ pub struct ClusterRoleBindingItem {
 fn extract_role_ref_and_subjects(
     role_ref: &k8s_openapi::api::rbac::v1::RoleRef,
     subjects: &Option<Vec<Subject>>,
-) -> (Option<String>, Option<String>, Option<String>, Option<u32>, Option<Vec<SubjectRef>>) {
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<u32>,
+    Option<Vec<SubjectRef>>,
+) {
     let role_ref_str = Some(format!("{}/{}", role_ref.kind, role_ref.name));
     let role_ref_kind = Some(role_ref.kind.clone());
     let role_ref_name = Some(role_ref.name.clone());
@@ -110,7 +119,13 @@ fn extract_role_ref_and_subjects(
             .collect()
     });
     let subjects_list = subjects_list.filter(|v| !v.is_empty());
-    (role_ref_str, role_ref_kind, role_ref_name, subject_count, subjects_list)
+    (
+        role_ref_str,
+        role_ref_kind,
+        role_ref_name,
+        subject_count,
+        subjects_list,
+    )
 }
 
 // ── list 函数 ──────────────────────────────────────────────────────────────
@@ -126,7 +141,10 @@ pub async fn list_role_bindings(
 ) -> Result<Vec<RoleBindingItem>, ResourceError> {
     let ns = namespace.unwrap_or("default");
     let api: Api<RoleBinding> = Api::namespaced(client.clone(), ns);
-    let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
+    let list = api
+        .list(&build_list_params(label_selector))
+        .await
+        .map_err(ResourceError::Kube)?;
     let items = list
         .items
         .into_iter()
@@ -154,7 +172,10 @@ pub async fn list_cluster_role_bindings(
     label_selector: Option<&str>,
 ) -> Result<Vec<ClusterRoleBindingItem>, ResourceError> {
     let api: Api<ClusterRoleBinding> = Api::all(client.clone());
-    let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
+    let list = api
+        .list(&build_list_params(label_selector))
+        .await
+        .map_err(ResourceError::Kube)?;
     let items = list
         .items
         .into_iter()

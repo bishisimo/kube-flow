@@ -4,8 +4,8 @@ use super::{
     build_list_params, compute_workload_pod_rollup, format_creation_time, label_selector_to_string,
     ResourceError, WorkloadPodRollup,
 };
-use crate::kube::resource_graph::selector_to_string;
 use crate::kube::resource_get::get_resource_value;
+use crate::kube::resource_graph::selector_to_string;
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::Api;
@@ -106,7 +106,11 @@ fn map_pod(p: Pod, ns: &str) -> PodItem {
         name: p.metadata.name.unwrap_or_default(),
         namespace: p.metadata.namespace.unwrap_or_else(|| ns.to_string()),
         phase: p.status.as_ref().and_then(|s| s.phase.clone()),
-        container_status: if total > 0 { Some(format!("{}/{}", ready, total)) } else { None },
+        container_status: if total > 0 {
+            Some(format!("{}/{}", ready, total))
+        } else {
+            None
+        },
         pod_ip: p.status.as_ref().and_then(|s| s.pod_ip.clone()),
         node_name: p.spec.and_then(|s| s.node_name),
         creation_time: format_creation_time(p.metadata.creation_timestamp.as_ref()),
@@ -145,7 +149,10 @@ pub async fn list_pods(
 ) -> Result<Vec<PodItem>, ResourceError> {
     let ns = namespace.unwrap_or("default");
     let api: Api<Pod> = Api::namespaced(client.clone(), ns);
-    let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
+    let list = api
+        .list(&build_list_params(label_selector))
+        .await
+        .map_err(ResourceError::Kube)?;
     Ok(list.items.into_iter().map(|p| map_pod(p, ns)).collect())
 }
 
@@ -156,7 +163,10 @@ pub(crate) async fn list_pod_objects(
     label_selector: Option<&str>,
 ) -> Result<Vec<Pod>, ResourceError> {
     let api: Api<Pod> = Api::namespaced(client.clone(), namespace);
-    let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
+    let list = api
+        .list(&build_list_params(label_selector))
+        .await
+        .map_err(ResourceError::Kube)?;
     Ok(list.items)
 }
 
@@ -168,7 +178,10 @@ pub async fn list_deployments(
 ) -> Result<Vec<DeploymentItem>, ResourceError> {
     let ns = namespace.unwrap_or("default");
     let api: Api<Deployment> = Api::namespaced(client.clone(), ns);
-    let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
+    let list = api
+        .list(&build_list_params(label_selector))
+        .await
+        .map_err(ResourceError::Kube)?;
     let pod_objects = list_pod_objects(client, ns, label_selector).await?;
     let items = list
         .items
@@ -176,7 +189,11 @@ pub async fn list_deployments(
         .map(|d| {
             let replicas = d.spec.as_ref().and_then(|s| s.replicas);
             let ready = d.status.as_ref().and_then(|s| s.ready_replicas);
-            let label_selector = d.spec.as_ref().map(|s| &s.selector).and_then(|sel| label_selector_to_string(Some(sel)));
+            let label_selector = d
+                .spec
+                .as_ref()
+                .map(|s| &s.selector)
+                .and_then(|sel| label_selector_to_string(Some(sel)));
             let wns = d.metadata.namespace.as_deref().unwrap_or(ns);
             let pod_rollup = d
                 .spec
@@ -205,7 +222,10 @@ pub async fn list_stateful_sets(
 ) -> Result<Vec<StatefulSetItem>, ResourceError> {
     let ns = namespace.unwrap_or("default");
     let api: Api<StatefulSet> = Api::namespaced(client.clone(), ns);
-    let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
+    let list = api
+        .list(&build_list_params(label_selector))
+        .await
+        .map_err(ResourceError::Kube)?;
     let pod_objects = list_pod_objects(client, ns, label_selector).await?;
     let items = list
         .items
@@ -213,7 +233,11 @@ pub async fn list_stateful_sets(
         .map(|s| {
             let replicas = s.spec.as_ref().and_then(|sp| sp.replicas);
             let ready = s.status.and_then(|st| st.ready_replicas);
-            let label_selector = s.spec.as_ref().map(|sp| &sp.selector).and_then(|sel| label_selector_to_string(Some(sel)));
+            let label_selector = s
+                .spec
+                .as_ref()
+                .map(|sp| &sp.selector)
+                .and_then(|sel| label_selector_to_string(Some(sel)));
             let wns = s.metadata.namespace.as_deref().unwrap_or(ns);
             let pod_rollup = s
                 .spec
@@ -242,7 +266,10 @@ pub async fn list_daemon_sets(
 ) -> Result<Vec<DaemonSetItem>, ResourceError> {
     let ns = namespace.unwrap_or("default");
     let api: Api<DaemonSet> = Api::namespaced(client.clone(), ns);
-    let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
+    let list = api
+        .list(&build_list_params(label_selector))
+        .await
+        .map_err(ResourceError::Kube)?;
     let pod_objects = list_pod_objects(client, ns, label_selector).await?;
     let items = list
         .items
@@ -250,7 +277,11 @@ pub async fn list_daemon_sets(
         .map(|d| {
             let desired = d.status.as_ref().map(|s| s.desired_number_scheduled);
             let ready = d.status.map(|s| s.number_ready);
-            let label_selector = d.spec.as_ref().map(|s| &s.selector).and_then(|sel| label_selector_to_string(Some(sel)));
+            let label_selector = d
+                .spec
+                .as_ref()
+                .map(|s| &s.selector)
+                .and_then(|sel| label_selector_to_string(Some(sel)));
             let wns = d.metadata.namespace.as_deref().unwrap_or(ns);
             let pod_rollup = d
                 .spec
@@ -279,14 +310,21 @@ pub async fn list_replica_sets(
 ) -> Result<Vec<ReplicaSetItem>, ResourceError> {
     let ns = namespace.unwrap_or("default");
     let api: Api<ReplicaSet> = Api::namespaced(client.clone(), ns);
-    let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
+    let list = api
+        .list(&build_list_params(label_selector))
+        .await
+        .map_err(ResourceError::Kube)?;
     let items = list
         .items
         .into_iter()
         .map(|r| {
             let replicas = r.spec.as_ref().and_then(|s| s.replicas);
             let ready = r.status.as_ref().and_then(|s| s.ready_replicas);
-            let label_selector = r.spec.as_ref().map(|s| &s.selector).and_then(|sel| label_selector_to_string(Some(sel)));
+            let label_selector = r
+                .spec
+                .as_ref()
+                .map(|s| &s.selector)
+                .and_then(|sel| label_selector_to_string(Some(sel)));
             ReplicaSetItem {
                 name: r.metadata.name.unwrap_or_default(),
                 namespace: r.metadata.namespace.unwrap_or_else(|| ns.to_string()),

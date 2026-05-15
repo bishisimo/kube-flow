@@ -61,7 +61,10 @@ pub async fn list_persistent_volume_claims(
 ) -> Result<Vec<PersistentVolumeClaimItem>, ResourceError> {
     let ns = namespace.unwrap_or("default");
     let api: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), ns);
-    let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
+    let list = api
+        .list(&build_list_params(label_selector))
+        .await
+        .map_err(ResourceError::Kube)?;
     let items = list
         .items
         .into_iter()
@@ -95,7 +98,10 @@ pub async fn list_persistent_volumes(
     label_selector: Option<&str>,
 ) -> Result<Vec<PersistentVolumeItem>, ResourceError> {
     let api: Api<PersistentVolume> = Api::all(client.clone());
-    let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
+    let list = api
+        .list(&build_list_params(label_selector))
+        .await
+        .map_err(ResourceError::Kube)?;
     let items = list
         .items
         .into_iter()
@@ -124,7 +130,10 @@ pub async fn list_storage_classes(
     label_selector: Option<&str>,
 ) -> Result<Vec<StorageClassItem>, ResourceError> {
     let api: Api<StorageClass> = Api::all(client.clone());
-    let list = api.list(&build_list_params(label_selector)).await.map_err(ResourceError::Kube)?;
+    let list = api
+        .list(&build_list_params(label_selector))
+        .await
+        .map_err(ResourceError::Kube)?;
     let items = list
         .items
         .into_iter()

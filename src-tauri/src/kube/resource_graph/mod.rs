@@ -4,18 +4,18 @@
 pub mod extractor;
 pub mod registry;
 pub mod extractors {
-    pub mod workload_mounts;
-    pub mod owner_ref;
-    pub mod selector;
-    pub mod service_selector;
-    pub mod service_account;
-    pub mod pvc_bindings;
-    pub mod ingress_backend;
-    pub mod service_reverse;
     pub mod hpa_ref;
+    pub mod ingress_backend;
+    pub mod owner_ref;
+    pub mod pod_service_link;
+    pub mod pvc_bindings;
     pub mod rbac_refs;
     pub mod sa_bindings_reverse;
-    pub mod pod_service_link;
+    pub mod selector;
+    pub mod service_account;
+    pub mod service_reverse;
+    pub mod service_selector;
+    pub mod workload_mounts;
     pub mod workload_service_link;
 }
 
@@ -41,7 +41,11 @@ pub struct ResourceRef {
 }
 
 impl ResourceRef {
-    pub fn new(kind: impl Into<String>, namespace: Option<String>, name: impl Into<String>) -> Self {
+    pub fn new(
+        kind: impl Into<String>,
+        namespace: Option<String>,
+        name: impl Into<String>,
+    ) -> Self {
         Self {
             kind: kind.into(),
             namespace,
@@ -51,7 +55,11 @@ impl ResourceRef {
     }
 
     /// 无集群对象名、仅由 `set_id` 在图内与 label 集合一一对应；不要传入 `get`。
-    pub fn for_label_set(kind: impl Into<String>, namespace: Option<String>, set_id: impl Into<String>) -> Self {
+    pub fn for_label_set(
+        kind: impl Into<String>,
+        namespace: Option<String>,
+        set_id: impl Into<String>,
+    ) -> Self {
         Self {
             kind: kind.into(),
             namespace,
@@ -130,11 +138,18 @@ pub struct ResourceGraph {
 // ── 叶节点定义 ────────────────────────────────────────────────────────────────
 
 fn is_leaf_kind(kind: &str) -> bool {
-    matches!(kind, "PersistentVolume" | "StorageClass" | "Node" | "IngressClass")
+    matches!(
+        kind,
+        "PersistentVolume" | "StorageClass" | "Node" | "IngressClass"
+    )
 }
 
 /// 对「同 kind + 命名空间 + label selector」的聚合边目标生成稳定、与文案无关的图内 id。
-pub fn set_id_for_label_aggregate(kind: &str, namespace: Option<&str>, label_selector: &str) -> String {
+pub fn set_id_for_label_aggregate(
+    kind: &str,
+    namespace: Option<&str>,
+    label_selector: &str,
+) -> String {
     let mut h: u64 = 1469598103934665603;
     const P: u64 = 1099511628211;
     for b in kind.as_bytes() {
@@ -167,21 +182,37 @@ pub fn selector_to_string(sel: &serde_json::Value) -> Option<String> {
     }
     if let Some(me) = obj.get("matchExpressions").and_then(|v| v.as_array()) {
         for expr in me {
-            let obj2 = match expr.as_object() { Some(o) => o, None => continue };
-            let key = match expr.get("key").and_then(|v| v.as_str()) { Some(k) => k, None => continue };
+            let obj2 = match expr.as_object() {
+                Some(o) => o,
+                None => continue,
+            };
+            let key = match expr.get("key").and_then(|v| v.as_str()) {
+                Some(k) => k,
+                None => continue,
+            };
             let op = obj2.get("operator").and_then(|v| v.as_str()).unwrap_or("");
             let vals = expr.get("values").and_then(|v| v.as_array());
             match op {
                 "In" => {
                     if let Some(arr) = vals {
-                        let vs: Vec<String> = arr.iter().filter_map(|v| v.as_str().map(String::from)).collect();
-                        if !vs.is_empty() { parts.push(format!("{} in ({})", key, vs.join(","))); }
+                        let vs: Vec<String> = arr
+                            .iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect();
+                        if !vs.is_empty() {
+                            parts.push(format!("{} in ({})", key, vs.join(",")));
+                        }
                     }
                 }
                 "NotIn" => {
                     if let Some(arr) = vals {
-                        let vs: Vec<String> = arr.iter().filter_map(|v| v.as_str().map(String::from)).collect();
-                        if !vs.is_empty() { parts.push(format!("{} notin ({})", key, vs.join(","))); }
+                        let vs: Vec<String> = arr
+                            .iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect();
+                        if !vs.is_empty() {
+                            parts.push(format!("{} notin ({})", key, vs.join(",")));
+                        }
                     }
                 }
                 "Exists" => parts.push(key.to_string()),
@@ -190,16 +221,27 @@ pub fn selector_to_string(sel: &serde_json::Value) -> Option<String> {
             }
         }
     }
-    if parts.is_empty() { None } else { Some(parts.join(",")) }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(","))
+    }
 }
 
 /// 将简单 map（如 Service.spec.selector）转为 label selector 字符串。
 pub fn simple_map_to_selector(map: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
-    if map.is_empty() { return None; }
-    let parts: Vec<String> = map.iter()
+    if map.is_empty() {
+        return None;
+    }
+    let parts: Vec<String> = map
+        .iter()
         .filter_map(|(k, v)| v.as_str().map(|s| format!("{}={}", k, s)))
         .collect();
-    if parts.is_empty() { None } else { Some(parts.join(",")) }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(","))
+    }
 }
 
 // ── BFS 引擎 ──────────────────────────────────────────────────────────────────
@@ -240,32 +282,41 @@ pub async fn build_graph(
         }
 
         // fetch JSON value
-        let value = match get_resource_value(client, &ref_.kind, &ref_.name, ref_.namespace.as_deref()).await {
-            Ok(v) => v,
-            Err(_) => {
-                if !node_map.contains_key(&ref_) {
-                    node_order.push(ref_.clone());
-                    node_map.insert(ref_.clone(), ResourceNode {
-                        resource_ref: ref_.clone(),
-                        depth,
-                        is_concrete: true,
-                        label_selector: None,
-                        display_label: None,
-                    });
+        let value =
+            match get_resource_value(client, &ref_.kind, &ref_.name, ref_.namespace.as_deref())
+                .await
+            {
+                Ok(v) => v,
+                Err(_) => {
+                    if !node_map.contains_key(&ref_) {
+                        node_order.push(ref_.clone());
+                        node_map.insert(
+                            ref_.clone(),
+                            ResourceNode {
+                                resource_ref: ref_.clone(),
+                                depth,
+                                is_concrete: true,
+                                label_selector: None,
+                                display_label: None,
+                            },
+                        );
+                    }
+                    continue;
                 }
-                continue;
-            }
-        };
+            };
 
         if !node_map.contains_key(&ref_) {
             node_order.push(ref_.clone());
-            node_map.insert(ref_.clone(), ResourceNode {
-                resource_ref: ref_.clone(),
-                depth,
-                is_concrete: true,
-                label_selector: None,
-                display_label: None,
-            });
+            node_map.insert(
+                ref_.clone(),
+                ResourceNode {
+                    resource_ref: ref_.clone(),
+                    depth,
+                    is_concrete: true,
+                    label_selector: None,
+                    display_label: None,
+                },
+            );
         }
 
         if is_leaf_kind(&ref_.kind) || depth >= max_depth {
@@ -308,13 +359,16 @@ pub async fn build_graph(
 
                 if !visited.contains(&target) && !node_map.contains_key(&target) {
                     node_order.push(target.clone());
-                    node_map.insert(target.clone(), ResourceNode {
-                        resource_ref: target.clone(),
-                        depth: depth + 1,
-                        is_concrete: target_is_concrete,
-                        label_selector: target_label_selector,
-                        display_label: to_display,
-                    });
+                    node_map.insert(
+                        target.clone(),
+                        ResourceNode {
+                            resource_ref: target.clone(),
+                            depth: depth + 1,
+                            is_concrete: target_is_concrete,
+                            label_selector: target_label_selector,
+                            display_label: to_display,
+                        },
+                    );
                     if target_is_concrete {
                         queue.push_back((target, depth + 1));
                     }
@@ -337,5 +391,9 @@ pub async fn build_graph(
         }
     }
 
-    Ok(ResourceGraph { root: root_ref, nodes, edges })
+    Ok(ResourceGraph {
+        root: root_ref,
+        nodes,
+        edges,
+    })
 }

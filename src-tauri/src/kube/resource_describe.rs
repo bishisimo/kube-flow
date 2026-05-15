@@ -2,12 +2,12 @@
 //! 表格（Non-terminated Pods、Events）内嵌于文档流，前端统一渲染 Markdown。
 
 use crate::kube::resource_get;
-use crate::kube::resources::ResourceError;
 use crate::kube::resources::cluster::{format_cpu, format_mem, parse_cpu_millis, parse_mem_bytes};
+use crate::kube::resources::ResourceError;
 use chrono::{DateTime, Utc};
+use k8s_openapi::api::core::v1::{Event, Pod};
 use kube::api::{Api, ListParams};
 use kube::Client;
-use k8s_openapi::api::core::v1::{Event, Pod};
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -36,7 +36,10 @@ fn append_basic_metadata(
     md.push_str(&format!("| Name | {} |\n", escape_table_cell(name)));
     if let Some(ns) = namespace_override {
         md.push_str(&format!("| Namespace | {} |\n", escape_table_cell(ns)));
-    } else if let Some(ns) = meta.and_then(|m| m.get("namespace")).and_then(|v| v.as_str()) {
+    } else if let Some(ns) = meta
+        .and_then(|m| m.get("namespace"))
+        .and_then(|v| v.as_str())
+    {
         md.push_str(&format!("| Namespace | {} |\n", escape_table_cell(ns)));
     }
     if let Some(meta) = meta {
@@ -46,7 +49,10 @@ fn append_basic_metadata(
                     .iter()
                     .map(|(k, v)| format!("{}={}", k, v.as_str().unwrap_or("")))
                     .collect();
-                md.push_str(&format!("| Labels | {} |\n", escape_table_cell(&parts.join(", "))));
+                md.push_str(&format!(
+                    "| Labels | {} |\n",
+                    escape_table_cell(&parts.join(", "))
+                ));
             }
         }
         if include_annotations {
@@ -56,12 +62,18 @@ fn append_basic_metadata(
                         .iter()
                         .map(|(k, v)| format!("{}={}", k, v.as_str().unwrap_or("")))
                         .collect();
-                    md.push_str(&format!("| Annotations | {} |\n", escape_table_cell(&parts.join(", "))));
+                    md.push_str(&format!(
+                        "| Annotations | {} |\n",
+                        escape_table_cell(&parts.join(", "))
+                    ));
                 }
             }
         }
         if let Some(ts) = meta.get("creationTimestamp").and_then(|v| v.as_str()) {
-            md.push_str(&format!("| CreationTimestamp | {} |\n", escape_table_cell(ts)));
+            md.push_str(&format!(
+                "| CreationTimestamp | {} |\n",
+                escape_table_cell(ts)
+            ));
         }
     }
 }
@@ -74,9 +86,8 @@ pub async fn describe_resource(
     namespace: Option<&str>,
 ) -> Result<DescribeResult, ResourceError> {
     let yaml_str = resource_get::get_resource_yaml(client, kind, name, namespace).await?;
-    let obj: serde_json::Value = serde_yaml::from_str(&yaml_str).map_err(|e| {
-        ResourceError::Serialize(format!("yaml parse: {}", e))
-    })?;
+    let obj: serde_json::Value = serde_yaml::from_str(&yaml_str)
+        .map_err(|e| ResourceError::Serialize(format!("yaml parse: {}", e)))?;
 
     let mut md = String::new();
 
@@ -87,7 +98,9 @@ pub async fn describe_resource(
         _ => {
             append_minimal_describe(&mut md, &obj, name, namespace);
             if let Some(ns) = namespace {
-                let events = fetch_events(client, kind, name, ns).await.unwrap_or_default();
+                let events = fetch_events(client, kind, name, ns)
+                    .await
+                    .unwrap_or_default();
                 append_events_table(&mut md, &events);
             }
         }
@@ -103,9 +116,9 @@ async fn append_node_describe(
     client: &Client,
     name: &str,
 ) -> Result<(), ResourceError> {
-    let obj = obj.as_object().ok_or_else(|| {
-        ResourceError::Serialize("invalid object".to_string())
-    })?;
+    let obj = obj
+        .as_object()
+        .ok_or_else(|| ResourceError::Serialize("invalid object".to_string()))?;
 
     let meta = obj.get("metadata").and_then(|v| v.as_object());
     let spec = obj.get("spec").and_then(|v| v.as_object());
@@ -125,7 +138,10 @@ async fn append_node_describe(
                         Some(format!("{}={}:{}", key, value, effect))
                     })
                     .collect();
-                md.push_str(&format!("| Taints | {} |\n", escape_table_cell(&parts.join(", "))));
+                md.push_str(&format!(
+                    "| Taints | {} |\n",
+                    escape_table_cell(&parts.join(", "))
+                ));
             }
         }
     }
@@ -134,16 +150,36 @@ async fn append_node_describe(
     if let Some(status) = status {
         if let Some(conditions) = status.get("conditions").and_then(|v| v.as_array()) {
             md.push_str("## Conditions\n\n");
-            md.push_str("| Type | Status | Reason | Message | LastHeartbeatTime | LastTransitionTime |\n");
+            md.push_str(
+                "| Type | Status | Reason | Message | LastHeartbeatTime | LastTransitionTime |\n",
+            );
             md.push_str("| --- | --- | --- | --- | --- | --- |\n");
             for c in conditions {
                 let o = c.as_object();
-                let type_ = o.and_then(|m| m.get("type")).and_then(|v| v.as_str()).unwrap_or("<none>");
-                let status_val = o.and_then(|m| m.get("status")).and_then(|v| v.as_str()).unwrap_or("<none>");
-                let reason = o.and_then(|m| m.get("reason")).and_then(|v| v.as_str()).unwrap_or("<none>");
-                let message = o.and_then(|m| m.get("message")).and_then(|v| v.as_str()).unwrap_or("<none>");
-                let last_hb = o.and_then(|m| m.get("lastHeartbeatTime")).and_then(|v| v.as_str()).unwrap_or("<none>");
-                let last_trans = o.and_then(|m| m.get("lastTransitionTime")).and_then(|v| v.as_str()).unwrap_or("<none>");
+                let type_ = o
+                    .and_then(|m| m.get("type"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("<none>");
+                let status_val = o
+                    .and_then(|m| m.get("status"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("<none>");
+                let reason = o
+                    .and_then(|m| m.get("reason"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("<none>");
+                let message = o
+                    .and_then(|m| m.get("message"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("<none>");
+                let last_hb = o
+                    .and_then(|m| m.get("lastHeartbeatTime"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("<none>");
+                let last_trans = o
+                    .and_then(|m| m.get("lastTransitionTime"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("<none>");
                 md.push_str(&format!(
                     "| {} | {} | {} | {} | {} | {} |\n",
                     escape_table_cell(type_),
@@ -163,9 +199,19 @@ async fn append_node_describe(
                 md.push_str("| Type | Address |\n| --- | --- |\n");
                 for a in addrs {
                     let o = a.as_object();
-                    let type_ = o.and_then(|m| m.get("type")).and_then(|v| v.as_str()).unwrap_or("<none>");
-                    let addr = o.and_then(|m| m.get("address")).and_then(|v| v.as_str()).unwrap_or("<none>");
-                    md.push_str(&format!("| {} | {} |\n", escape_table_cell(type_), escape_table_cell(addr)));
+                    let type_ = o
+                        .and_then(|m| m.get("type"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("<none>");
+                    let addr = o
+                        .and_then(|m| m.get("address"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("<none>");
+                    md.push_str(&format!(
+                        "| {} | {} |\n",
+                        escape_table_cell(type_),
+                        escape_table_cell(addr)
+                    ));
                 }
                 md.push('\n');
             }
@@ -176,8 +222,15 @@ async fn append_node_describe(
                 md.push_str("## Capacity\n\n");
                 md.push_str("| Resource | Quantity |\n| --- | --- |\n");
                 for (k, v) in cap {
-                    let q = v.as_str().map(String::from).unwrap_or_else(|| v.to_string());
-                    md.push_str(&format!("| {} | {} |\n", escape_table_cell(k), escape_table_cell(&q)));
+                    let q = v
+                        .as_str()
+                        .map(String::from)
+                        .unwrap_or_else(|| v.to_string());
+                    md.push_str(&format!(
+                        "| {} | {} |\n",
+                        escape_table_cell(k),
+                        escape_table_cell(&q)
+                    ));
                 }
                 md.push('\n');
             }
@@ -188,8 +241,15 @@ async fn append_node_describe(
                 md.push_str("## Allocatable\n\n");
                 md.push_str("| Resource | Quantity |\n| --- | --- |\n");
                 for (k, v) in alloc {
-                    let q = v.as_str().map(String::from).unwrap_or_else(|| v.to_string());
-                    md.push_str(&format!("| {} | {} |\n", escape_table_cell(k), escape_table_cell(&q)));
+                    let q = v
+                        .as_str()
+                        .map(String::from)
+                        .unwrap_or_else(|| v.to_string());
+                    md.push_str(&format!(
+                        "| {} | {} |\n",
+                        escape_table_cell(k),
+                        escape_table_cell(&q)
+                    ));
                 }
                 md.push('\n');
             }
@@ -198,10 +258,26 @@ async fn append_node_describe(
         if let Some(node_info) = status.get("nodeInfo").and_then(|v| v.as_object()) {
             md.push_str("## System Info\n\n");
             md.push_str("| Field | Value |\n| --- | --- |\n");
-            for key in ["machineID", "systemUUID", "bootID", "kernelVersion", "osImage", "containerRuntimeVersion", "kubeletVersion", "architecture"] {
+            for key in [
+                "machineID",
+                "systemUUID",
+                "bootID",
+                "kernelVersion",
+                "osImage",
+                "containerRuntimeVersion",
+                "kubeletVersion",
+                "architecture",
+            ] {
                 if let Some(v) = node_info.get(key) {
-                    let s = v.as_str().map(String::from).unwrap_or_else(|| v.to_string());
-                    md.push_str(&format!("| {} | {} |\n", escape_table_cell(key), escape_table_cell(&s)));
+                    let s = v
+                        .as_str()
+                        .map(String::from)
+                        .unwrap_or_else(|| v.to_string());
+                    md.push_str(&format!(
+                        "| {} | {} |\n",
+                        escape_table_cell(key),
+                        escape_table_cell(&s)
+                    ));
                 }
             }
             md.push('\n');
@@ -209,7 +285,10 @@ async fn append_node_describe(
     }
 
     let pods = fetch_node_pods(client, name).await?;
-    md.push_str(&format!("## Non-terminated Pods ({} in total)\n\n", pods.len()));
+    md.push_str(&format!(
+        "## Non-terminated Pods ({} in total)\n\n",
+        pods.len()
+    ));
     md.push_str("| Namespace | Name | CPU Requests | CPU Limits | Memory Requests | Memory Limits | Age |\n");
     md.push_str("| --- | --- | --- | --- | --- | --- | --- |\n");
     for p in &pods {
@@ -226,7 +305,9 @@ async fn append_node_describe(
     }
     md.push('\n');
 
-    let events = fetch_events_for_node(client, name).await.unwrap_or_default();
+    let events = fetch_events_for_node(client, name)
+        .await
+        .unwrap_or_default();
     append_events_table(md, &events);
 
     Ok(())
@@ -242,7 +323,10 @@ struct NodePodRow {
     age: String,
 }
 
-async fn fetch_node_pods(client: &Client, node_name: &str) -> Result<Vec<NodePodRow>, ResourceError> {
+async fn fetch_node_pods(
+    client: &Client,
+    node_name: &str,
+) -> Result<Vec<NodePodRow>, ResourceError> {
     let api: Api<Pod> = Api::all(client.clone());
     let params = ListParams::default().fields(&format!("spec.nodeName={}", node_name));
     let list = api.list(&params).await.map_err(ResourceError::Kube)?;
@@ -251,7 +335,11 @@ async fn fetch_node_pods(client: &Client, node_name: &str) -> Result<Vec<NodePod
         .items
         .into_iter()
         .filter(|p| {
-            let phase = p.status.as_ref().and_then(|s| s.phase.as_deref()).unwrap_or("");
+            let phase = p
+                .status
+                .as_ref()
+                .and_then(|s| s.phase.as_deref())
+                .unwrap_or("");
             phase != "Succeeded" && phase != "Failed"
         })
         .collect();
@@ -271,7 +359,12 @@ async fn fetch_node_pods(client: &Client, node_name: &str) -> Result<Vec<NodePod
         .map(|p| {
             let (cpu_req, cpu_lim, mem_req, mem_lim) = sum_pod_resources(p);
             NodePodRow {
-                namespace: p.metadata.namespace.as_deref().unwrap_or("<none>").to_string(),
+                namespace: p
+                    .metadata
+                    .namespace
+                    .as_deref()
+                    .unwrap_or("<none>")
+                    .to_string(),
                 name: p.metadata.name.as_deref().unwrap_or("<none>").to_string(),
                 cpu_req,
                 cpu_lim,
@@ -306,11 +399,17 @@ fn sum_pod_resources(pod: &Pod) -> (String, String, String, String) {
         if let Some(r) = &c.resources {
             if let Some(req) = &r.requests {
                 cpu_req += req.get("cpu").map(|q| parse_cpu_millis(&q.0)).unwrap_or(0);
-                mem_req += req.get("memory").map(|q| parse_mem_bytes(&q.0)).unwrap_or(0);
+                mem_req += req
+                    .get("memory")
+                    .map(|q| parse_mem_bytes(&q.0))
+                    .unwrap_or(0);
             }
             if let Some(lim) = &r.limits {
                 cpu_lim += lim.get("cpu").map(|q| parse_cpu_millis(&q.0)).unwrap_or(0);
-                mem_lim += lim.get("memory").map(|q| parse_mem_bytes(&q.0)).unwrap_or(0);
+                mem_lim += lim
+                    .get("memory")
+                    .map(|q| parse_mem_bytes(&q.0))
+                    .unwrap_or(0);
             }
         }
     }
@@ -349,13 +448,18 @@ async fn append_pod_describe(
     name: &str,
     namespace: Option<&str>,
 ) -> Result<(), ResourceError> {
-    let obj = obj.as_object().ok_or_else(|| ResourceError::Serialize("invalid object".to_string()))?;
+    let obj = obj
+        .as_object()
+        .ok_or_else(|| ResourceError::Serialize("invalid object".to_string()))?;
     let meta = obj.get("metadata").and_then(|v| v.as_object());
     let spec = obj.get("spec").and_then(|v| v.as_object());
     let status = obj.get("status").and_then(|v| v.as_object());
 
     append_basic_metadata(md, name, None, meta, true);
-    if let Some(prio) = meta.and_then(|m| m.get("priority")).and_then(|v| v.as_i64()) {
+    if let Some(prio) = meta
+        .and_then(|m| m.get("priority"))
+        .and_then(|v| v.as_i64())
+    {
         md.push_str(&format!("| Priority | {} |\n", prio));
     }
     if let Some(spec) = spec {
@@ -373,19 +477,43 @@ async fn append_pod_describe(
     }
     md.push('\n');
 
-    if let Some(conditions) = status.as_ref().and_then(|s| s.get("conditions")).and_then(|v| v.as_array()) {
+    if let Some(conditions) = status
+        .as_ref()
+        .and_then(|s| s.get("conditions"))
+        .and_then(|v| v.as_array())
+    {
         md.push_str("## Conditions\n\n");
         md.push_str("| Type | Status | Reason | Message | LastTransitionTime |\n| --- | --- | --- | --- | --- |\n");
         for c in conditions {
             let o = c.as_object();
-            let type_ = o.and_then(|m| m.get("type")).and_then(|v| v.as_str()).unwrap_or("<none>");
-            let status_val = o.and_then(|m| m.get("status")).and_then(|v| v.as_str()).unwrap_or("<none>");
-            let reason = o.and_then(|m| m.get("reason")).and_then(|v| v.as_str()).unwrap_or("<none>");
-            let message = o.and_then(|m| m.get("message")).and_then(|v| v.as_str()).unwrap_or("<none>");
-            let last_trans = o.and_then(|m| m.get("lastTransitionTime")).and_then(|v| v.as_str()).unwrap_or("<none>");
-            md.push_str(&format!("| {} | {} | {} | {} | {} |\n",
-                escape_table_cell(type_), escape_table_cell(status_val), escape_table_cell(reason),
-                escape_table_cell(message), escape_table_cell(last_trans)));
+            let type_ = o
+                .and_then(|m| m.get("type"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let status_val = o
+                .and_then(|m| m.get("status"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let reason = o
+                .and_then(|m| m.get("reason"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let message = o
+                .and_then(|m| m.get("message"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let last_trans = o
+                .and_then(|m| m.get("lastTransitionTime"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            md.push_str(&format!(
+                "| {} | {} | {} | {} | {} |\n",
+                escape_table_cell(type_),
+                escape_table_cell(status_val),
+                escape_table_cell(reason),
+                escape_table_cell(message),
+                escape_table_cell(last_trans)
+            ));
         }
         md.push('\n');
     }
@@ -394,53 +522,121 @@ async fn append_pod_describe(
         if let Some(containers) = spec.get("containers").and_then(|v| v.as_array()) {
             md.push_str("## Containers\n\n");
             md.push_str("| Name | Image | Ports | State | Ready | Restarts | Limits | Requests |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n");
-            let status_containers = status.and_then(|s| s.get("containerStatuses")).and_then(|v| v.as_array());
+            let status_containers = status
+                .and_then(|s| s.get("containerStatuses"))
+                .and_then(|v| v.as_array());
             for (i, c) in containers.iter().enumerate() {
                 let o = c.as_object();
-                let cname = o.and_then(|m| m.get("name")).and_then(|v| v.as_str()).unwrap_or("<none>");
-                let image = o.and_then(|m| m.get("image")).and_then(|v| v.as_str()).unwrap_or("<none>");
-                let ports = o.and_then(|m| m.get("ports")).and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|p| p.as_object().and_then(|m| m.get("containerPort")).and_then(|v| v.as_i64()).map(|n| n.to_string())).collect::<Vec<_>>().join(", "))
+                let cname = o
+                    .and_then(|m| m.get("name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("<none>");
+                let image = o
+                    .and_then(|m| m.get("image"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("<none>");
+                let ports = o
+                    .and_then(|m| m.get("ports"))
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|p| {
+                                p.as_object()
+                                    .and_then(|m| m.get("containerPort"))
+                                    .and_then(|v| v.as_i64())
+                                    .map(|n| n.to_string())
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
                     .unwrap_or_else(|| "<none>".to_string());
-                let (state, ready, restarts) = status_containers.and_then(|sc| sc.get(i)).and_then(|cs| {
-                    let cs = cs.as_object()?;
-                    let state = cs.get("state").and_then(|s| {
-                        let s = s.as_object()?;
-                        if s.get("running").is_some() { Some("Running") }
-                        else if s.get("waiting").is_some() { Some("Waiting") }
-                        else if s.get("terminated").is_some() { Some("Terminated") }
-                        else { None }
-                    }).unwrap_or("<none>").to_string();
-                    let ready = cs.get("ready").and_then(|v| v.as_bool()).map(|b| if b { "True" } else { "False" }).unwrap_or("<none>").to_string();
-                    let restarts = cs.get("restartCount").and_then(|v| v.as_i64()).map(|n| n.to_string()).unwrap_or_else(|| "0".to_string());
-                    Some((state, ready, restarts))
-                }).unwrap_or_else(|| ("<none>".to_string(), "<none>".to_string(), "0".to_string()));
-                let (limits, requests) = o.and_then(|m| m.get("resources")).map(|r| {
-                    let lim = r.as_object().and_then(|m| m.get("limits")).and_then(format_resources).unwrap_or_else(|| "0".to_string());
-                    let req = r.as_object().and_then(|m| m.get("requests")).and_then(format_resources).unwrap_or_else(|| "0".to_string());
-                    (lim, req)
-                }).unwrap_or_else(|| ("0".to_string(), "0".to_string()));
-                md.push_str(&format!("| {} | {} | {} | {} | {} | {} | {} | {} |\n",
-                    escape_table_cell(cname), escape_table_cell(image), escape_table_cell(&ports),
-                    escape_table_cell(&state), escape_table_cell(&ready), escape_table_cell(&restarts),
-                    escape_table_cell(&limits), escape_table_cell(&requests)));
+                let (state, ready, restarts) = status_containers
+                    .and_then(|sc| sc.get(i))
+                    .and_then(|cs| {
+                        let cs = cs.as_object()?;
+                        let state = cs
+                            .get("state")
+                            .and_then(|s| {
+                                let s = s.as_object()?;
+                                if s.get("running").is_some() {
+                                    Some("Running")
+                                } else if s.get("waiting").is_some() {
+                                    Some("Waiting")
+                                } else if s.get("terminated").is_some() {
+                                    Some("Terminated")
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or("<none>")
+                            .to_string();
+                        let ready = cs
+                            .get("ready")
+                            .and_then(|v| v.as_bool())
+                            .map(|b| if b { "True" } else { "False" })
+                            .unwrap_or("<none>")
+                            .to_string();
+                        let restarts = cs
+                            .get("restartCount")
+                            .and_then(|v| v.as_i64())
+                            .map(|n| n.to_string())
+                            .unwrap_or_else(|| "0".to_string());
+                        Some((state, ready, restarts))
+                    })
+                    .unwrap_or_else(|| {
+                        ("<none>".to_string(), "<none>".to_string(), "0".to_string())
+                    });
+                let (limits, requests) = o
+                    .and_then(|m| m.get("resources"))
+                    .map(|r| {
+                        let lim = r
+                            .as_object()
+                            .and_then(|m| m.get("limits"))
+                            .and_then(format_resources)
+                            .unwrap_or_else(|| "0".to_string());
+                        let req = r
+                            .as_object()
+                            .and_then(|m| m.get("requests"))
+                            .and_then(format_resources)
+                            .unwrap_or_else(|| "0".to_string());
+                        (lim, req)
+                    })
+                    .unwrap_or_else(|| ("0".to_string(), "0".to_string()));
+                md.push_str(&format!(
+                    "| {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                    escape_table_cell(cname),
+                    escape_table_cell(image),
+                    escape_table_cell(&ports),
+                    escape_table_cell(&state),
+                    escape_table_cell(&ready),
+                    escape_table_cell(&restarts),
+                    escape_table_cell(&limits),
+                    escape_table_cell(&requests)
+                ));
             }
             md.push('\n');
         }
     }
 
     let ns = namespace.unwrap_or("default");
-    let events = fetch_events(client, "Pod", name, ns).await.unwrap_or_default();
+    let events = fetch_events(client, "Pod", name, ns)
+        .await
+        .unwrap_or_default();
     append_events_table(md, &events);
     Ok(())
 }
 
 fn format_resources(v: &serde_json::Value) -> Option<String> {
     let o = v.as_object()?;
-    let parts: Vec<String> = o.iter()
+    let parts: Vec<String> = o
+        .iter()
         .filter_map(|(k, v)| v.as_str().map(|s| format!("{}={}", k, s)))
         .collect();
-    if parts.is_empty() { None } else { Some(parts.join(", ")) }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(", "))
+    }
 }
 
 /// Deployment 的 describe：按 kubectl 语义块组织，无 spec/status 原始 dump。
@@ -451,7 +647,9 @@ async fn append_deployment_describe(
     name: &str,
     namespace: Option<&str>,
 ) -> Result<(), ResourceError> {
-    let obj = obj.as_object().ok_or_else(|| ResourceError::Serialize("invalid object".to_string()))?;
+    let obj = obj
+        .as_object()
+        .ok_or_else(|| ResourceError::Serialize("invalid object".to_string()))?;
     let meta = obj.get("metadata").and_then(|v| v.as_object());
     let spec = obj.get("spec").and_then(|v| v.as_object());
     let status = obj.get("status").and_then(|v| v.as_object());
@@ -460,8 +658,14 @@ async fn append_deployment_describe(
     if let Some(spec) = spec {
         if let Some(sel) = spec.get("selector").and_then(|v| v.as_object()) {
             if let Some(match_labels) = sel.get("matchLabels").and_then(|v| v.as_object()) {
-                let parts: Vec<String> = match_labels.iter().map(|(k, v)| format!("{}={}", k, v.as_str().unwrap_or(""))).collect();
-                md.push_str(&format!("| Selector | {} |\n", escape_table_cell(&parts.join(", "))));
+                let parts: Vec<String> = match_labels
+                    .iter()
+                    .map(|(k, v)| format!("{}={}", k, v.as_str().unwrap_or("")))
+                    .collect();
+                md.push_str(&format!(
+                    "| Selector | {} |\n",
+                    escape_table_cell(&parts.join(", "))
+                ));
             }
         }
     }
@@ -469,11 +673,23 @@ async fn append_deployment_describe(
 
     md.push_str("## Replicas\n\n");
     let (desired, updated, total, available, unavailable) = if let Some(status) = status {
-        let desired = spec.and_then(|s| s.get("replicas")).and_then(|v| v.as_i64()).unwrap_or(0);
-        let updated = status.get("updatedReplicas").and_then(|v| v.as_i64()).unwrap_or(0);
+        let desired = spec
+            .and_then(|s| s.get("replicas"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let updated = status
+            .get("updatedReplicas")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
         let total = status.get("replicas").and_then(|v| v.as_i64()).unwrap_or(0);
-        let available = status.get("availableReplicas").and_then(|v| v.as_i64()).unwrap_or(0);
-        let unavailable = status.get("unavailableReplicas").and_then(|v| v.as_i64()).unwrap_or(0);
+        let available = status
+            .get("availableReplicas")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let unavailable = status
+            .get("unavailableReplicas")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
         (desired, updated, total, available, unavailable)
     } else {
         (0, 0, 0, 0, 0)
@@ -483,32 +699,73 @@ async fn append_deployment_describe(
 
     if let Some(spec) = spec {
         if let Some(strategy) = spec.get("strategy").and_then(|v| v.as_object()) {
-            let strategy_type = strategy.get("type").and_then(|v| v.as_str()).unwrap_or("RollingUpdate");
+            let strategy_type = strategy
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("RollingUpdate");
             md.push_str("## Strategy\n\n");
             md.push_str("| Type | Max Unavailable | Max Surge |\n| --- | --- | --- |\n");
-            let (max_unavail, max_surge) = strategy.get("rollingUpdate").and_then(|r| r.as_object()).map(|r| {
-                let u = r.get("maxUnavailable").and_then(|v| v.as_str()).unwrap_or("<none>");
-                let s = r.get("maxSurge").and_then(|v| v.as_str()).unwrap_or("<none>");
-                (u, s)
-            }).unwrap_or(("<none>", "<none>"));
-            md.push_str(&format!("| {} | {} | {} |\n\n", escape_table_cell(strategy_type), escape_table_cell(max_unavail), escape_table_cell(max_surge)));
+            let (max_unavail, max_surge) = strategy
+                .get("rollingUpdate")
+                .and_then(|r| r.as_object())
+                .map(|r| {
+                    let u = r
+                        .get("maxUnavailable")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("<none>");
+                    let s = r
+                        .get("maxSurge")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("<none>");
+                    (u, s)
+                })
+                .unwrap_or(("<none>", "<none>"));
+            md.push_str(&format!(
+                "| {} | {} | {} |\n\n",
+                escape_table_cell(strategy_type),
+                escape_table_cell(max_unavail),
+                escape_table_cell(max_surge)
+            ));
         }
     }
 
     if let Some(spec) = spec {
         if let Some(template) = spec.get("template").and_then(|v| v.as_object()) {
             md.push_str("## Pod Template\n\n");
-            if let Some(labels) = template.get("metadata").and_then(|v| v.as_object()).and_then(|m| m.get("labels")).and_then(|v| v.as_object()) {
-                let parts: Vec<String> = labels.iter().map(|(k, v)| format!("{}={}", k, v.as_str().unwrap_or(""))).collect();
+            if let Some(labels) = template
+                .get("metadata")
+                .and_then(|v| v.as_object())
+                .and_then(|m| m.get("labels"))
+                .and_then(|v| v.as_object())
+            {
+                let parts: Vec<String> = labels
+                    .iter()
+                    .map(|(k, v)| format!("{}={}", k, v.as_str().unwrap_or("")))
+                    .collect();
                 md.push_str(&format!("**Labels:** {}\n\n", parts.join(", ")));
             }
-            if let Some(containers) = template.get("spec").and_then(|v| v.as_object()).and_then(|s| s.get("containers")).and_then(|v| v.as_array()) {
+            if let Some(containers) = template
+                .get("spec")
+                .and_then(|v| v.as_object())
+                .and_then(|s| s.get("containers"))
+                .and_then(|v| v.as_array())
+            {
                 md.push_str("| Container | Image |\n| --- | --- |\n");
                 for c in containers {
                     let o = c.as_object();
-                    let cname = o.and_then(|m| m.get("name")).and_then(|v| v.as_str()).unwrap_or("<none>");
-                    let image = o.and_then(|m| m.get("image")).and_then(|v| v.as_str()).unwrap_or("<none>");
-                    md.push_str(&format!("| {} | {} |\n", escape_table_cell(cname), escape_table_cell(image)));
+                    let cname = o
+                        .and_then(|m| m.get("name"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("<none>");
+                    let image = o
+                        .and_then(|m| m.get("image"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("<none>");
+                    md.push_str(&format!(
+                        "| {} | {} |\n",
+                        escape_table_cell(cname),
+                        escape_table_cell(image)
+                    ));
                 }
                 md.push('\n');
             }
@@ -516,13 +773,20 @@ async fn append_deployment_describe(
     }
 
     let ns = namespace.unwrap_or("default");
-    let events = fetch_events(client, "Deployment", name, ns).await.unwrap_or_default();
+    let events = fetch_events(client, "Deployment", name, ns)
+        .await
+        .unwrap_or_default();
     append_events_table(md, &events);
     Ok(())
 }
 
 /// 通用资源：仅基本信息，不输出 spec/status 原始内容。
-fn append_minimal_describe(md: &mut String, obj: &serde_json::Value, name: &str, namespace: Option<&str>) {
+fn append_minimal_describe(
+    md: &mut String,
+    obj: &serde_json::Value,
+    name: &str,
+    namespace: Option<&str>,
+) {
     let obj = match obj.as_object() {
         Some(o) => o,
         None => return,
@@ -548,7 +812,10 @@ async fn fetch_events(
     namespace: &str,
 ) -> Result<Vec<EventRow>, ResourceError> {
     let api: Api<Event> = Api::namespaced(client.clone(), namespace);
-    let list = api.list(&ListParams::default()).await.map_err(ResourceError::Kube)?;
+    let list = api
+        .list(&ListParams::default())
+        .await
+        .map_err(ResourceError::Kube)?;
     let mut events: Vec<_> = list
         .items
         .into_iter()
@@ -565,9 +832,15 @@ async fn fetch_events(
     Ok(events_to_rows(&events))
 }
 
-async fn fetch_events_for_node(client: &Client, name: &str) -> Result<Vec<EventRow>, ResourceError> {
+async fn fetch_events_for_node(
+    client: &Client,
+    name: &str,
+) -> Result<Vec<EventRow>, ResourceError> {
     let api: Api<Event> = Api::namespaced(client.clone(), "default");
-    let list = api.list(&ListParams::default()).await.map_err(ResourceError::Kube)?;
+    let list = api
+        .list(&ListParams::default())
+        .await
+        .map_err(ResourceError::Kube)?;
     let mut events: Vec<_> = list
         .items
         .into_iter()
@@ -642,14 +915,16 @@ pub async fn describe_dynamic_resource(
 ) -> Result<DescribeResult, ResourceError> {
     use crate::kube::resource_dynamic;
     let yaml_str =
-        resource_dynamic::get_dynamic_resource_yaml(client, api_version, kind, name, namespace).await?;
-    let obj: serde_json::Value = serde_yaml::from_str(&yaml_str).map_err(|e| {
-        ResourceError::Serialize(format!("yaml parse: {}", e))
-    })?;
+        resource_dynamic::get_dynamic_resource_yaml(client, api_version, kind, name, namespace)
+            .await?;
+    let obj: serde_json::Value = serde_yaml::from_str(&yaml_str)
+        .map_err(|e| ResourceError::Serialize(format!("yaml parse: {}", e)))?;
     let mut md = String::new();
     append_minimal_describe(&mut md, &obj, name, namespace);
     if let Some(ns) = namespace {
-        let events = fetch_events(client, kind, name, ns).await.unwrap_or_default();
+        let events = fetch_events(client, kind, name, ns)
+            .await
+            .unwrap_or_default();
         append_events_table(&mut md, &events);
     }
     Ok(DescribeResult { markdown: md })

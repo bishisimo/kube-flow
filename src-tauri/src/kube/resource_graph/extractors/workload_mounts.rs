@@ -1,7 +1,9 @@
 //! Workload 挂载引用：volumes / envFrom / env.valueFrom / imagePullSecrets。
 //! 适用于 Deployment / StatefulSet / DaemonSet / Pod。
 
-use crate::kube::resource_graph::{extractor::RelationExtractor, RelationType, ResourceEdge, ResourceRef};
+use crate::kube::resource_graph::{
+    extractor::RelationExtractor, RelationType, ResourceEdge, ResourceRef,
+};
 use async_trait::async_trait;
 
 pub struct WorkloadMountsExtractor;
@@ -16,34 +18,52 @@ fn extract_from_pod_spec(
     // volumes[]
     if let Some(vols) = pod_spec.get("volumes").and_then(|v| v.as_array()) {
         for v in vols {
-            let obj = match v.as_object() { Some(o) => o, None => continue };
-            if let Some(cm) = obj.get("configMap").and_then(|x| x.get("name")).and_then(|x| x.as_str()) {
+            let obj = match v.as_object() {
+                Some(o) => o,
+                None => continue,
+            };
+            if let Some(cm) = obj
+                .get("configMap")
+                .and_then(|x| x.get("name"))
+                .and_then(|x| x.as_str())
+            {
                 if !cm.is_empty() {
                     edges.push(ResourceEdge {
                         from: node_ref.clone(),
                         to: ResourceRef::new("ConfigMap", ns.clone(), cm),
                         relation_type: RelationType::Volume,
-                        label_selector: None, to_display: None,
+                        label_selector: None,
+                        to_display: None,
                     });
                 }
             }
-            if let Some(sec) = obj.get("secret").and_then(|x| x.get("secretName")).and_then(|x| x.as_str()) {
+            if let Some(sec) = obj
+                .get("secret")
+                .and_then(|x| x.get("secretName"))
+                .and_then(|x| x.as_str())
+            {
                 if !sec.is_empty() {
                     edges.push(ResourceEdge {
                         from: node_ref.clone(),
                         to: ResourceRef::new("Secret", ns.clone(), sec),
                         relation_type: RelationType::Volume,
-                        label_selector: None, to_display: None,
+                        label_selector: None,
+                        to_display: None,
                     });
                 }
             }
-            if let Some(pvc) = obj.get("persistentVolumeClaim").and_then(|x| x.get("claimName")).and_then(|x| x.as_str()) {
+            if let Some(pvc) = obj
+                .get("persistentVolumeClaim")
+                .and_then(|x| x.get("claimName"))
+                .and_then(|x| x.as_str())
+            {
                 if !pvc.is_empty() {
                     edges.push(ResourceEdge {
                         from: node_ref.clone(),
                         to: ResourceRef::new("PersistentVolumeClaim", ns.clone(), pvc),
                         relation_type: RelationType::Volume,
-                        label_selector: None, to_display: None,
+                        label_selector: None,
+                        to_display: None,
                     });
                 }
             }
@@ -59,7 +79,8 @@ fn extract_from_pod_spec(
                         from: node_ref.clone(),
                         to: ResourceRef::new("Secret", ns.clone(), name),
                         relation_type: RelationType::ImagePullSecret,
-                        label_selector: None, to_display: None,
+                        label_selector: None,
+                        to_display: None,
                     });
                 }
             }
@@ -71,29 +92,45 @@ fn extract_from_pod_spec(
     for arr_key in container_arrays {
         if let Some(containers) = pod_spec.get(arr_key).and_then(|v| v.as_array()) {
             for c in containers {
-                let c_obj = match c.as_object() { Some(o) => o, None => continue };
+                let c_obj = match c.as_object() {
+                    Some(o) => o,
+                    None => continue,
+                };
 
                 // envFrom[]
                 if let Some(env_from) = c_obj.get("envFrom").and_then(|v| v.as_array()) {
                     for ef in env_from {
-                        let ef_obj = match ef.as_object() { Some(o) => o, None => continue };
-                        if let Some(cm) = ef_obj.get("configMapRef").and_then(|x| x.get("name")).and_then(|x| x.as_str()) {
+                        let ef_obj = match ef.as_object() {
+                            Some(o) => o,
+                            None => continue,
+                        };
+                        if let Some(cm) = ef_obj
+                            .get("configMapRef")
+                            .and_then(|x| x.get("name"))
+                            .and_then(|x| x.as_str())
+                        {
                             if !cm.is_empty() {
                                 edges.push(ResourceEdge {
                                     from: node_ref.clone(),
                                     to: ResourceRef::new("ConfigMap", ns.clone(), cm),
                                     relation_type: RelationType::EnvFrom,
-                                    label_selector: None, to_display: None,
+                                    label_selector: None,
+                                    to_display: None,
                                 });
                             }
                         }
-                        if let Some(sec) = ef_obj.get("secretRef").and_then(|x| x.get("name")).and_then(|x| x.as_str()) {
+                        if let Some(sec) = ef_obj
+                            .get("secretRef")
+                            .and_then(|x| x.get("name"))
+                            .and_then(|x| x.as_str())
+                        {
                             if !sec.is_empty() {
                                 edges.push(ResourceEdge {
                                     from: node_ref.clone(),
                                     to: ResourceRef::new("Secret", ns.clone(), sec),
                                     relation_type: RelationType::EnvFrom,
-                                    label_selector: None, to_display: None,
+                                    label_selector: None,
+                                    to_display: None,
                                 });
                             }
                         }
@@ -107,23 +144,33 @@ fn extract_from_pod_spec(
                             Some(o) => o,
                             None => continue,
                         };
-                        if let Some(cm) = vf.get("configMapKeyRef").and_then(|x| x.get("name")).and_then(|x| x.as_str()) {
+                        if let Some(cm) = vf
+                            .get("configMapKeyRef")
+                            .and_then(|x| x.get("name"))
+                            .and_then(|x| x.as_str())
+                        {
                             if !cm.is_empty() {
                                 edges.push(ResourceEdge {
                                     from: node_ref.clone(),
                                     to: ResourceRef::new("ConfigMap", ns.clone(), cm),
                                     relation_type: RelationType::EnvValue,
-                                    label_selector: None, to_display: None,
+                                    label_selector: None,
+                                    to_display: None,
                                 });
                             }
                         }
-                        if let Some(sec) = vf.get("secretKeyRef").and_then(|x| x.get("name")).and_then(|x| x.as_str()) {
+                        if let Some(sec) = vf
+                            .get("secretKeyRef")
+                            .and_then(|x| x.get("name"))
+                            .and_then(|x| x.as_str())
+                        {
                             if !sec.is_empty() {
                                 edges.push(ResourceEdge {
                                     from: node_ref.clone(),
                                     to: ResourceRef::new("Secret", ns.clone(), sec),
                                     relation_type: RelationType::EnvValue,
-                                    label_selector: None, to_display: None,
+                                    label_selector: None,
+                                    to_display: None,
                                 });
                             }
                         }
@@ -140,13 +187,18 @@ impl RelationExtractor for WorkloadMountsExtractor {
         &["Deployment", "StatefulSet", "DaemonSet", "Pod"]
     }
 
-    fn extract_static(&self, node_ref: &ResourceRef, value: &serde_json::Value) -> Vec<ResourceEdge> {
+    fn extract_static(
+        &self,
+        node_ref: &ResourceRef,
+        value: &serde_json::Value,
+    ) -> Vec<ResourceEdge> {
         let mut edges = Vec::new();
 
         let pod_spec = if node_ref.kind == "Pod" {
             value.get("spec").and_then(|v| v.as_object())
         } else {
-            value.get("spec")
+            value
+                .get("spec")
                 .and_then(|v| v.get("template"))
                 .and_then(|v| v.get("spec"))
                 .and_then(|v| v.as_object())

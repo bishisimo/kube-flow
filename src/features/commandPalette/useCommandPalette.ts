@@ -196,6 +196,34 @@ function candidateTitle(c: Candidate): string {
   return c.value.title;
 }
 
+function normalizeCandidateText(s: string): string {
+  return s.trim().toLowerCase();
+}
+
+function scoreTokenValueCandidate(query: string, value: TokenValueCandidate): number {
+  const q = normalizeCandidateText(query);
+  if (!q) return 0;
+  const aliases = [
+    value.title,
+    value.value,
+    value.hint ?? "",
+    ...(value.keywords ?? []),
+  ]
+    .map(normalizeCandidateText)
+    .filter(Boolean);
+
+  let best = fuzzyMatch(query, `${value.title} ${value.subtitle ?? ""} ${value.keywords?.join(" ") ?? ""}`).score;
+  for (const alias of aliases) {
+    const fuzzy = fuzzyMatch(q, alias).score;
+    let score = fuzzy;
+    if (alias === q) score += 10_000;
+    else if (alias.startsWith(q)) score += 5_000;
+    else if (alias.includes(q)) score += 1_000;
+    best = Math.max(best, score);
+  }
+  return best;
+}
+
 function compareCandidateDomains(a: Candidate, b: Candidate): number {
   const da = domainOrderOf(candidateDomain(a));
   const db = domainOrderOf(candidateDomain(b));
@@ -383,11 +411,10 @@ const candidates = computed<Candidate[]>(() => {
       spec,
       value: v,
       matchedIndices: [],
-      score: query.trim()
-        ? fuzzyMatch(query, `${v.title} ${v.subtitle ?? ""} ${v.keywords?.join(" ") ?? ""}`).score
-        : 0,
+      score: scoreTokenValueCandidate(query, v),
     }));
     out.sort((a, b) => {
+      if (query.trim() && b.score !== a.score) return b.score - a.score;
       const domainDelta = compareCandidateDomains(a, b);
       if (domainDelta !== 0) return domainDelta;
       if (b.score !== a.score) return b.score - a.score;
