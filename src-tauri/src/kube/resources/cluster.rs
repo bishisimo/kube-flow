@@ -153,7 +153,7 @@ fn format_request_ratio(used: i64, total: i64, formatter: fn(i64) -> String) -> 
     ))
 }
 
-fn is_gpu_resource_name(name: &str, gpu_resource_names: &HashSet<String>) -> bool {
+pub(crate) fn is_gpu_resource_name(name: &str, gpu_resource_names: &HashSet<String>) -> bool {
     let name = name.trim().to_lowercase();
     gpu_resource_names.iter().any(|pattern| {
         if let Some(suffix) = pattern.strip_prefix('*') {

@@ -1,9 +1,11 @@
 //! 资源 Watch：按 kind/namespace/label 建立 Watch 流，通过 Tauri 事件推送增量到前端。
 //! 使用 kube::runtime::watcher 自动处理重连与 resourceVersion。
 
+use crate::commands::kube_command_context::load_app_settings;
 use crate::config::LogLevel;
 use crate::debug_log;
 use crate::env::EnvService;
+use crate::kube::resources::cluster::is_gpu_resource_name;
 use crate::kube::resources::{
     compute_workload_pod_rollup, format_cpu_total, format_creation_time, format_gpu, format_mem,
     label_selector_to_string, quantity_cpu_millis, quantity_mem_bytes, quantity_scalar_units,
@@ -25,7 +27,7 @@ use k8s_openapi::api::storage::v1::StorageClass;
 use k8s_openapi::NamespaceResourceScope;
 use kube::runtime::watcher::{watcher, Config as WatcherConfig};
 use kube::{api::ResourceExt, Api, Client, Resource};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::RwLock;
@@ -151,7 +153,7 @@ fn namespace_to_item(n: Namespace) -> NamespaceItem {
     }
 }
 
-fn node_to_item(n: Node) -> NodeItem {
+fn node_to_item(n: Node, gpu_resource_names: &HashSet<String>) -> NodeItem {
     let status = n.status.as_ref().and_then(|s| {
         s.conditions.as_ref().and_then(|conds| {
             conds.iter().find(|c| c.type_ == "Ready").map(|c| {
@@ -195,7 +197,7 @@ fn node_to_item(n: Node) -> NodeItem {
         .and_then(|s| s.allocatable.as_ref())
         .map(|m| {
             m.iter()
-                .filter(|(name, _)| name.trim().to_lowercase().ends_with("/gpu"))
+                .filter(|(name, _)| is_gpu_resource_name(name, gpu_resource_names))
                 .map(|(_, quantity)| quantity_scalar_units(Some(quantity)))
                 .sum::<i64>()
         })
@@ -449,10 +451,25 @@ pub async fn start_watch(
         .or_else(|| Some(ALL_NAMESPACES_SENTINEL.to_string()));
     let label_sel = label_selector.filter(|s| !s.trim().is_empty());
     let watch_token = watch_token.unwrap_or_default();
+    let gpu_resource_names = if kind == "nodes" {
+        load_app_settings()?.gpu_resource_names()
+    } else {
+        Vec::new()
+    };
 
     let env_id_clone = env_id.clone();
     let handle = tokio::spawn(async move {
-        run_watch(app, client, env_id_clone, kind, ns, label_sel, watch_token).await;
+        run_watch(
+            app,
+            client,
+            env_id_clone,
+            kind,
+            ns,
+            label_sel,
+            watch_token,
+            gpu_resource_names,
+        )
+        .await;
     });
 
     watch_store.insert(env_id, handle.abort_handle()).await;
@@ -467,6 +484,7 @@ async fn run_watch(
     ns: Option<String>,
     label_selector: Option<String>,
     watch_token: String,
+    gpu_resource_names: Vec<String>,
 ) {
     match kind.as_str() {
         "pods" => {
@@ -511,6 +529,11 @@ async fn run_watch(
             .await
         }
         "nodes" => {
+            let gpu_resource_names: HashSet<String> = gpu_resource_names
+                .iter()
+                .map(|name| name.trim().to_lowercase())
+                .filter(|name| !name.is_empty())
+                .collect();
             run_simple_watch_cluster::<Node, _>(
                 app,
                 client,
@@ -518,7 +541,7 @@ async fn run_watch(
                 label_selector,
                 watch_token,
                 "nodes",
-                node_to_item,
+                move |node| node_to_item(node, &gpu_resource_names),
             )
             .await
         }
