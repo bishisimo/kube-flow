@@ -15,6 +15,8 @@ const props = defineProps<{
   envId?: string | null;
 }>();
 
+const SNAPSHOT_VIEWER_Z_INDEX = 5000;
+
 const emit = defineEmits<{
   (e: "close"): void;
 }>();
@@ -106,11 +108,12 @@ watch(
 <template>
   <NModal
     :show="visible"
+    to="body"
     :mask-closable="true"
     :auto-focus="false"
     :trap-focus="false"
     class="o-snapshot-n-modal"
-    :zIndex="2100"
+    :z-index="SNAPSHOT_VIEWER_Z_INDEX"
     @mask-click="emit('close')"
     @esc="emit('close')"
   >
