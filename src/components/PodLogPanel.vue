@@ -69,9 +69,105 @@ const previousLogs = ref(false);
 const follow = ref(true);
 const streamId = ref<string | null>(null);
 const streamAllowed = ref(true);
+type LogRuntimePhase = "idle" | "loading" | "streaming" | "snapshot" | "error";
+const runtimePhase = ref<LogRuntimePhase>("idle");
+let activeRequestSeq = 0;
 const displayOrder = ref<LogDisplayOrder>("asc");
 const { logRefreshTrigger } = useLogStore();
 const strongholdAuth = useStrongholdAuthStore();
+
+const runtimePhaseMeta = computed(() => {
+  switch (runtimePhase.value) {
+    case "streaming":
+      return {
+        label: "流式中",
+        description: "正在实时接收日志流（Follow）",
+      };
+    case "loading":
+      return {
+        label: "加载中",
+        description: "正在请求日志数据",
+      };
+    case "snapshot":
+      return {
+        label: "快照模式",
+        description: "当前展示静态快照，未持续跟随新日志",
+      };
+    case "error":
+      return {
+        label: "异常",
+        description: "日志链路发生错误，需重试或切换模式",
+      };
+    default:
+      return {
+        label: "空闲",
+        description: "等待选择目标容器后开始加载日志",
+      };
+  }
+});
+
+const errorCategory = computed(() => {
+  const msg = (error.value || "").toLowerCase();
+  if (!msg) return "unknown";
+  if (
+    msg.includes("stronghold") ||
+    msg.includes("unlock") ||
+    msg.includes("auth") ||
+    msg.includes("permission denied")
+  ) {
+    return "auth";
+  }
+  if (msg.includes("utf") || msg.includes("decode") || msg.includes("编码")) {
+    return "encoding";
+  }
+  if (
+    msg.includes("timeout") ||
+    msg.includes("connection") ||
+    msg.includes("network") ||
+    msg.includes("broken pipe")
+  ) {
+    return "network";
+  }
+  if (
+    msg.includes("forbidden") ||
+    msg.includes("unauthorized") ||
+    msg.includes("denied") ||
+    msg.includes("forbidden")
+  ) {
+    return "permission";
+  }
+  return "unknown";
+});
+
+const errorCategoryLabel = computed(() => {
+  switch (errorCategory.value) {
+    case "auth":
+      return "认证问题";
+    case "encoding":
+      return "编码问题";
+    case "network":
+      return "网络问题";
+    case "permission":
+      return "权限问题";
+    default:
+      return "运行时错误";
+  }
+});
+
+const errorHint = computed(() => {
+  switch (errorCategory.value) {
+    case "auth":
+      return "请先确认凭证/解锁状态，再点击重试。";
+    case "encoding":
+      return "日志中可能包含非 UTF-8 字节，建议继续使用流式查看并导出原文排查。";
+    case "network":
+      return "连接可能短暂中断，建议重试或切换到快照模式查看历史日志。";
+    case "permission":
+      return "当前账号可能缺少日志读取权限，请检查 Kubernetes RBAC。";
+    default:
+      return "可先点击重试；若持续失败，请切换容器或关闭 Follow 后刷新。";
+  }
+});
 
 // ─── Log buffer ───────────────────────────────────────────
 
@@ -399,7 +495,9 @@ async function toggleDisplayOrder() {
 
 async function loadLogs() {
   if (!props.envId || !props.namespace || !props.podName || follow.value) return;
+  const requestSeq = ++activeRequestSeq;
   loading.value = true;
+  runtimePhase.value = "loading";
   error.value = null;
   clearBuffer();
   try {
@@ -410,21 +508,29 @@ async function loadLogs() {
       timestamps: timestamps.value,
       previous: previousLogs.value,
     });
+    if (requestSeq !== activeRequestSeq) return;
     setLines(content);
+    runtimePhase.value = "snapshot";
   } catch (e) {
     const msg = extractErrorMessage(e);
     const isStrongholdRequired = await handleStrongholdLocked(msg, () => void loadLogs());
     if (isStrongholdRequired) return;
+    if (requestSeq !== activeRequestSeq) return;
     error.value = msg;
+    runtimePhase.value = "error";
   } finally {
-    loading.value = false;
+    if (requestSeq === activeRequestSeq) {
+      loading.value = false;
+    }
   }
 }
 
 async function startFollow() {
   if (!streamAllowed.value || !props.envId || !props.namespace || !props.podName || !effectiveContainer.value) return;
+  const requestSeq = ++activeRequestSeq;
   await stopFollow();
   loading.value = true;
+  runtimePhase.value = "loading";
   error.value = null;
   clearBuffer();
   newLogCount.value = 0;
@@ -439,14 +545,23 @@ async function startFollow() {
         previous: previousLogs.value,
       }
     );
+    if (requestSeq !== activeRequestSeq) {
+      await kubePodLogStreamStop(id);
+      return;
+    }
     streamId.value = id;
+    runtimePhase.value = "streaming";
   } catch (e) {
     const msg = extractErrorMessage(e);
     const isStrongholdRequired = await handleStrongholdLocked(msg, () => void startFollow());
+    if (requestSeq !== activeRequestSeq) return;
     if (!isStrongholdRequired) error.value = msg;
+    runtimePhase.value = "error";
     follow.value = false;
   } finally {
-    loading.value = false;
+    if (requestSeq === activeRequestSeq) {
+      loading.value = false;
+    }
   }
 }
 
@@ -454,6 +569,9 @@ async function stopFollow() {
   if (streamId.value) {
     await kubePodLogStreamStop(streamId.value);
     streamId.value = null;
+  }
+  if (runtimePhase.value === "streaming") {
+    runtimePhase.value = "snapshot";
   }
 }
 
@@ -512,7 +630,6 @@ watch(
       await stopFollow();
       await loadContainers();
       follow.value = true;
-      await startFollow();
     } else {
       await stopFollow();
       follow.value = false;
@@ -520,6 +637,7 @@ watch(
       selectedContainer.value = "";
       clearBuffer();
       error.value = null;
+      runtimePhase.value = "idle";
     }
   },
   { immediate: true }
@@ -540,25 +658,14 @@ watch([tailLines, sinceSeconds, timestamps, previousLogs], () => {
     loadLogs();
 });
 
-watch(
-  () => containers.value,
-  (list) => {
-    if (list.length > 0 && props.envId && props.namespace && props.podName) {
-      if (follow.value) startFollow();
-      else loadLogs();
-    }
-  },
-  { deep: true }
-);
-
 watch(follow, async (on) => {
+  if (!props.envId || !props.namespace || !props.podName || !effectiveContainer.value) return;
   if (on) {
     await startFollow();
   } else {
     await stopFollow();
-    if (props.envId && props.namespace && props.podName && effectiveContainer.value) {
-      loadLogs();
-    }
+    runtimePhase.value = "snapshot";
+    loadLogs();
   }
 });
 
@@ -582,6 +689,15 @@ watch(
 );
 
 watch(logRefreshTrigger, () => loadDisplaySettings());
+watch(displayOrder, () => {
+  nextTick(() => {
+    if (isDescOrder.value) {
+      virtualListRef.value?.scrollToIndex(0);
+    } else {
+      virtualListRef.value?.scrollToBottom();
+    }
+  });
+});
 
 // ─── Keyboard shortcuts ───────────────────────────────────
 
@@ -622,28 +738,37 @@ function onKeydown(e: KeyboardEvent) {
 
 let unlistenChunk: (() => void) | null = null;
 let unlistenEnd: (() => void) | null = null;
+let streamDecoder = new TextDecoder("utf-8", { fatal: false });
+
+function resetStreamDecoder() {
+  streamDecoder = new TextDecoder("utf-8", { fatal: false });
+}
 
 async function setupStreamListeners() {
   unlistenChunk?.();
   unlistenEnd?.();
-  unlistenChunk = await listen<{ stream_id: string; chunk: string }>("pod-log-chunk", (ev) => {
+  resetStreamDecoder();
+  unlistenChunk = await listen<{ stream_id: string; chunk_bytes: number[] }>("pod-log-chunk", (ev) => {
     if (ev.payload?.stream_id === streamId.value) {
       const wasAtAnchor = isAtAnchor();
-      appendLines(ev.payload.chunk);
+      const chunkText = streamDecoder.decode(new Uint8Array(ev.payload.chunk_bytes), { stream: true });
+      if (!chunkText) return;
+      appendLines(chunkText);
       if (!wasAtAnchor) {
-        const chunkLines = ev.payload.chunk.split("\n").filter((l) => l.trim()).length;
+        const chunkLines = chunkText.split("\n").filter((l) => l.trim()).length;
         newLogCount.value += chunkLines;
       }
     }
   });
   unlistenEnd = await listen<{ stream_id: string; error?: string }>("pod-log-stream-end", (ev) => {
     if (ev.payload?.stream_id === streamId.value) {
+      const finalChunk = streamDecoder.decode();
+      if (finalChunk) appendLines(finalChunk);
+      resetStreamDecoder();
       streamId.value = null;
       follow.value = false;
+      runtimePhase.value = ev.payload?.error ? "error" : "snapshot";
       if (ev.payload?.error) error.value = ev.payload.error;
-      if (props.envId && props.namespace && props.podName && effectiveContainer.value) {
-        loadLogs();
-      }
     }
   });
 }
@@ -756,6 +881,15 @@ onUnmounted(() => {
       </div>
 
       <div class="toolbar-right">
+        <NTooltip trigger="hover">
+          <template #trigger>
+            <span class="runtime-phase-badge" :class="'phase-' + runtimePhase">
+              {{ runtimePhaseMeta.label }}
+            </span>
+          </template>
+          <span>{{ runtimePhaseMeta.description }}</span>
+        </NTooltip>
+
         <!-- Search toggle -->
         <NTooltip trigger="hover">
           <template #trigger>
@@ -893,7 +1027,11 @@ onUnmounted(() => {
 
     <!-- Error -->
     <div v-if="error" class="error-banner">
-      {{ error }}
+      <div class="error-banner-main">
+        <span class="error-category-badge">{{ errorCategoryLabel }}</span>
+        <span class="error-message">{{ error }}</span>
+      </div>
+      <div class="error-hint">{{ errorHint }}</div>
       <NButton size="tiny" @click="follow ? startFollow() : loadLogs()">重试</NButton>
     </div>
 
@@ -923,6 +1061,7 @@ onUnmounted(() => {
             :items="displayedEntries"
             :item-height="lineHeight"
             :buffer="30"
+            :auto-anchor="isDescOrder ? 'top' : 'bottom'"
             :content-class="'log-scroll ' + linePaddingClass"
             :content-style="{ flex: '1', minHeight: '0' }"
             :render-line="highlightLine"
@@ -990,6 +1129,41 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+}
+.runtime-phase-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--kf-border);
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.runtime-phase-badge.phase-idle {
+  color: var(--kf-text-secondary);
+  background: var(--kf-bg-soft);
+}
+.runtime-phase-badge.phase-loading {
+  color: var(--kf-info);
+  background: color-mix(in srgb, var(--kf-info) 14%, transparent);
+  border-color: color-mix(in srgb, var(--kf-info) 36%, var(--kf-border));
+}
+.runtime-phase-badge.phase-streaming {
+  color: var(--kf-success);
+  background: color-mix(in srgb, var(--kf-success) 14%, transparent);
+  border-color: color-mix(in srgb, var(--kf-success) 36%, var(--kf-border));
+}
+.runtime-phase-badge.phase-snapshot {
+  color: var(--kf-warning);
+  background: color-mix(in srgb, var(--kf-warning) 14%, transparent);
+  border-color: color-mix(in srgb, var(--kf-warning) 36%, var(--kf-border));
+}
+.runtime-phase-badge.phase-error {
+  color: var(--kf-danger);
+  background: color-mix(in srgb, var(--kf-danger) 14%, transparent);
+  border-color: color-mix(in srgb, var(--kf-danger) 36%, var(--kf-border));
 }
 
 /* Follow control */
@@ -1206,13 +1380,43 @@ onUnmounted(() => {
 
 /* Error */
 .error-banner {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.4rem 0.75rem;
   align-items: center;
-  gap: 0.5rem;
   padding: 0.5rem 0.75rem;
   color: var(--kf-danger);
   font-size: 0.8125rem;
   flex-shrink: 0;
+}
+.error-banner-main {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+.error-category-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--kf-danger);
+  background: color-mix(in srgb, var(--kf-danger) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--kf-danger) 28%, var(--kf-border));
+  white-space: nowrap;
+}
+.error-message {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.error-hint {
+  grid-column: 1 / 2;
+  color: var(--kf-text-secondary);
+  font-size: 0.75rem;
 }
 
 /* Log content area */

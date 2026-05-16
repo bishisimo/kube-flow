@@ -29,8 +29,8 @@ pub fn log_read(file_name: Option<String>) -> CommandResult<String> {
         }
         None => current_debug_log_path().ok_or_else(|| "app data dir not available".to_string())?,
     };
-    let content = std::fs::read_to_string(&path).unwrap_or_default();
-    Ok(content)
+    let bytes = std::fs::read(&path).map_err(err_str)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 #[derive(Debug, Serialize)]

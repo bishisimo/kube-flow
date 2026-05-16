@@ -19,6 +19,12 @@ const props = defineProps({
   itemHeight: { type: Number, default: 20 },
   /** 可视区域外上下各预渲染的行数 */
   buffer: { type: Number, default: 20 },
+  /** 自动滚动锚点：bottom=贴底，top=贴顶 */
+  autoAnchor: {
+    type: String as PropType<"bottom" | "top">,
+    default: "bottom",
+    validator: (value: string) => value === "bottom" || value === "top",
+  },
   /** 传入 class 给内部滚动容器 */
   contentClass: { type: String, default: "" },
   /** 传入 style 给内部滚动容器 */
@@ -49,12 +55,15 @@ const visibleItems = computed(() =>
 const offsetY = computed(() => visibleRange.value.start * props.itemHeight);
 
 const isAtBottom = ref(true);
+const isAtTop = ref(true);
 const AT_BOTTOM_THRESHOLD = 50;
+const AT_TOP_THRESHOLD = 50;
 
 function checkAtBottom() {
   const el = containerRef.value;
   if (!el) return;
   isAtBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < AT_BOTTOM_THRESHOLD;
+  isAtTop.value = el.scrollTop < AT_TOP_THRESHOLD;
 }
 
 function onScroll() {
@@ -78,6 +87,13 @@ function scrollToBottom() {
   const el = containerRef.value;
   if (!el) return;
   el.scrollTop = el.scrollHeight;
+}
+
+/** 滚动到顶部 */
+function scrollToTop() {
+  const el = containerRef.value;
+  if (!el) return;
+  el.scrollTop = 0;
 }
 
 /** 容器尺寸变化时重新计算 */
@@ -105,14 +121,20 @@ onBeforeUnmount(() => {
 watch(
   () => props.items.length,
   async () => {
-    if (isAtBottom.value) {
+    const shouldStick =
+      props.autoAnchor === "top" ? isAtTop.value : isAtBottom.value;
+    if (shouldStick) {
       await nextTick();
-      scrollToBottom();
+      if (props.autoAnchor === "top") {
+        scrollToTop();
+      } else {
+        scrollToBottom();
+      }
     }
   }
 );
 
-defineExpose({ scrollToIndex, scrollToBottom, isAtBottom, containerRef });
+defineExpose({ scrollToIndex, scrollToBottom, scrollToTop, isAtBottom, isAtTop, containerRef });
 </script>
 
 <template>

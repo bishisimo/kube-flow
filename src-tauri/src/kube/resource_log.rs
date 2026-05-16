@@ -1,7 +1,7 @@
 //! Pod 日志获取：通过 K8s log subresource 拉取 Pod 容器 stdout/stderr。
 //! 支持一次性拉取与流式 follow。
 
-use futures::{AsyncBufReadExt, TryStreamExt};
+use futures::AsyncBufReadExt;
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, LogParams};
 use kube::Client;
@@ -132,20 +132,20 @@ pub async fn run_pod_log_stream(
     };
 
     match api.log_stream(&pod_name, &lp).await {
-        Ok(reader) => {
-            let mut lines = reader.lines();
+        Ok(mut reader) => {
             loop {
-                match lines.try_next().await {
-                    Ok(Some(line)) => {
+                let mut chunk = Vec::new();
+                match reader.read_until(b'\n', &mut chunk).await {
+                    Ok(0) => break,
+                    Ok(_) => {
                         let payload = serde_json::json!({
                             "stream_id": stream_id,
-                            "chunk": line + "\n"
+                            "chunk_bytes": chunk,
                         });
                         if app.emit(POD_LOG_CHUNK_EVENT, payload).is_err() {
                             break;
                         }
                     }
-                    Ok(None) => break,
                     Err(e) => {
                         let _ = app.emit(
                             POD_LOG_STREAM_END_EVENT,

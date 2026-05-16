@@ -112,6 +112,16 @@ const sshConfigSaving = ref(false);
 const sshConfigError = ref("");
 const sshConfigMessage = ref("");
 const sshForm = ref<SshConfigEntry>(emptySshConfigEntry());
+/** 合并 Host 配置的校验提示、后端错误与保存结果，仅占位一条避免出现叠放与布局抖动。 */
+const sshHostFeedback = computed(() => {
+  const err = sshConfigError.value.trim();
+  if (err) return { type: "error" as const, text: err };
+  const issues = sshForm.value.issues ?? [];
+  if (issues.length) return { type: "warning" as const, text: issues.join("；") };
+  const msg = sshConfigMessage.value.trim();
+  if (msg) return { type: "success" as const, text: msg };
+  return null;
+});
 const { saving, message, runSave } = useSaveable();
 const yamlThemePreview = `apiVersion: apps/v1
 kind: Deployment
@@ -205,18 +215,22 @@ function normalizeSshForm(entry: SshConfigEntry): SshConfigEntry {
   };
 }
 
-function selectSshEntry(entry: SshConfigEntry) {
+function selectSshEntry(entry: SshConfigEntry, opts?: { preserveFeedback?: boolean }) {
   selectedSshHost.value = entry.host;
   sshForm.value = cloneSshEntry(entry);
-  sshConfigError.value = "";
-  sshConfigMessage.value = "";
+  if (!opts?.preserveFeedback) {
+    sshConfigError.value = "";
+    sshConfigMessage.value = "";
+  }
 }
 
-function startNewSshEntry() {
+function startNewSshEntry(opts?: { preserveFeedback?: boolean }) {
   selectedSshHost.value = "";
   sshForm.value = emptySshConfigEntry();
-  sshConfigError.value = "";
-  sshConfigMessage.value = "";
+  if (!opts?.preserveFeedback) {
+    sshConfigError.value = "";
+    sshConfigMessage.value = "";
+  }
 }
 
 function addSshOption() {
@@ -227,9 +241,11 @@ function removeSshOption(index: number) {
   sshForm.value.options = (sshForm.value.options ?? []).filter((_, idx) => idx !== index);
 }
 
-async function loadSshConfigEntries() {
+async function loadSshConfigEntries(opts?: { preserveFeedback?: boolean }) {
   sshConfigLoading.value = true;
-  sshConfigError.value = "";
+  if (!opts?.preserveFeedback) {
+    sshConfigError.value = "";
+  }
   try {
     const [path, entries] = await Promise.all([
       sshConfigDefaultPath(),
@@ -240,8 +256,9 @@ async function loadSshConfigEntries() {
     const current = selectedSshHost.value
       ? entries.find((entry) => entry.host === selectedSshHost.value)
       : entries[0];
-    if (current) selectSshEntry(current);
-    else startNewSshEntry();
+    const preserveFeedback = !!opts?.preserveFeedback;
+    if (current) selectSshEntry(current, { preserveFeedback });
+    else startNewSshEntry({ preserveFeedback });
   } catch (e) {
     sshConfigError.value = e instanceof Error ? e.message : String(e);
     sshConfigEntries.value = [];
@@ -267,7 +284,7 @@ async function saveSshConfigEntry() {
     await sshConfigUpsertEntry(payload);
     sshConfigMessage.value = "SSH 配置已保存";
     selectedSshHost.value = payload.host;
-    await loadSshConfigEntries();
+    await loadSshConfigEntries({ preserveFeedback: true });
   } catch (e) {
     sshConfigError.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -284,7 +301,7 @@ async function deleteSshConfigEntry() {
     await sshConfigDeleteEntry(sshForm.value.host);
     sshConfigMessage.value = "SSH Host 已删除";
     selectedSshHost.value = "";
-    await loadSshConfigEntries();
+    await loadSshConfigEntries({ preserveFeedback: true });
   } catch (e) {
     sshConfigError.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -759,7 +776,8 @@ const menuOptions = computed<MenuOption[]>(() =>
             <aside class="ssh-host-list">
               <div class="ssh-host-list-header">
                 <span>Host</span>
-                <NButton size="small" :disabled="sshConfigLoading || sshConfigSaving" @click="startNewSshEntry">新增</NButton>
+                <NButton size="small" :disabled="sshConfigLoading || sshConfigSaving" @click="() => startNewSshEntry()"
+                  >新增</NButton>
               </div>
               <button
                 v-for="entry in sshConfigEntries"
@@ -837,14 +855,21 @@ const menuOptions = computed<MenuOption[]>(() =>
                 <p v-if="!sshForm.options.length" class="setting-desc">可补充 ServerAliveInterval、ConnectTimeout、IdentitiesOnly 等 OpenSSH 选项。</p>
               </div>
 
-              <NAlert v-if="sshForm.issues.length" type="warning" :show-icon="false" size="small" class="msg-alert">
-                {{ sshForm.issues.join("；") }}
-              </NAlert>
-              <NAlert v-if="sshConfigError" type="error" :show-icon="false" size="small" class="msg-alert">{{ sshConfigError }}</NAlert>
-              <NAlert v-if="sshConfigMessage" type="success" :show-icon="false" size="small" class="msg-alert">{{ sshConfigMessage }}</NAlert>
+              <div class="ssh-host-feedback-rail" aria-live="polite">
+                <NAlert
+                  v-if="sshHostFeedback"
+                  :type="sshHostFeedback.type"
+                  :show-icon="false"
+                  size="small"
+                  class="ssh-host-feedback-alert"
+                >
+                  {{ sshHostFeedback.text }}
+                </NAlert>
+              </div>
 
               <div class="ssh-config-actions">
-                <NButton :loading="sshConfigLoading" :disabled="sshConfigSaving" @click="loadSshConfigEntries">重新加载</NButton>
+                <NButton :loading="sshConfigLoading" :disabled="sshConfigSaving" @click="() => loadSshConfigEntries()"
+                  >重新加载</NButton>
                 <NPopconfirm
                   v-if="selectedSshHost"
                   :disabled="sshConfigSaving || !sshForm.editable"
@@ -1035,6 +1060,13 @@ const menuOptions = computed<MenuOption[]>(() =>
 }
 .msg-alert {
   margin-top: 0.75rem;
+}
+.ssh-host-feedback-rail {
+  min-height: 2.875rem;
+  margin-top: 0.75rem;
+}
+.ssh-host-feedback-alert {
+  margin-top: 0;
 }
 .num-compact {
   width: 100px;
