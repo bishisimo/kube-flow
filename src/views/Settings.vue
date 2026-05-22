@@ -66,6 +66,7 @@ import {
 } from "../api/config";
 import { useAppSettingsStore } from "../stores/appSettings";
 import { useEnvStore } from "../stores/env";
+import { useSnapshotCenterStore } from "../stores/snapshotCenter";
 import { appChromeScheme, setAppChromeScheme, APP_CHROME_OPTIONS } from "../stores/appChromeTheme";
 import SettingsSecurityPanel from "../components/settings/SettingsSecurityPanel.vue";
 
@@ -84,6 +85,7 @@ const { monacoTheme } = useYamlMonacoTheme();
 const { triggerLogRefresh } = useLogStore();
 const { autoSnapshotEnabled, autoSnapshotLimitPerResource, terminalInstanceCacheLimit, logActiveStreamLimit, nodeResourceUsageEnabled, whitespaceRenderEnabled } = useAppSettingsStore();
 const { loadEnvironments } = useEnvStore();
+const { requestSwitchToSnapshotCenter } = useSnapshotCenterStore();
 function initialCategory(): CategoryId {
   const value = window.sessionStorage.getItem("kube-flow:settings-category");
   return CATEGORIES.some((item) => item.id === value) ? (value as CategoryId) : "appearance";
@@ -112,6 +114,7 @@ const sshConfigSaving = ref(false);
 const sshConfigError = ref("");
 const sshConfigMessage = ref("");
 const sshForm = ref<SshConfigEntry>(emptySshConfigEntry());
+let sshFeedbackClearTimer: ReturnType<typeof setTimeout> | null = null;
 /** 合并 Host 配置的校验提示、后端错误与保存结果，仅占位一条避免出现叠放与布局抖动。 */
 const sshHostFeedback = computed(() => {
   const err = sshConfigError.value.trim();
@@ -215,12 +218,42 @@ function normalizeSshForm(entry: SshConfigEntry): SshConfigEntry {
   };
 }
 
+function clearSshFeedbackTimer() {
+  if (sshFeedbackClearTimer) {
+    clearTimeout(sshFeedbackClearTimer);
+    sshFeedbackClearTimer = null;
+  }
+}
+
+function showSshSuccess(text: string, autoClearMs = 3000) {
+  clearSshFeedbackTimer();
+  sshConfigError.value = "";
+  sshConfigMessage.value = text;
+  if (autoClearMs > 0) {
+    sshFeedbackClearTimer = setTimeout(() => {
+      sshConfigMessage.value = "";
+      sshFeedbackClearTimer = null;
+    }, autoClearMs);
+  }
+}
+
+function showSshError(text: string) {
+  clearSshFeedbackTimer();
+  sshConfigMessage.value = "";
+  sshConfigError.value = text;
+}
+
+function clearSshFeedback() {
+  clearSshFeedbackTimer();
+  sshConfigError.value = "";
+  sshConfigMessage.value = "";
+}
+
 function selectSshEntry(entry: SshConfigEntry, opts?: { preserveFeedback?: boolean }) {
   selectedSshHost.value = entry.host;
   sshForm.value = cloneSshEntry(entry);
   if (!opts?.preserveFeedback) {
-    sshConfigError.value = "";
-    sshConfigMessage.value = "";
+    clearSshFeedback();
   }
 }
 
@@ -228,9 +261,43 @@ function startNewSshEntry(opts?: { preserveFeedback?: boolean }) {
   selectedSshHost.value = "";
   sshForm.value = emptySshConfigEntry();
   if (!opts?.preserveFeedback) {
-    sshConfigError.value = "";
-    sshConfigMessage.value = "";
+    clearSshFeedback();
   }
+}
+
+/** 保存/删除后静默刷新列表，避免整表重载导致表单与提示条闪烁。 */
+function syncSshEntryMetadata(entry: SshConfigEntry) {
+  sshForm.value.issues = [...(entry.issues ?? [])];
+  sshForm.value.editable = entry.editable;
+  sshForm.value.source_file = entry.source_file;
+  sshForm.value.aliases = [...(entry.aliases ?? [])];
+}
+
+async function fetchSshConfigEntries() {
+  const [path, entries] = await Promise.all([sshConfigDefaultPath(), sshConfigListEntries()]);
+  sshConfigPath.value = path ?? "~/.ssh/config";
+  sshConfigEntries.value = entries;
+  return entries;
+}
+
+async function refreshSshEntriesAfterMutation(host: string, opts?: { preserveFeedback?: boolean }) {
+  const entries = await fetchSshConfigEntries();
+  if (!host) {
+    if (entries.length) selectSshEntry(entries[0], opts);
+    else startNewSshEntry(opts);
+    return;
+  }
+  const saved = entries.find((entry) => entry.host === host);
+  if (saved && selectedSshHost.value === host) {
+    syncSshEntryMetadata(saved);
+    return;
+  }
+  if (saved) {
+    selectSshEntry(saved, opts);
+    return;
+  }
+  if (entries.length) selectSshEntry(entries[0], opts);
+  else startNewSshEntry(opts);
 }
 
 function addSshOption() {
@@ -244,15 +311,10 @@ function removeSshOption(index: number) {
 async function loadSshConfigEntries(opts?: { preserveFeedback?: boolean }) {
   sshConfigLoading.value = true;
   if (!opts?.preserveFeedback) {
-    sshConfigError.value = "";
+    clearSshFeedback();
   }
   try {
-    const [path, entries] = await Promise.all([
-      sshConfigDefaultPath(),
-      sshConfigListEntries(),
-    ]);
-    sshConfigPath.value = path ?? "~/.ssh/config";
-    sshConfigEntries.value = entries;
+    const entries = await fetchSshConfigEntries();
     const current = selectedSshHost.value
       ? entries.find((entry) => entry.host === selectedSshHost.value)
       : entries[0];
@@ -260,7 +322,7 @@ async function loadSshConfigEntries(opts?: { preserveFeedback?: boolean }) {
     if (current) selectSshEntry(current, { preserveFeedback });
     else startNewSshEntry({ preserveFeedback });
   } catch (e) {
-    sshConfigError.value = e instanceof Error ? e.message : String(e);
+    showSshError(e instanceof Error ? e.message : String(e));
     sshConfigEntries.value = [];
   } finally {
     sshConfigLoading.value = false;
@@ -268,42 +330,39 @@ async function loadSshConfigEntries(opts?: { preserveFeedback?: boolean }) {
 }
 
 async function saveSshConfigEntry() {
-  sshConfigError.value = "";
-  sshConfigMessage.value = "";
   const payload = normalizeSshForm(sshForm.value);
   if (!payload.host) {
-    sshConfigError.value = "请输入 Host 别名";
+    showSshError("请输入 Host 别名");
     return;
   }
   if (payload.proxy_jump && payload.proxy_command) {
-    sshConfigError.value = "ProxyJump 与 ProxyCommand 只能配置一个";
+    showSshError("ProxyJump 与 ProxyCommand 只能配置一个");
     return;
   }
   sshConfigSaving.value = true;
   try {
     await sshConfigUpsertEntry(payload);
-    sshConfigMessage.value = "SSH 配置已保存";
     selectedSshHost.value = payload.host;
-    await loadSshConfigEntries({ preserveFeedback: true });
+    showSshSuccess("SSH 配置已保存");
+    await refreshSshEntriesAfterMutation(payload.host, { preserveFeedback: true });
   } catch (e) {
-    sshConfigError.value = e instanceof Error ? e.message : String(e);
+    showSshError(e instanceof Error ? e.message : String(e));
   } finally {
     sshConfigSaving.value = false;
   }
 }
 
 async function deleteSshConfigEntry() {
-  if (!sshForm.value.host) return;
-  sshConfigError.value = "";
-  sshConfigMessage.value = "";
+  const host = sshForm.value.host;
+  if (!host) return;
   sshConfigSaving.value = true;
   try {
-    await sshConfigDeleteEntry(sshForm.value.host);
-    sshConfigMessage.value = "SSH Host 已删除";
+    await sshConfigDeleteEntry(host);
     selectedSshHost.value = "";
-    await loadSshConfigEntries({ preserveFeedback: true });
+    showSshSuccess("SSH Host 已删除");
+    await refreshSshEntriesAfterMutation("", { preserveFeedback: true });
   } catch (e) {
-    sshConfigError.value = e instanceof Error ? e.message : String(e);
+    showSshError(e instanceof Error ? e.message : String(e));
   } finally {
     sshConfigSaving.value = false;
   }
@@ -542,6 +601,9 @@ const menuOptions = computed<MenuOption[]>(() =>
               <NButton :disabled="saving" @click="saveAutoSnapshotLimitPerResource(currentAutoSnapshotLimitPerResource)">保存上限</NButton>
             </NSpace>
           </div>
+          <NSpace v-bind="kfSpace.settingActions" class="setting-inline-actions">
+            <NButton @click="requestSwitchToSnapshotCenter">打开快照中心</NButton>
+          </NSpace>
           <NAlert v-if="message" class="msg-alert" :type="message === '已保存' ? 'success' : 'error'" :show-icon="true">{{ message }}</NAlert>
         </NCard>
 
@@ -856,15 +918,17 @@ const menuOptions = computed<MenuOption[]>(() =>
               </div>
 
               <div class="ssh-host-feedback-rail" aria-live="polite">
-                <NAlert
-                  v-if="sshHostFeedback"
-                  :type="sshHostFeedback.type"
-                  :show-icon="false"
-                  size="small"
-                  class="ssh-host-feedback-alert"
-                >
-                  {{ sshHostFeedback.text }}
-                </NAlert>
+                <Transition name="ssh-host-feedback">
+                  <NAlert
+                    v-if="sshHostFeedback"
+                    :type="sshHostFeedback.type"
+                    :show-icon="false"
+                    size="small"
+                    class="ssh-host-feedback-alert"
+                  >
+                    {{ sshHostFeedback.text }}
+                  </NAlert>
+                </Transition>
               </div>
 
               <div class="ssh-config-actions">
@@ -1067,6 +1131,14 @@ const menuOptions = computed<MenuOption[]>(() =>
 }
 .ssh-host-feedback-alert {
   margin-top: 0;
+}
+.ssh-host-feedback-enter-active,
+.ssh-host-feedback-leave-active {
+  transition: opacity 0.2s ease;
+}
+.ssh-host-feedback-enter-from,
+.ssh-host-feedback-leave-to {
+  opacity: 0;
 }
 .num-compact {
   width: 100px;

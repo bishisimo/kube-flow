@@ -17,6 +17,7 @@ import type { MenuOption } from "naive-ui";
 import { useEnvStore } from "../stores/env";
 import { useShellStore } from "../stores/shell";
 import { useLogCenterStore } from "../stores/logCenter";
+import { useSnapshotCenterStore } from "../stores/snapshotCenter";
 import { useOrchestratorStore } from "../stores/orchestrator";
 import EnvManage from "./EnvManage.vue";
 import CommandPalette from "../components/CommandPalette.vue";
@@ -52,10 +53,11 @@ const Main = defineAsyncComponent(() => import("./Main.vue"));
 const PodShellView = defineAsyncComponent(() => import("./PodShellView.vue"));
 const Settings = defineAsyncComponent(() => import("./Settings.vue"));
 const LogCenterView = defineAsyncComponent(() => import("./LogCenterView.vue"));
+const SnapshotCenterView = defineAsyncComponent(() => import("./SnapshotCenterView.vue"));
 const ResourceOrchestratorView = defineAsyncComponent(() => import("./ResourceOrchestratorView.vue"));
 
 /** 顶部导航 tab 的内部标识。`shell` 指终端中心（PodShellView），与 stores/shell.ts 的终端会话语义一致。 */
-type TabId = "env" | "main" | "orchestrator" | "shell" | "settings" | "logCenter";
+type TabId = "env" | "main" | "orchestrator" | "shell" | "settings" | "logCenter" | "snapshotCenter";
 
 const VIEW_MAP: Record<TabId, Component> = {
   env: markRaw(EnvManage),
@@ -63,22 +65,25 @@ const VIEW_MAP: Record<TabId, Component> = {
   orchestrator: markRaw(ResourceOrchestratorView),
   shell: markRaw(PodShellView),
   logCenter: markRaw(LogCenterView),
+  snapshotCenter: markRaw(SnapshotCenterView),
   settings: markRaw(Settings),
 };
 
-const KEEP_ALIVE_VIEWS = ["EnvManage", "Main", "ResourceOrchestratorView", "PodShellView", "LogCenterView"];
+const KEEP_ALIVE_VIEWS = ["EnvManage", "Main", "ResourceOrchestratorView", "PodShellView", "LogCenterView", "SnapshotCenterView"];
 
 const currentTab = ref<TabId>("env");
 const currentView = computed(() => VIEW_MAP[currentTab.value]);
 const { environments, openedEnvs, currentId, loadEnvironments } = useEnvStore();
 const { switchToShellRequested } = useShellStore();
 const { switchToLogCenterRequested } = useLogCenterStore();
+const { switchToSnapshotCenterRequested, switchToMainRequested } = useSnapshotCenterStore();
 const { switchToOrchestratorRequested } = useOrchestratorStore();
 
 const canAccessMain = computed(() => openedEnvs.value.length > 0);
 const canAccessShell = computed(() => environments.value.length > 0);
 const canAccessOrchestrator = computed(() => environments.value.length > 0);
 const canAccessLogCenter = computed(() => environments.value.length > 0);
+const canAccessSnapshotCenter = computed(() => environments.value.length > 0);
 
 watch(switchToShellRequested, () => {
   if (canAccessShell.value) setTab("shell");
@@ -89,12 +94,19 @@ watch(switchToOrchestratorRequested, () => {
 watch(switchToLogCenterRequested, () => {
   if (canAccessLogCenter.value) setTab("logCenter");
 });
+watch(switchToSnapshotCenterRequested, () => {
+  if (canAccessSnapshotCenter.value) setTab("snapshotCenter");
+});
+watch(switchToMainRequested, () => {
+  if (canAccessMain.value) setTab("main");
+});
 
 function setTab(tab: TabId) {
   if (tab === "main" && !canAccessMain.value) return;
   if (tab === "shell" && !canAccessShell.value) return;
   if (tab === "orchestrator" && !canAccessOrchestrator.value) return;
   if (tab === "logCenter" && !canAccessLogCenter.value) return;
+  if (tab === "snapshotCenter" && !canAccessSnapshotCenter.value) return;
   currentTab.value = tab;
 }
 
@@ -154,6 +166,11 @@ const iconLog = svgIcon([
   h("line", { x1: 8, y1: 12, x2: 16, y2: 12 }),
   h("line", { x1: 8, y1: 16, x2: 13, y2: 16 }),
 ]);
+const iconSnapshot = svgIcon([
+  h("rect", { x: 4, y: 5, width: 16, height: 14, rx: 2 }),
+  h("circle", { cx: 9, cy: 10, r: 1.4, fill: "currentColor", stroke: "none" }),
+  h("path", { d: "M7 15l3-3 3 3 4-5" }),
+]);
 const iconOrchestrator = svgIcon([
   h("circle", { cx: 12, cy: 5, r: 2 }),
   h("circle", { cx: 5, cy: 18, r: 2 }),
@@ -173,6 +190,7 @@ const menuOptions = computed<MenuOption[]>(() => [
   { key: "main", label: "工作台", icon: iconMain, disabled: !canAccessMain.value },
   { key: "shell", label: "终端中心", icon: iconShell, disabled: !canAccessShell.value },
   { key: "logCenter", label: "日志中心", icon: iconLog, disabled: !canAccessLogCenter.value },
+  { key: "snapshotCenter", label: "快照中心", icon: iconSnapshot, disabled: !canAccessSnapshotCenter.value },
   { key: "orchestrator", label: "编排中心", icon: iconOrchestrator, disabled: !canAccessOrchestrator.value },
   { key: "settings", label: "设置", icon: iconSettings },
 ]);
@@ -201,6 +219,7 @@ const tabIconMap: Record<TabId, () => VNodeChild> = {
   main: iconMain,
   shell: iconShell,
   logCenter: iconLog,
+  snapshotCenter: iconSnapshot,
   orchestrator: iconOrchestrator,
   settings: iconSettings,
 };
@@ -209,6 +228,7 @@ const tabMeta: Array<{ id: TabId; label: string; keywords: string[] }> = [
   { id: "main", label: "工作台", keywords: ["workbench", "main", "工作台"] },
   { id: "shell", label: "终端中心", keywords: ["shell", "terminal", "终端"] },
   { id: "logCenter", label: "日志中心", keywords: ["log", "日志"] },
+  { id: "snapshotCenter", label: "快照中心", keywords: ["snapshot", "快照", "历史"] },
   { id: "orchestrator", label: "编排中心", keywords: ["orchestrator", "manifest", "编排"] },
   { id: "settings", label: "设置", keywords: ["settings", "preferences", "设置"] },
 ];
@@ -240,6 +260,7 @@ function tabDisabledReason(tab: TabId): string | null {
   if (tab === "shell" && !canAccessShell.value) return "请先添加环境";
   if (tab === "orchestrator" && !canAccessOrchestrator.value) return "请先添加环境";
   if (tab === "logCenter" && !canAccessLogCenter.value) return "请先添加环境";
+  if (tab === "snapshotCenter" && !canAccessSnapshotCenter.value) return "请先添加环境";
   return null;
 }
 

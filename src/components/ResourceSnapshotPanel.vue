@@ -1,24 +1,42 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { NButton } from "naive-ui";
+import { NButton, NSpace } from "naive-ui";
+import { kfSpace } from "../kf";
 import type { ResourceSnapshotItem } from "../stores/resourceSnapshots";
+import { formatSnapshotResourceRef } from "../stores/resourceSnapshots";
 import { formatDateTime } from "../utils/dateFormat";
 
-defineProps<{
-  title?: string;
-  subtitle?: string;
-  currentSummary?: string;
-  createLabel?: string;
-  emptyText?: string;
-  snapshots: ResourceSnapshotItem[];
-  creating?: boolean;
-}>();
+withDefaults(
+  defineProps<{
+    title?: string;
+    subtitle?: string;
+    currentSummary?: string;
+    createLabel?: string;
+    emptyText?: string;
+    snapshots: ResourceSnapshotItem[];
+    creating?: boolean;
+    /** 在快照中心等全局列表中展示资源定位信息 */
+    showResourceRef?: boolean;
+    /** 资源环境显示名，key 为 env_id */
+    envNameMap?: Record<string, string>;
+    showCreate?: boolean;
+    showOpenResource?: boolean;
+    layout?: "sidebar" | "full";
+  }>(),
+  {
+    showResourceRef: false,
+    showCreate: true,
+    showOpenResource: false,
+    layout: "sidebar",
+  }
+);
 
 const emit = defineEmits<{
   (e: "create"): void;
   (e: "view", snapshot: ResourceSnapshotItem): void;
   (e: "delete", snapshot: ResourceSnapshotItem): void;
   (e: "toggle-pin", snapshot: ResourceSnapshotItem): void;
+  (e: "open-resource", snapshot: ResourceSnapshotItem): void;
 }>();
 
 const pendingDeleteId = ref<string | null>(null);
@@ -53,13 +71,20 @@ function clearPendingDelete(snapshotId?: string) {
 </script>
 
 <template>
-  <aside class="snapshot-panel">
+  <aside class="snapshot-panel" :class="{ 'snapshot-panel-full': layout === 'full' }">
     <div class="snapshot-head">
       <div>
         <div class="snapshot-title">{{ title || "资源快照" }}</div>
         <p v-if="subtitle" class="snapshot-subtitle">{{ subtitle }}</p>
       </div>
-      <NButton type="primary" class="snapshot-create" :disabled="creating" :loading="creating" @click="emit('create')">
+      <NButton
+        v-if="showCreate"
+        type="primary"
+        class="snapshot-create"
+        :disabled="creating"
+        :loading="creating"
+        @click="emit('create')"
+      >
         {{ creating ? "生成中…" : createLabel || "生成快照" }}
       </NButton>
     </div>
@@ -67,7 +92,7 @@ function clearPendingDelete(snapshotId?: string) {
       <span class="snapshot-current-label">当前资源</span>
       <p>{{ currentSummary }}</p>
     </div>
-    <div v-if="snapshots.length" class="snapshot-list">
+    <div v-if="snapshots.length" class="snapshot-list" :class="{ 'snapshot-list-grid': layout === 'full' }">
       <div
         v-for="item in snapshots"
         :key="item.id"
@@ -111,10 +136,23 @@ function clearPendingDelete(snapshotId?: string) {
             </NButton>
           </div>
         </div>
+        <p v-if="showResourceRef" class="snapshot-card-resource">
+          <span v-if="envNameMap?.[item.env_id]" class="snapshot-card-env">{{ envNameMap[item.env_id] }}</span>
+          <span>{{ formatSnapshotResourceRef(item) }}</span>
+        </p>
         <p class="snapshot-card-summary">{{ item.summary }}</p>
         <div class="snapshot-card-meta">
           <span>{{ formatDateTime(item.created_at) }}</span>
-          <span>查看</span>
+          <NSpace v-bind="kfSpace.settingInline" :size="4">
+            <NButton
+              v-if="showOpenResource"
+              quaternary
+              size="tiny"
+              class="snapshot-open-resource"
+              @click.stop="emit('open-resource', item)"
+            >打开资源</NButton>
+            <span>查看</span>
+          </NSpace>
         </div>
       </div>
     </div>
@@ -125,6 +163,23 @@ function clearPendingDelete(snapshotId?: string) {
 </template>
 
 <style scoped>
+.snapshot-panel-full {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  border-left: none;
+  background: transparent;
+}
+.snapshot-panel-full .snapshot-head {
+  padding: 0 0 1rem;
+  border-bottom: none;
+}
+.snapshot-panel-full .snapshot-list-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 0.75rem;
+  padding: 0;
+}
 .snapshot-panel {
   width: 280px;
   min-width: 280px;
@@ -306,6 +361,21 @@ function clearPendingDelete(snapshotId?: string) {
 }
 .snapshot-delete.confirm:hover {
   background: #b91c1c;
+}
+.snapshot-card-resource {
+  margin: 0.45rem 0 0;
+  font-size: 0.6875rem;
+  line-height: 1.45;
+  color: #64748b;
+}
+.snapshot-card-env {
+  display: inline-block;
+  margin-right: 0.35rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #334155;
+  font-weight: 600;
 }
 .snapshot-card-summary {
   margin: 0.6rem 0 0.75rem;

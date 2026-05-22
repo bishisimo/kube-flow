@@ -58,6 +58,7 @@ import { useSshAuthStore } from "../stores/sshAuth";
 import { useStrongholdAuthStore } from "../stores/strongholdAuth";
 import { useShellStore } from "../stores/shell";
 import { useLogCenterStore } from "../stores/logCenter";
+import { pendingWorkbenchResource } from "../stores/snapshotCenter";
 import { useOrchestratorStore } from "../stores/orchestrator";
 import { useAppSettingsStore } from "../stores/appSettings";
 import {
@@ -1539,6 +1540,40 @@ watch(
  * 命令面板发起的工作台跳转：先切环境（若需），再在下一 tick 应用 kind/namespace。
  * immediate 用于处理 Main 首次挂载时 pendingNav 已被写入的情况（命令面板在其它 tab 触发）。
  */
+watch(
+  pendingWorkbenchResource,
+  (pending) => {
+    if (!pending) return;
+    pendingWorkbenchResource.value = null;
+    if (pending.envId && pending.envId !== currentId.value) {
+      setCurrent(pending.envId);
+    }
+    const kindId = API_KIND_TO_ID[pending.kind];
+    nextTick(() => {
+      if (kindId) {
+        navigateTo({
+          kind: kindId,
+          namespace: pending.namespace ?? undefined,
+          nameFilter: pending.name,
+          drillFrom: null,
+        });
+      }
+      nextTick(() => {
+        openDetailDrawerForResource(
+          {
+            kind: pending.kind,
+            name: pending.name,
+            namespace: pending.namespace,
+            nodeName: null,
+          },
+          pending.initialTab ?? null
+        );
+      });
+    });
+  },
+  { immediate: true },
+);
+
 watch(
   workbenchPendingNav,
   (nav) => {

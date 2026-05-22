@@ -9,16 +9,23 @@ import { kubeGetResource } from "../api/kube";
 import { buildDiffRows, normalizeYamlForDiff, formatCodeCell, type DiffRow } from "../features/orchestrator/yamlDiff";
 import { stripManagedFields } from "../utils/yaml";
 
-const props = defineProps<{
-  visible: boolean;
-  snapshot: ResourceSnapshotItem | null;
-  envId?: string | null;
-}>();
+const props = withDefaults(
+  defineProps<{
+    visible: boolean;
+    snapshot: ResourceSnapshotItem | null;
+    envId?: string | null;
+    showWorkbenchLink?: boolean;
+    /** 内嵌于快照中心右栏等主从布局，不使用弹窗 */
+    embedded?: boolean;
+  }>(),
+  { embedded: false }
+);
 
 const SNAPSHOT_VIEWER_Z_INDEX = 5000;
 
 const emit = defineEmits<{
   (e: "close"): void;
+  (e: "open-resource"): void;
 }>();
 
 const { monacoTheme } = useYamlMonacoTheme();
@@ -92,9 +99,12 @@ const diffStats = computed(() => {
   return { added, removed };
 });
 
+const isWide = computed(() => viewMode.value === "image-diff" || viewMode.value === "env-diff");
+
 watch(
-  () => [props.visible, props.snapshot?.id] as const,
-  ([visible]) => {
+  () => [props.visible, props.snapshot?.id, props.embedded] as const,
+  ([visible, snapshotId, embedded]) => {
+    if (embedded && snapshotId) return;
     if (!visible) {
       viewMode.value = "yaml";
       envDiffRows.value = [];
@@ -103,10 +113,22 @@ watch(
     }
   }
 );
+
+watch(
+  () => props.snapshot?.id,
+  () => {
+    if (!props.embedded) return;
+    viewMode.value = "yaml";
+    envDiffRows.value = [];
+    envDiffError.value = null;
+    envDiffLiveYaml.value = "";
+  }
+);
 </script>
 
 <template>
   <NModal
+    v-if="!embedded"
     :show="visible"
     to="body"
     :mask-closable="true"
@@ -119,7 +141,7 @@ watch(
   >
     <div
       class="snapshot-viewer"
-      :class="{ 'snapshot-viewer-wide': viewMode === 'image-diff' || viewMode === 'env-diff' }"
+      :class="{ 'snapshot-viewer-wide': isWide }"
       role="dialog"
       aria-modal="true"
       aria-labelledby="snapshot-viewer-title"
@@ -158,6 +180,12 @@ watch(
                 @click="switchMode('env-diff')"
               >与环境对比</NButton>
             </div>
+            <NButton
+              v-if="showWorkbenchLink && snapshot"
+              size="small"
+              secondary
+              @click="emit('open-resource')"
+            >在工作台打开</NButton>
             <NButton quaternary class="snapshot-viewer-close" aria-label="关闭" @click="emit('close')">×</NButton>
           </div>
         </header>
@@ -221,6 +249,111 @@ watch(
         </div>
     </div>
   </NModal>
+
+  <div
+    v-else-if="snapshot"
+    class="snapshot-viewer snapshot-viewer-embedded"
+    :class="{ 'snapshot-viewer-wide': isWide }"
+    aria-labelledby="snapshot-viewer-title-embedded"
+  >
+    <header class="snapshot-viewer-header">
+      <div class="snapshot-viewer-header-info">
+        <h3 id="snapshot-viewer-title-embedded" class="snapshot-viewer-title">{{ title }}</h3>
+        <p class="snapshot-viewer-meta">
+          <span>{{ summary }}</span>
+          <span>{{ formatDateTime(snapshot?.created_at) }}</span>
+        </p>
+      </div>
+      <div class="snapshot-viewer-header-actions">
+        <div class="snapshot-viewer-tabs">
+          <NButton
+            size="tiny"
+            :type="viewMode === 'yaml' ? 'primary' : 'default'"
+            :secondary="viewMode !== 'yaml'"
+            class="snapshot-tab-btn"
+            @click="switchMode('yaml')"
+          >YAML</NButton>
+          <NButton
+            v-if="hasDualView"
+            size="tiny"
+            :type="viewMode === 'image-diff' ? 'primary' : 'default'"
+            :secondary="viewMode !== 'image-diff'"
+            class="snapshot-tab-btn"
+            @click="switchMode('image-diff')"
+          >镜像对比</NButton>
+          <NButton
+            v-if="canEnvDiff"
+            size="tiny"
+            :type="viewMode === 'env-diff' ? 'primary' : 'default'"
+            :secondary="viewMode !== 'env-diff'"
+            class="snapshot-tab-btn"
+            @click="switchMode('env-diff')"
+          >与环境对比</NButton>
+        </div>
+        <NButton
+          v-if="showWorkbenchLink && snapshot"
+          size="small"
+          secondary
+          @click="emit('open-resource')"
+        >在工作台打开</NButton>
+      </div>
+    </header>
+
+    <div v-if="viewMode === 'image-diff'" class="snapshot-viewer-dual">
+      <div class="snapshot-viewer-pane">
+        <div class="snapshot-viewer-pane-label snapshot-viewer-pane-label-before">变更前</div>
+        <CodeEditor :value="yaml" language="yaml" :theme="monacoTheme" :options="monacoOptions" class="snapshot-viewer-editor" />
+      </div>
+      <div class="snapshot-viewer-divider" />
+      <div class="snapshot-viewer-pane">
+        <div class="snapshot-viewer-pane-label snapshot-viewer-pane-label-after">变更后</div>
+        <CodeEditor :value="afterYaml" language="yaml" :theme="monacoTheme" :options="monacoOptions" class="snapshot-viewer-editor" />
+      </div>
+    </div>
+
+    <div v-else-if="viewMode === 'env-diff'" class="snapshot-viewer-diff-wrap">
+      <div v-if="envDiffLoading" class="snapshot-diff-status snapshot-diff-loading">
+        <NSpin size="small" />
+        <span>正在获取环境中的当前资源…</span>
+      </div>
+      <div v-else-if="envDiffError" class="snapshot-diff-status snapshot-diff-error">{{ envDiffError }}</div>
+      <NEmpty v-else-if="!envDiffRows.length" class="snapshot-diff-empty" description="暂无对比数据" />
+      <template v-else>
+        <div class="snapshot-diff-legend">
+          <span class="snapshot-diff-legend-left">快照</span>
+          <template v-if="diffHasChanges">
+            <NTag size="small" :bordered="false" type="error" class="diff-legend-tag">−{{ diffStats.removed }}</NTag>
+            <NTag size="small" :bordered="false" type="success" class="diff-legend-tag">+{{ diffStats.added }}</NTag>
+          </template>
+          <NTag v-else size="small" :bordered="false" class="diff-legend-tag">与当前环境一致</NTag>
+          <span class="snapshot-diff-legend-right">当前环境</span>
+          <NButton size="tiny" secondary class="snapshot-diff-refresh" @click="loadEnvDiff">刷新</NButton>
+        </div>
+        <NScrollbar class="snapshot-diff-table-scroll" trigger="hover">
+          <div class="snapshot-diff-table-wrap">
+            <table class="snapshot-diff-table">
+              <tbody>
+                <tr
+                  v-for="(row, idx) in envDiffRows"
+                  :key="idx"
+                  :class="`diff-row-${row.type}`"
+                >
+                  <td class="diff-lineno">{{ row.leftLineNo ?? '' }}</td>
+                  <td class="diff-code diff-left" v-html="formatCodeCell(row, 'left')" />
+                  <td class="diff-lineno">{{ row.rightLineNo ?? '' }}</td>
+                  <td class="diff-code diff-right" v-html="formatCodeCell(row, 'right')" />
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </NScrollbar>
+      </template>
+    </div>
+
+    <div v-else class="snapshot-viewer-body">
+      <CodeEditor :value="yaml" language="yaml" :theme="monacoTheme" :options="monacoOptions" class="snapshot-viewer-editor" />
+    </div>
+  </div>
 </template>
 
 <style scoped>
@@ -254,6 +387,17 @@ watch(
 }
 .snapshot-viewer-wide {
   width: min(96vw, 1440px);
+}
+.snapshot-viewer-embedded {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: var(--kf-surface-strong, #fff);
+}
+.snapshot-viewer-embedded.snapshot-viewer-wide {
+  width: 100%;
 }
 .snapshot-viewer-header {
   display: flex;

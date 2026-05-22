@@ -170,6 +170,53 @@ export function listResourceSnapshotsByCategory(
   );
 }
 
+export interface ResourceSnapshotListFilters {
+  envId?: string | null;
+  category?: ResourceSnapshotItem["category"] | "all";
+  source?: ResourceSnapshotItem["source"] | "all";
+  query?: string;
+}
+
+function matchesSnapshotQuery(item: ResourceSnapshotItem, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  const resourceRef = formatSnapshotResourceRef(item).toLowerCase();
+  return (
+    item.title.toLowerCase().includes(needle) ||
+    item.summary.toLowerCase().includes(needle) ||
+    item.resource_kind.toLowerCase().includes(needle) ||
+    item.resource_name.toLowerCase().includes(needle) ||
+    (item.resource_namespace ?? "").toLowerCase().includes(needle) ||
+    resourceRef.includes(needle)
+  );
+}
+
+/** 按创建时间降序返回全部快照，供快照中心统一浏览。 */
+export function listAllResourceSnapshots(filters: ResourceSnapshotListFilters = {}): ResourceSnapshotItem[] {
+  const { envId = null, category = "all", source = "all", query = "" } = filters;
+  return snapshots.value
+    .filter((item) => {
+      if (envId && item.env_id !== envId) return false;
+      if (category !== "all" && item.category !== category) return false;
+      if (source !== "all" && item.source !== source) return false;
+      return matchesSnapshotQuery(item, query);
+    })
+    .sort((a, b) => b.created_at.localeCompare(a.created_at));
+}
+
+export function getResourceSnapshotById(id: string): ResourceSnapshotItem | null {
+  return snapshots.value.find((item) => item.id === id) ?? null;
+}
+
+export function formatSnapshotResourceRef(item: ResourceSnapshotRef): string {
+  const ns = item.resource_namespace ? `${item.resource_namespace}/` : "";
+  return `${item.resource_kind} · ${ns}${item.resource_name}`;
+}
+
+export function countResourceSnapshots(): number {
+  return snapshots.value.length;
+}
+
 export function createResourceSnapshot(
   resource: ResourceSnapshotRef,
   input: {
@@ -245,6 +292,10 @@ export function useResourceSnapshotsStore() {
     snapshots,
     listResourceSnapshots,
     listResourceSnapshotsByCategory,
+    listAllResourceSnapshots,
+    getResourceSnapshotById,
+    formatSnapshotResourceRef,
+    countResourceSnapshots,
     createResourceSnapshot,
     toggleResourceSnapshotPinned,
     deleteResourceSnapshot,
