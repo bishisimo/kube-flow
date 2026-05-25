@@ -10,6 +10,13 @@ import { createStorage, type Storage } from "../utils/storage";
 
 const ENV_VIEW_STATE_KEY_PREFIX = "kube-flow:env-view";
 
+export interface EnvViewStateSelectedResource {
+  kind: string;
+  name: string;
+  namespace: string | null;
+  dynamic?: { api_version: string; namespaced: boolean };
+}
+
 export interface EnvViewState {
   namespace: string | null;
   kind: string;
@@ -17,6 +24,7 @@ export interface EnvViewState {
   nodeFilter: string;
   podIpFilter: string;
   labelSelector: string;
+  selectedResource?: EnvViewStateSelectedResource | null;
 }
 
 const envViewStorageCache = new Map<string, Storage<EnvViewState>>();
@@ -26,10 +34,26 @@ function getEnvViewStorage(envId: string): Storage<EnvViewState> {
       envId,
       createStorage<EnvViewState>({
         key: `${ENV_VIEW_STATE_KEY_PREFIX}:${envId}`,
-        version: 2,
-        fallback: { namespace: null, kind: "namespaces", nameFilter: "", nodeFilter: "all", podIpFilter: "", labelSelector: "" },
+        version: 3,
+        fallback: {
+          namespace: null,
+          kind: "namespaces",
+          nameFilter: "",
+          nodeFilter: "all",
+          podIpFilter: "",
+          labelSelector: "",
+          selectedResource: null,
+        },
         migrate: (old) => {
-          const o = old as { namespace?: string | null; kind?: string; nameFilter?: string; nodeFilter?: string; podIpFilter?: string; labelSelector?: string } | null;
+          const o = old as {
+            namespace?: string | null;
+            kind?: string;
+            nameFilter?: string;
+            nodeFilter?: string;
+            podIpFilter?: string;
+            labelSelector?: string;
+            selectedResource?: EnvViewStateSelectedResource | null;
+          } | null;
           return {
             namespace: o?.namespace ?? null,
             kind: typeof o?.kind === "string" ? o.kind : "namespaces",
@@ -37,6 +61,7 @@ function getEnvViewStorage(envId: string): Storage<EnvViewState> {
             nodeFilter: typeof o?.nodeFilter === "string" ? o.nodeFilter : "all",
             podIpFilter: typeof o?.podIpFilter === "string" ? o.podIpFilter : "",
             labelSelector: typeof o?.labelSelector === "string" ? o.labelSelector : "",
+            selectedResource: o?.selectedResource ?? null,
           };
         },
       })
@@ -51,7 +76,15 @@ function getEnvViewStateFromStorage(envId: string): EnvViewState | null {
 }
 
 function setEnvViewStateToStorage(envId: string, state: Partial<EnvViewState>) {
-  const existing = getEnvViewStateFromStorage(envId) ?? { namespace: null, kind: "namespaces", nameFilter: "", nodeFilter: "all", podIpFilter: "", labelSelector: "" };
+  const existing = getEnvViewStateFromStorage(envId) ?? {
+    namespace: null,
+    kind: "namespaces",
+    nameFilter: "",
+    nodeFilter: "all",
+    podIpFilter: "",
+    labelSelector: "",
+    selectedResource: null,
+  };
   getEnvViewStorage(envId).write({ ...existing, ...state });
 }
 

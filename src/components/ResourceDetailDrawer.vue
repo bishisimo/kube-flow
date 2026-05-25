@@ -348,17 +348,23 @@ async function applyEdit(yamlOverride?: string) {
   editInfo.value = null;
   try {
     const autoSnapshotEnabled = await ensureAutoSnapshotSettingLoaded();
-    if (autoSnapshotEnabled && rawYaml.value && snapshotResourceRef.value) {
-      createResourceSnapshot(snapshotResourceRef.value, {
-        yaml: rawYaml.value,
+    const snapshotYaml = (rawYaml.value || editYaml.value || editConfigYaml.value).trim();
+    if (autoSnapshotEnabled && snapshotYaml && snapshotResourceRef.value) {
+      const created = createResourceSnapshot(snapshotResourceRef.value, {
+        yaml: snapshotYaml,
         category: activeTab.value === "editConfig" ? "config" : "resource",
         source: "before-apply",
         title: activeTab.value === "editConfig" ? "应用前配置快照" : "应用前资源快照",
       });
+      if (!created) {
+        editInfo.value = "配置已应用，但自动快照未能保存（YAML 为空或格式无效）。";
+      }
     }
     await kubeApplyResource(props.envId, yaml);
     await fetchYaml();
-    editInfo.value = "已自动保存当前编辑草稿快照，可在“快照”栏目统一查看。";
+    if (!editInfo.value) {
+      editInfo.value = "已自动保存应用前快照，可在「快照」栏目查看。";
+    }
     activeTab.value = "yaml";
   } catch (e) {
     const msg = extractErrorMessage(e);

@@ -47,7 +47,7 @@ export function useOrchestratorApplyFlow(params: {
     envId: string,
     kind: string, name: string, namespace: string | null,
     liveYaml: string
-  ) => void;
+  ) => void | Promise<void>;
 }) {
   const applying = ref(false);
   const applyDialogVisible = ref(false);
@@ -92,7 +92,7 @@ export function useOrchestratorApplyFlow(params: {
     try {
       const liveYaml = await params.fetchLiveYaml(envId, kind, name, namespace);
       if (liveYaml) {
-        params.createBeforeApplySnapshot(envId, kind, name, namespace, liveYaml);
+        await params.createBeforeApplySnapshot(envId, kind, name, namespace, liveYaml);
       }
     } catch {
       // 忽略快照失败，不阻塞 apply

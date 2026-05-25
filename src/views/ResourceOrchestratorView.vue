@@ -596,7 +596,13 @@ watch(
 );
 
 watch(
-  () => [orchestratorFocusTarget.value?.env_id ?? "", orchestratorFocusTarget.value?.manifest_id ?? "", manifests.value.length] as const,
+  () =>
+    [
+      orchestratorFocusTarget.value?.env_id ?? "",
+      orchestratorFocusTarget.value?.manifest_id ?? "",
+      orchestratorFocusTarget.value?.component ?? "",
+      manifests.value.map((m) => `${m.id}:${m.component}:${m.updated_at}`).join("|"),
+    ] as const,
   () => {
     applyPendingOrchestratorFocus();
   },
@@ -606,6 +612,7 @@ watch(
 watch(
   () => [selectedEnvId.value, components.value.join("|")] as const,
   () => {
+    if (orchestratorFocusTarget.value) return;
     if (!components.value.length) selectedComponent.value = "";
     else if (!selectedComponent.value || !components.value.includes(selectedComponent.value)) {
       selectedComponent.value = components.value[0];

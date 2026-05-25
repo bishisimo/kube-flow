@@ -102,6 +102,7 @@ function upsertFromWorkbenchSync(
     existing.updated_at = now;
     existing.history = pushHistory(existing.history, "sync", sanitizedYaml);
     manifestStorage.write(manifests.value);
+    rebuildManifestIndex();
     return existing;
   }
 

@@ -200,6 +200,17 @@ const selectedCustomTarget = ref<ResolvedAliasTarget | null>(null);
 /** 钻取来源：从某资源跳转到关联列表时保留，用于面包屑与侧栏点击时清除 */
 const drillFrom = ref<{ kind: string; name: string; namespace: string | null } | null>(null);
 
+/** 集群级资源，无需 namespace；CRD 等动态资源带 dynamic 走专用 API */
+type SelectedResourceRef = {
+  kind: string;
+  name: string;
+  namespace: string | null;
+  nodeName: string | null;
+  dynamic?: { api_version: string; namespaced: boolean };
+};
+
+const selectedResource = ref<SelectedResourceRef | null>(null);
+
 function restoreEnvViewState(envId: string) {
   selectedCustomTarget.value = null;
   const stored = getEnvViewState(envId);
@@ -210,6 +221,15 @@ function restoreEnvViewState(envId: string) {
     nodeFilter.value = stored.nodeFilter ?? "all";
     podIpFilter.value = stored.podIpFilter ?? "";
     labelSelector.value = stored.labelSelector ?? "";
+    selectedResource.value = stored.selectedResource
+      ? {
+          kind: stored.selectedResource.kind,
+          name: stored.selectedResource.name,
+          namespace: stored.selectedResource.namespace ?? null,
+          nodeName: null,
+          ...(stored.selectedResource.dynamic ? { dynamic: stored.selectedResource.dynamic } : {}),
+        }
+      : null;
   } else {
     selectedNamespace.value = null;
     selectedKind.value = "namespaces";
@@ -217,6 +237,7 @@ function restoreEnvViewState(envId: string) {
     nodeFilter.value = "all";
     podIpFilter.value = "";
     labelSelector.value = "";
+    selectedResource.value = null;
   }
   drillFrom.value = null;
 }
@@ -303,6 +324,14 @@ function saveEnvViewState(envId: string) {
     nodeFilter: nodeFilter.value,
     podIpFilter: podIpFilter.value,
     labelSelector: labelSelector.value,
+    selectedResource: selectedResource.value
+      ? {
+          kind: selectedResource.value.kind,
+          name: selectedResource.value.name,
+          namespace: selectedResource.value.namespace ?? null,
+          ...(selectedResource.value.dynamic ? { dynamic: selectedResource.value.dynamic } : {}),
+        }
+      : null,
   });
 }
 
@@ -673,16 +702,6 @@ function openKindSelector() {
   });
 }
 
-/** 集群级资源，无需 namespace；CRD 等动态资源带 dynamic 走专用 API */
-type SelectedResourceRef = {
-  kind: string;
-  name: string;
-  namespace: string | null;
-  nodeName: string | null;
-  dynamic?: { api_version: string; namespaced: boolean };
-};
-
-const selectedResource = ref<SelectedResourceRef | null>(null);
 const detailDrawerVisible = ref(false);
 const detailDrawerInitialTab = ref<string | null>(null);
 const changeImageModalVisible = ref(false);
@@ -1478,7 +1497,8 @@ watch(selectedKind, () => {
   nodeFilter.value = "all";
   podIpFilter.value = "";
 });
-watch(currentId, (id) => {
+watch(currentId, (id, prevId) => {
+  if (prevId) saveEnvViewState(prevId);
   selectedCustomTarget.value = null;
   beginEnvSwitch(id);
   loadRecentNamespacesForEnv(id);
@@ -1521,7 +1541,7 @@ watch(kindFilter, (q) => {
   }
   scheduleCustomResourceResolve(false);
 });
-watch([selectedNamespace, selectedKind, nameFilter, nodeFilter, podIpFilter, labelSelector], () => {
+watch([selectedNamespace, selectedKind, nameFilter, nodeFilter, podIpFilter, labelSelector, selectedResource], () => {
   const id = currentId.value;
   if (id) saveEnvViewState(id);
 });
@@ -1667,6 +1687,11 @@ watch(
   },
   { immediate: true }
 );
+
+// 在列表 Watch 启动前恢复视图，避免先用默认「全部 / namespaces」拉取并覆盖缓存。
+if (currentId.value) {
+  restoreEnvViewState(currentId.value);
+}
 
 const { applyWatch } = useWorkbenchResourceWatch({
   currentId,
