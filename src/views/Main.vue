@@ -212,37 +212,27 @@ type SelectedResourceRef = {
 const selectedResource = ref<SelectedResourceRef | null>(null);
 
 function restoreEnvViewState(envId: string) {
-  selectedCustomTarget.value = null;
   const stored = getEnvViewState(envId);
   if (stored) {
     selectedNamespace.value = stored.namespace;
     selectedKind.value = (VALID_KINDS.has(stored.kind) ? stored.kind : "namespaces") as ResourceKind;
+    selectedCustomTarget.value = stored.customTarget ?? null;
     nameFilter.value = stored.nameFilter ?? "";
     nodeFilter.value = stored.nodeFilter ?? "all";
     podIpFilter.value = stored.podIpFilter ?? "";
     labelSelector.value = stored.labelSelector ?? "";
-    selectedResource.value = stored.selectedResource
-      ? {
-          kind: stored.selectedResource.kind,
-          name: stored.selectedResource.name,
-          namespace: stored.selectedResource.namespace ?? null,
-          nodeName: null,
-          ...(stored.selectedResource.dynamic ? { dynamic: stored.selectedResource.dynamic } : {}),
-        }
-      : null;
   } else {
     selectedNamespace.value = null;
     selectedKind.value = "namespaces";
+    selectedCustomTarget.value = null;
     nameFilter.value = "";
     nodeFilter.value = "all";
     podIpFilter.value = "";
     labelSelector.value = "";
-    selectedResource.value = null;
   }
+  selectedResource.value = null;
   drillFrom.value = null;
 }
-
-/** 选择资源类型并退出钻取（侧栏/下拉点击） */
 function selectKindAndClearDrill(kind: ResourceKind) {
   touchRecentKind(kind);
   navigateTo({ kind, customTarget: null, nameFilter: "", drillFrom: null, reload: false, closeDrawer: false });
@@ -324,14 +314,7 @@ function saveEnvViewState(envId: string) {
     nodeFilter: nodeFilter.value,
     podIpFilter: podIpFilter.value,
     labelSelector: labelSelector.value,
-    selectedResource: selectedResource.value
-      ? {
-          kind: selectedResource.value.kind,
-          name: selectedResource.value.name,
-          namespace: selectedResource.value.namespace ?? null,
-          ...(selectedResource.value.dynamic ? { dynamic: selectedResource.value.dynamic } : {}),
-        }
-      : null,
+    customTarget: selectedCustomTarget.value,
   });
 }
 
@@ -1499,7 +1482,6 @@ watch(selectedKind, () => {
 });
 watch(currentId, (id, prevId) => {
   if (prevId) saveEnvViewState(prevId);
-  selectedCustomTarget.value = null;
   beginEnvSwitch(id);
   loadRecentNamespacesForEnv(id);
   if (id) restoreEnvViewState(id);
@@ -1541,7 +1523,7 @@ watch(kindFilter, (q) => {
   }
   scheduleCustomResourceResolve(false);
 });
-watch([selectedNamespace, selectedKind, nameFilter, nodeFilter, podIpFilter, labelSelector, selectedResource], () => {
+watch([selectedNamespace, selectedKind, selectedCustomTarget, nameFilter, nodeFilter, podIpFilter, labelSelector], () => {
   const id = currentId.value;
   if (id) saveEnvViewState(id);
 });

@@ -271,7 +271,7 @@ watch(
   padding: 1.25rem 0;
 }
 .change-image-loading-text {
-  color: var(--kf-text-secondary, #64748b);
+  color: var(--wb-text-secondary);
   font-size: 0.85rem;
 }
 .change-image-alert {
@@ -300,16 +300,16 @@ watch(
 .container-name {
   font-weight: 650;
   font-size: 0.85rem;
-  color: var(--kf-text-primary, #0f172a);
+  color: var(--wb-text-primary);
 }
 .container-current {
   flex: 1;
   min-width: 0;
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 0.78rem;
-  color: var(--kf-text-secondary, #64748b);
-  background: var(--wb-surface-soft, rgba(241, 245, 249, 0.7));
-  border: 1px solid var(--wb-line, rgba(148, 163, 184, 0.22));
+  color: var(--wb-text-secondary);
+  background: color-mix(in srgb, var(--kf-text-primary) 6%, var(--kf-mix-surface));
+  border: 1px solid var(--wb-line);
   border-radius: 6px;
   padding: 0.25rem 0.5rem;
   overflow: hidden;
@@ -336,7 +336,7 @@ watch(
 }
 .edit-label {
   font-size: 0.72rem;
-  color: var(--kf-text-secondary, #64748b);
+  color: var(--wb-text-secondary);
   font-weight: 600;
 }
 </style>

@@ -197,13 +197,13 @@ function backToList() {
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  background: var(--kf-bg-soft, #f8fafc);
+  background: var(--kf-bg-soft);
 }
 .sc-toolbar {
   flex-shrink: 0;
   padding: 0.85rem 1rem;
-  border-bottom: 1px solid var(--kf-border, #e2e8f0);
-  background: var(--kf-surface-strong, #fff);
+  border-bottom: 1px solid var(--kf-border);
+  background: var(--kf-surface-strong);
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   grid-template-rows: auto auto;
@@ -214,12 +214,12 @@ function backToList() {
   margin: 0;
   font-size: 1.125rem;
   font-weight: 600;
-  color: var(--kf-text-primary, #0f172a);
+  color: var(--kf-text-primary);
 }
 .sc-toolbar-title p {
   margin: 0.2rem 0 0;
   font-size: 0.75rem;
-  color: var(--kf-text-secondary, #64748b);
+  color: var(--kf-text-secondary);
 }
 .sc-toolbar-filters {
   grid-column: 1 / -1;
@@ -238,7 +238,7 @@ function backToList() {
   justify-self: end;
   font-size: 0.75rem;
   font-weight: 600;
-  color: var(--kf-text-secondary, #64748b);
+  color: var(--kf-text-secondary);
   white-space: nowrap;
 }
 .sc-workspace {
@@ -260,13 +260,14 @@ function backToList() {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--kf-surface-strong, #fff);
+  background: var(--kf-surface-strong);
+  border-left: 1px solid var(--kf-border);
 }
 .sc-detail-mobile-bar {
   display: none;
   flex-shrink: 0;
   padding: 0.35rem 0.5rem;
-  border-bottom: 1px solid var(--kf-border, #e2e8f0);
+  border-bottom: 1px solid var(--kf-border);
 }
 .sc-detail-empty {
   flex: 1;
@@ -278,7 +279,7 @@ function backToList() {
 .sc-detail-empty-hint {
   margin: 0.5rem 0 0;
   font-size: 0.8125rem;
-  color: var(--kf-text-secondary, #64748b);
+  color: var(--kf-text-secondary);
   text-align: center;
 }
 

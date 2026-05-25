@@ -2,7 +2,7 @@
 /**
  * 编辑环境抽屉：基础配置与节点终端策略分 Tab 展示，替代原独立弹窗。
  */
-import { ref, computed, watch, unref } from "vue";
+import { ref, computed, watch, unref, nextTick } from "vue";
 import { NButton, NDrawer, NDrawerContent, NPopconfirm, NSpace, NTab, NTabs } from "naive-ui";
 import { kfSpace } from "../../kf";
 import type { Environment } from "../../api/env";
@@ -10,8 +10,9 @@ import { strongholdAdjacentModalTrapFocusEnabled } from "../../stores/stronghold
 import { createStorage } from "../../utils/storage";
 import EnvBasicConfigPanel from "./EnvBasicConfigPanel.vue";
 import EnvTerminalStrategyPanel from "./EnvTerminalStrategyPanel.vue";
+import EnvWorkbenchStatePanel from "./EnvWorkbenchStatePanel.vue";
 
-type EnvEditTab = "basic" | "terminal";
+type EnvEditTab = "basic" | "terminal" | "workbench";
 
 const DRAWER_WIDTH_KEY = "kube-flow:env-edit-drawer-width";
 const DRAWER_MIN = 420;
@@ -53,6 +54,9 @@ const emit = defineEmits<{
 const activeTab = ref<EnvEditTab>("basic");
 const basicPanelRef = ref<InstanceType<typeof EnvBasicConfigPanel> | null>(null);
 const terminalPanelRef = ref<InstanceType<typeof EnvTerminalStrategyPanel> | null>(null);
+const workbenchPanelRef = ref<InstanceType<typeof EnvWorkbenchStatePanel> | null>(null);
+
+const isEditableTab = computed(() => activeTab.value === "basic" || activeTab.value === "terminal");
 
 const drawerTitle = computed(() =>
   props.env ? `编辑环境 · ${props.env.display_name}` : "编辑环境"
@@ -69,6 +73,7 @@ watch(
   ([open]) => {
     if (!open) return;
     activeTab.value = "basic";
+    nextTick(() => workbenchPanelRef.value?.reload());
   },
   { immediate: true }
 );
@@ -82,10 +87,19 @@ function onDrawerShowUpdate(show: boolean) {
 }
 
 async function submitCurrentTab() {
+  if (!isEditableTab.value) return;
   const panel = activeTab.value === "basic" ? basicPanelRef.value : terminalPanelRef.value;
   if (!panel) return;
   const ok = await panel.submit();
   if (ok) close();
+}
+
+function onTabChange(tab: string | number) {
+  const next = String(tab) as EnvEditTab;
+  activeTab.value = next;
+  if (next === "workbench") {
+    nextTick(() => workbenchPanelRef.value?.reload());
+  }
 }
 
 function requestRemove() {
@@ -136,9 +150,10 @@ function onPanelSaved() {
 
       <div v-if="env" class="drawer-shell">
         <div class="drawer-tabs">
-          <NTabs v-model:value="activeTab" type="line" animated size="small">
+          <NTabs :value="activeTab" type="line" animated size="small" @update:value="onTabChange">
             <NTab name="basic" tab="基础配置" />
             <NTab name="terminal" tab="终端策略" />
+            <NTab name="workbench" tab="工作台" />
           </NTabs>
         </div>
 
@@ -156,6 +171,11 @@ function onPanelSaved() {
             :env="env"
             @saved="onPanelSaved"
           />
+          <EnvWorkbenchStatePanel
+            v-show="activeTab === 'workbench'"
+            ref="workbenchPanelRef"
+            :env="env"
+          />
         </div>
 
         <footer class="drawer-footer">
@@ -167,8 +187,13 @@ function onPanelSaved() {
           </NPopconfirm>
           <div v-else class="footer-spacer" />
           <div class="footer-actions">
-            <NButton :disabled="saving" @click="close">取消</NButton>
-            <NButton type="primary" :loading="saving" @click="submitCurrentTab">
+            <NButton :disabled="saving" @click="close">{{ isEditableTab ? '取消' : '关闭' }}</NButton>
+            <NButton
+              v-if="isEditableTab"
+              type="primary"
+              :loading="saving"
+              @click="submitCurrentTab"
+            >
               {{ activeTab === 'basic' ? '保存配置' : '保存策略' }}
             </NButton>
           </div>

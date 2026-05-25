@@ -184,10 +184,10 @@ function clearPendingDelete(snapshotId?: string) {
   width: 280px;
   min-width: 280px;
   max-width: 320px;
-  border-left: 1px solid #e2e8f0;
+  border-left: 1px solid var(--kf-border);
   background:
-    radial-gradient(circle at top, rgba(14, 165, 233, 0.08), transparent 38%),
-    linear-gradient(180deg, #fcfdff 0%, #f8fafc 100%);
+    radial-gradient(circle at top, color-mix(in srgb, var(--kf-info) 12%, transparent), transparent 38%),
+    linear-gradient(180deg, var(--kf-surface-strong) 0%, var(--kf-bg-soft) 100%);
   display: flex;
   flex-direction: column;
 }
@@ -197,51 +197,36 @@ function clearPendingDelete(snapshotId?: string) {
   justify-content: space-between;
   gap: 0.75rem;
   padding: 1rem;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid var(--kf-border);
 }
 .snapshot-title {
   font-size: 0.875rem;
   font-weight: 700;
-  color: #0f172a;
+  color: var(--kf-text-primary);
 }
 .snapshot-subtitle {
   margin: 0.35rem 0 0;
   font-size: 0.75rem;
   line-height: 1.5;
-  color: #64748b;
+  color: var(--kf-text-secondary);
 }
 .snapshot-create {
   flex-shrink: 0;
-  padding: 0.45rem 0.75rem;
-  border: 1px solid #bfdbfe;
-  border-radius: 999px;
-  background: #eff6ff;
-  color: #1d4ed8;
-  font-size: 0.75rem;
-  font-weight: 600;
-  cursor: pointer;
-}
-.snapshot-create:hover:not(:disabled) {
-  background: #dbeafe;
-}
-.snapshot-create:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
 }
 .snapshot-current {
   margin: 1rem;
   padding: 0.85rem 0.9rem;
-  border: 1px solid #dbeafe;
+  border: 1px solid color-mix(in srgb, var(--kf-primary) 24%, var(--kf-border));
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.88);
+  background: var(--kf-surface-strong);
 }
 .snapshot-current-label {
   display: inline-block;
   margin-bottom: 0.35rem;
   padding: 0.15rem 0.45rem;
   border-radius: 999px;
-  background: #dbeafe;
-  color: #1d4ed8;
+  background: var(--kf-primary-soft);
+  color: color-mix(in srgb, var(--kf-primary) 82%, var(--kf-text-primary));
   font-size: 0.6875rem;
   font-weight: 700;
 }
@@ -249,7 +234,7 @@ function clearPendingDelete(snapshotId?: string) {
   margin: 0;
   font-size: 0.75rem;
   line-height: 1.5;
-  color: #334155;
+  color: var(--kf-text-primary);
 }
 .snapshot-list {
   flex: 1;
@@ -263,27 +248,30 @@ function clearPendingDelete(snapshotId?: string) {
 .snapshot-card {
   width: 100%;
   padding: 0.9rem;
-  border: 1px solid #d7e1ee;
+  border: 1px solid var(--kf-border);
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.92);
+  background: var(--kf-surface-strong);
   text-align: left;
   cursor: pointer;
   transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
 }
 .snapshot-card:hover {
   transform: translateY(-1px);
-  border-color: #93c5fd;
-  box-shadow: 0 12px 24px rgba(148, 163, 184, 0.14);
+  border-color: color-mix(in srgb, var(--kf-primary) 42%, var(--kf-border));
+  box-shadow: var(--kf-shadow-sm);
 }
 .snapshot-card-danger {
-  border-color: #fca5a5;
-  box-shadow: 0 12px 24px rgba(248, 113, 113, 0.12);
+  border-color: color-mix(in srgb, var(--kf-danger) 55%, var(--kf-border));
+  box-shadow: 0 12px 24px color-mix(in srgb, var(--kf-danger) 16%, transparent);
 }
 .snapshot-card-pinned {
-  border-color: #fbbf24;
-  box-shadow: 0 12px 24px rgba(251, 191, 36, 0.12);
-  background:
-    linear-gradient(180deg, rgba(255, 251, 235, 0.96), rgba(255, 255, 255, 0.96));
+  border-color: color-mix(in srgb, var(--kf-warning) 55%, var(--kf-border));
+  box-shadow: var(--kf-shadow-sm);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--kf-warning) 12%, var(--kf-surface-strong)),
+    var(--kf-surface-strong)
+  );
 }
 .snapshot-card-top {
   display: flex;
@@ -299,89 +287,89 @@ function clearPendingDelete(snapshotId?: string) {
 .snapshot-card-title {
   font-size: 0.8125rem;
   font-weight: 700;
-  color: #0f172a;
+  color: var(--kf-text-primary);
 }
 .snapshot-card-badge {
   flex-shrink: 0;
   padding: 0.15rem 0.45rem;
   border-radius: 999px;
-  background: #f1f5f9;
-  color: #475569;
+  background: color-mix(in srgb, var(--kf-text-primary) 8%, var(--kf-mix-surface));
+  color: var(--kf-text-secondary);
   font-size: 0.6875rem;
 }
 .snapshot-card-badge.kind {
-  background: #dbeafe;
-  color: #1d4ed8;
+  background: var(--kf-primary-soft);
+  color: color-mix(in srgb, var(--kf-primary) 82%, var(--kf-text-primary));
 }
 .snapshot-card-badge.pinned {
-  background: #fef3c7;
-  color: #b45309;
+  background: var(--kf-warning-soft);
+  color: color-mix(in srgb, var(--kf-warning) 78%, var(--kf-text-primary));
 }
 .snapshot-pin {
   width: 1.4rem;
   height: 1.4rem;
   border: none;
   border-radius: 999px;
-  background: #f8fafc;
-  color: #64748b;
+  background: color-mix(in srgb, var(--kf-text-primary) 6%, var(--kf-mix-surface));
+  color: var(--kf-text-secondary);
   font-size: 0.95rem;
   line-height: 1;
   cursor: pointer;
 }
 .snapshot-pin:hover {
-  background: #fef3c7;
-  color: #b45309;
+  background: var(--kf-warning-soft);
+  color: color-mix(in srgb, var(--kf-warning) 78%, var(--kf-text-primary));
 }
 .snapshot-pin.active {
-  background: #fef3c7;
-  color: #b45309;
+  background: var(--kf-warning-soft);
+  color: color-mix(in srgb, var(--kf-warning) 78%, var(--kf-text-primary));
 }
 .snapshot-delete {
   width: 1.4rem;
   height: 1.4rem;
   border: none;
   border-radius: 999px;
-  background: #fee2e2;
-  color: #b91c1c;
+  background: var(--kf-danger-soft);
+  color: var(--kf-danger);
   font-size: 0.95rem;
   line-height: 1;
   cursor: pointer;
 }
 .snapshot-delete:hover {
-  background: #fecaca;
+  background: color-mix(in srgb, var(--kf-danger) 18%, var(--kf-mix-surface));
 }
 .snapshot-delete.confirm {
   width: auto;
   min-width: 2.7rem;
   padding: 0 0.45rem;
-  background: #dc2626;
+  background: var(--kf-danger);
   color: #fff;
   font-size: 0.6875rem;
   font-weight: 700;
 }
 .snapshot-delete.confirm:hover {
-  background: #b91c1c;
+  background: color-mix(in srgb, var(--kf-danger) 88%, black);
 }
 .snapshot-card-resource {
   margin: 0.45rem 0 0;
   font-size: 0.6875rem;
   line-height: 1.45;
-  color: #64748b;
+  color: var(--kf-text-secondary);
 }
 .snapshot-card-env {
   display: inline-block;
   margin-right: 0.35rem;
   padding: 0.1rem 0.4rem;
   border-radius: 999px;
-  background: #e2e8f0;
-  color: #334155;
+  background: color-mix(in srgb, var(--kf-text-primary) 8%, var(--kf-mix-surface));
+  color: var(--kf-text-primary);
   font-weight: 600;
 }
 .snapshot-card-summary {
   margin: 0.6rem 0 0.75rem;
   font-size: 0.75rem;
   line-height: 1.5;
-  color: #475569;
+  color: var(--kf-text-secondary);
 }
 .snapshot-card-meta {
   display: flex;
@@ -389,17 +377,17 @@ function clearPendingDelete(snapshotId?: string) {
   justify-content: space-between;
   gap: 0.5rem;
   font-size: 0.6875rem;
-  color: #64748b;
+  color: var(--kf-text-muted);
 }
 .snapshot-empty {
   margin: 1rem;
   padding: 1rem;
-  border: 1px dashed #cbd5e1;
+  border: 1px dashed var(--kf-border);
   border-radius: 14px;
   font-size: 0.75rem;
   line-height: 1.6;
-  color: #64748b;
-  background: rgba(255, 255, 255, 0.72);
+  color: var(--kf-text-secondary);
+  background: color-mix(in srgb, var(--kf-text-primary) 4%, var(--kf-mix-surface));
 }
 
 @media (max-width: 960px) {
@@ -408,7 +396,7 @@ function clearPendingDelete(snapshotId?: string) {
     min-width: 0;
     max-width: none;
     border-left: none;
-    border-top: 1px solid #e2e8f0;
+    border-top: 1px solid var(--kf-border);
   }
   .snapshot-list {
     max-height: 220px;

@@ -37,6 +37,16 @@ function getNsRecentStorage(envId: string): Storage<string[]> {
   return nsRecentStorageCache.get(envId)!;
 }
 
+/** 读取某环境已保存的最近命名空间（最多 8 个）。 */
+export function readEnvRecentNamespaces(envId: string): string[] {
+  return getNsRecentStorage(envId).read();
+}
+
+/** 清除某环境的最近命名空间记录。 */
+export function clearEnvRecentNamespaces(envId: string): void {
+  getNsRecentStorage(envId).write([]);
+}
+
 export type UseWorkbenchRecentsOptions = {
   /** 当前环境 id；用于按环境读写「最近 namespace」 */
   currentId: Ref<string | null>;

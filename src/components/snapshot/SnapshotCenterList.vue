@@ -114,18 +114,18 @@ function clearPendingDelete(snapshotId?: string) {
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  background: var(--kf-surface-strong, #fff);
-  border-right: 1px solid var(--kf-border, #e2e8f0);
+  background: var(--kf-surface-strong);
+  border-right: 1px solid var(--kf-border);
 }
 .sc-list-head {
   flex-shrink: 0;
   padding: 0.65rem 0.85rem;
-  border-bottom: 1px solid var(--kf-border, #e2e8f0);
+  border-bottom: 1px solid var(--kf-border);
 }
 .sc-list-count {
   font-size: 0.75rem;
   font-weight: 600;
-  color: var(--kf-text-secondary, #64748b);
+  color: var(--kf-text-secondary);
 }
 .sc-list-scroll {
   flex: 1;
@@ -141,9 +141,9 @@ function clearPendingDelete(snapshotId?: string) {
   width: 100%;
   margin: 0;
   padding: 0.7rem 0.75rem 0.7rem 0.85rem;
-  border: 1px solid var(--kf-border, #e2e8f0);
+  border: 1px solid var(--kf-border);
   border-radius: 10px;
-  background: var(--kf-bg-soft, #f8fafc);
+  background: color-mix(in srgb, var(--kf-text-primary) 4%, var(--kf-mix-surface));
   text-align: left;
   cursor: pointer;
   transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
@@ -161,22 +161,26 @@ function clearPendingDelete(snapshotId?: string) {
   transition: background 0.15s ease;
 }
 .sc-list-item:hover {
-  border-color: #93c5fd;
-  background: #fff;
+  border-color: color-mix(in srgb, var(--kf-primary) 42%, var(--kf-border));
+  background: var(--kf-surface-strong);
 }
 .sc-list-item.active {
-  border-color: #60a5fa;
-  background: #fff;
-  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.1);
+  border-color: color-mix(in srgb, var(--kf-primary) 55%, var(--kf-border));
+  background: var(--kf-surface-strong);
+  box-shadow: var(--kf-shadow-sm);
 }
 .sc-list-item.active::before {
-  background: var(--kf-primary, #2563eb);
+  background: var(--kf-primary);
 }
 .sc-list-item.pinned {
-  background: linear-gradient(180deg, rgba(255, 251, 235, 0.9), #fff);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--kf-warning) 12%, var(--kf-surface-strong)),
+    var(--kf-surface-strong)
+  );
 }
 .sc-list-item.danger {
-  border-color: #fca5a5;
+  border-color: color-mix(in srgb, var(--kf-danger) 55%, var(--kf-border));
 }
 .sc-list-item-top {
   display: flex;
@@ -187,7 +191,7 @@ function clearPendingDelete(snapshotId?: string) {
 .sc-list-item-title {
   font-size: 0.8125rem;
   font-weight: 700;
-  color: var(--kf-text-primary, #0f172a);
+  color: var(--kf-text-primary);
   line-height: 1.35;
 }
 .sc-list-item-actions {
@@ -211,14 +215,14 @@ function clearPendingDelete(snapshotId?: string) {
   font-size: 0.85rem;
 }
 .sc-list-pin.active {
-  color: #b45309;
+  color: color-mix(in srgb, var(--kf-warning) 78%, var(--kf-text-primary));
 }
 .sc-list-delete.confirm {
   width: auto;
   min-width: 2.4rem;
   padding: 0 0.35rem !important;
   color: #fff !important;
-  background: #dc2626 !important;
+  background: var(--kf-danger) !important;
   font-size: 0.625rem;
   font-weight: 700;
 }
@@ -233,32 +237,32 @@ function clearPendingDelete(snapshotId?: string) {
   border-radius: 999px;
   font-size: 0.625rem;
   font-weight: 600;
-  background: #f1f5f9;
-  color: #475569;
+  background: color-mix(in srgb, var(--kf-text-primary) 8%, var(--kf-mix-surface));
+  color: var(--kf-text-secondary);
 }
 .sc-badge.env {
-  background: #e2e8f0;
-  color: #334155;
+  background: color-mix(in srgb, var(--kf-text-primary) 10%, var(--kf-mix-surface));
+  color: var(--kf-text-primary);
 }
 .sc-badge.kind {
-  background: #dbeafe;
-  color: #1d4ed8;
+  background: var(--kf-primary-soft);
+  color: color-mix(in srgb, var(--kf-primary) 82%, var(--kf-text-primary));
 }
 .sc-badge.pinned {
-  background: #fef3c7;
-  color: #b45309;
+  background: var(--kf-warning-soft);
+  color: color-mix(in srgb, var(--kf-warning) 78%, var(--kf-text-primary));
 }
 .sc-list-item-resource {
   margin: 0.35rem 0 0;
   font-size: 0.6875rem;
-  color: var(--kf-text-secondary, #64748b);
+  color: var(--kf-text-secondary);
   line-height: 1.4;
 }
 .sc-list-item-summary {
   margin: 0.3rem 0 0;
   font-size: 0.6875rem;
   line-height: 1.45;
-  color: #475569;
+  color: var(--kf-text-secondary);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -268,15 +272,16 @@ function clearPendingDelete(snapshotId?: string) {
   display: block;
   margin-top: 0.35rem;
   font-size: 0.625rem;
-  color: #94a3b8;
+  color: var(--kf-text-muted);
 }
 .sc-list-empty {
   margin: 0.75rem;
   padding: 1rem;
-  border: 1px dashed #cbd5e1;
+  border: 1px dashed var(--kf-border);
   border-radius: 10px;
   font-size: 0.75rem;
   line-height: 1.55;
-  color: #64748b;
+  color: var(--kf-text-secondary);
+  background: color-mix(in srgb, var(--kf-text-primary) 4%, var(--kf-mix-surface));
 }
 </style>
