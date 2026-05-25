@@ -1,8 +1,6 @@
 <script setup lang="ts">
 /**
- * 节点终端策略弹窗：编排 Node/Pod 右键打开终端时的"主机入口 -> 切换步骤"流水线。
- *
- * 策略数据在 nodeTerminalStrategy store 本地持久化；切换用户密码写入凭证存储。
+ * 节点终端策略面板：编排 Node/Pod 右键打开终端时的切换步骤流水线。
  */
 import { ref, computed, watch } from "vue";
 import {
@@ -12,7 +10,6 @@ import {
   NCheckbox,
   NInput,
   NInputGroup,
-  NModal,
   NSelect,
 } from "naive-ui";
 import type { Environment } from "../../api/env";
@@ -28,17 +25,14 @@ import {
   type NodeTerminalStrategy,
 } from "../../stores/nodeTerminalStrategy";
 import { extractErrorMessage } from "../../utils/errorMessage";
-import { strongholdAdjacentModalTrapFocusEnabled } from "../../stores/strongholdAuth";
 import { useEnvCredential } from "../../features/env/useEnvCredential";
 import EnvCredentialPanel from "./EnvCredentialPanel.vue";
 
 const props = defineProps<{
-  visible: boolean;
   env: Environment | null;
 }>();
 
 const emit = defineEmits<{
-  (e: "update:visible", value: boolean): void;
   (e: "saved"): void;
 }>();
 
@@ -93,17 +87,22 @@ const needsSwitchUserPassword = computed(() =>
   strategyNeedsSwitchUserPassword(form.value)
 );
 
+async function loadForm() {
+  const env = props.env;
+  if (!env) return;
+  error.value = "";
+  credential.reset();
+  form.value = {
+    ...(getNodeTerminalStrategy(env.id) ?? defaultStrategy(env.id)),
+    envId: env.id,
+  };
+  await credential.refresh();
+}
+
 watch(
-  () => [props.visible, props.env?.id] as const,
-  async ([open, envId]) => {
-    if (!open || !envId || !props.env) return;
-    error.value = "";
-    credential.reset();
-    form.value = {
-      ...(getNodeTerminalStrategy(envId) ?? defaultStrategy(envId)),
-      envId,
-    };
-    await credential.refresh();
+  () => props.env?.id,
+  () => {
+    void loadForm();
   },
   { immediate: true }
 );
@@ -149,144 +148,124 @@ function removeStep(stepId: string) {
   };
 }
 
-function close() {
-  emit("update:visible", false);
-}
-
-async function submit() {
-  if (!props.env) return;
+async function submit(): Promise<boolean> {
+  if (!props.env) return false;
   error.value = "";
   loading.value = true;
   try {
     setNodeTerminalStrategy(props.env.id, form.value);
     emit("saved");
-    close();
+    return true;
   } catch (e) {
     error.value = extractErrorMessage(e);
+    return false;
   } finally {
     loading.value = false;
   }
 }
+
+defineExpose({ submit, loading, error });
 </script>
 
 <template>
-  <NModal
-    :show="visible"
-    preset="card"
-    title="节点终端切换策略"
-    style="width: 640px; max-width: calc(100vw - 32px);"
-    :mask-closable="!loading"
-    :close-on-esc="!loading"
-    :auto-focus="false"
-    :trap-focus="strongholdAdjacentModalTrapFocusEnabled"
-    @update:show="(v: boolean) => emit('update:visible', v)"
-  >
-    <div v-if="env" class="body">
-      <p class="hint">
-        环境：<strong>{{ env.display_name }}</strong>。右键 Node 或 Pod 打开节点终端时，会先进入该环境主机，再执行这里配置的切换命令。
-      </p>
+  <div v-if="env" class="panel">
+    <p class="hint">
+      右键 Node 或 Pod 打开节点终端时，会先进入该环境主机，再执行这里配置的切换命令。
+    </p>
 
-      <NCheckbox
-        :checked="form.enabled"
-        @update:checked="(v: boolean) => updateField('enabled', v)"
-      >
-        启用节点终端切换策略
-      </NCheckbox>
-      <p class="hint">
-        按步骤编排节点终端进入流程。当前支持 <code>switch_user</code>、<code>ssh</code>、<code>kind_node_exec</code> 三种步骤。
-      </p>
+    <NCheckbox
+      :checked="form.enabled"
+      @update:checked="(v: boolean) => updateField('enabled', v)"
+    >
+      启用节点终端切换策略
+    </NCheckbox>
+    <p class="hint">
+      按步骤编排节点终端进入流程。当前支持 <code>switch_user</code>、<code>ssh</code>、<code>kind_node_exec</code> 三种步骤。
+    </p>
 
-      <label class="form-field">
-        <span class="field-label">节点地址模板</span>
-        <NInput
-          :value="form.nodeAddressTemplate"
-          placeholder="{node}"
-          @update:value="(v: string) => updateField('nodeAddressTemplate', v)"
-        />
-      </label>
-
-      <section class="steps-section">
-        <div class="steps-header">
-          <span class="field-label">步骤编排</span>
-          <NButton size="small" type="primary" ghost @click="addStep('ssh')">
-            + 新增步骤
-          </NButton>
-        </div>
-        <div class="steps-list">
-          <NCard
-            v-for="(step, index) in form.steps"
-            :key="step.id"
-            size="small"
-            class="step-card"
-            :bordered="true"
-          >
-            <div class="step-row">
-              <span class="step-index">{{ index + 1 }}</span>
-              <NInputGroup class="step-main">
-                <NSelect
-                  :value="step.type"
-                  :options="STEP_TYPE_OPTIONS"
-                  style="width: 150px;"
-                  @update:value="(v: NodeTerminalStepType) => updateStepType(step.id, v)"
-                />
-                <NInput
-                  :value="step.user"
-                  :placeholder="
-                    step.type === 'switch_user'
-                      ? '目标用户，例如 root / deploy'
-                      : step.type === 'kind_node_exec'
-                        ? '容器内用户，例如 root'
-                        : 'SSH 用户，例如 root'
-                  "
-                  @update:value="(v: string) => updateStep(step.id, { user: v })"
-                />
-              </NInputGroup>
-              <NButton
-                quaternary
-                circle
-                size="small"
-                :disabled="form.steps.length <= 1"
-                @click="removeStep(step.id)"
-              >
-                ×
-              </NButton>
-            </div>
-            <div class="step-hint">{{ stepHint(step.type) }}</div>
-          </NCard>
-        </div>
-      </section>
-
-      <EnvCredentialPanel
-        v-if="needsSwitchUserPassword"
-        :state="credential"
-        title="切换用户密码"
-        description="仅当步骤中包含 switch_user 时需要配置。密码保存在当前凭证存储后端，后端在切换提示出现时会自动写入。"
+    <label class="form-field">
+      <span class="field-label">节点地址模板</span>
+      <NInput
+        :value="form.nodeAddressTemplate"
+        placeholder="{node}"
+        @update:value="(v: string) => updateField('nodeAddressTemplate', v)"
       />
+    </label>
 
-      <NCard v-if="preview" size="small" class="preview" :bordered="false">
-        <div class="preview-host">预览地址：{{ preview.host }}</div>
-        <pre class="preview-code">{{ preview.command }}</pre>
-      </NCard>
-      <NAlert v-else type="info" size="small" :show-icon="false">
-        当前策略未启用，或模板无法生成有效命令。
-      </NAlert>
-    </div>
+    <section class="steps-section">
+      <div class="steps-header">
+        <span class="field-label">步骤编排</span>
+        <NButton size="small" type="primary" ghost @click="addStep('ssh')">
+          + 新增步骤
+        </NButton>
+      </div>
+      <div class="steps-list">
+        <NCard
+          v-for="(step, index) in form.steps"
+          :key="step.id"
+          size="small"
+          class="step-card"
+          :bordered="true"
+        >
+          <div class="step-row">
+            <span class="step-index">{{ index + 1 }}</span>
+            <NInputGroup class="step-main">
+              <NSelect
+                :value="step.type"
+                :options="STEP_TYPE_OPTIONS"
+                style="width: 150px;"
+                @update:value="(v: NodeTerminalStepType) => updateStepType(step.id, v)"
+              />
+              <NInput
+                :value="step.user"
+                :placeholder="
+                  step.type === 'switch_user'
+                    ? '目标用户，例如 root / deploy'
+                    : step.type === 'kind_node_exec'
+                      ? '容器内用户，例如 root'
+                      : 'SSH 用户，例如 root'
+                "
+                @update:value="(v: string) => updateStep(step.id, { user: v })"
+              />
+            </NInputGroup>
+            <NButton
+              quaternary
+              circle
+              size="small"
+              :disabled="form.steps.length <= 1"
+              @click="removeStep(step.id)"
+            >
+              ×
+            </NButton>
+          </div>
+          <div class="step-hint">{{ stepHint(step.type) }}</div>
+        </NCard>
+      </div>
+    </section>
+
+    <EnvCredentialPanel
+      v-if="needsSwitchUserPassword"
+      :state="credential"
+      title="切换用户密码"
+      description="仅当步骤中包含 switch_user 时需要配置。密码保存在当前凭证存储后端，后端在切换提示出现时会自动写入。"
+    />
+
+    <NCard v-if="preview" size="small" class="preview" :bordered="false">
+      <div class="preview-host">预览地址：{{ preview.host }}</div>
+      <pre class="preview-code">{{ preview.command }}</pre>
+    </NCard>
+    <NAlert v-else type="info" size="small" :show-icon="false">
+      当前策略未启用，或模板无法生成有效命令。
+    </NAlert>
 
     <NAlert v-if="error" type="error" :show-icon="false" size="small" class="form-error">
       {{ error }}
     </NAlert>
-
-    <template #footer>
-      <div class="footer">
-        <NButton :disabled="loading" @click="close">取消</NButton>
-        <NButton type="primary" :loading="loading" @click="submit">保存策略</NButton>
-      </div>
-    </template>
-  </NModal>
+  </div>
 </template>
 
 <style scoped>
-.body {
+.panel {
   display: flex;
   flex-direction: column;
   gap: 0.85rem;
@@ -294,14 +273,14 @@ async function submit() {
 .hint {
   margin: 0;
   font-size: 0.8125rem;
-  color: #64748b;
+  color: var(--kf-text-secondary);
   line-height: 1.5;
 }
 .hint code {
   padding: 0 4px;
   border-radius: 4px;
-  background: #eef2ff;
-  color: #4338ca;
+  background: color-mix(in srgb, var(--kf-primary) 12%, var(--kf-bg-soft));
+  color: color-mix(in srgb, var(--kf-primary) 78%, var(--kf-text-primary));
   font-size: 0.78rem;
 }
 .form-field {
@@ -312,7 +291,7 @@ async function submit() {
 .field-label {
   font-size: 0.8125rem;
   font-weight: 500;
-  color: #475569;
+  color: var(--kf-text-secondary);
 }
 .steps-section {
   display: flex;
@@ -330,7 +309,7 @@ async function submit() {
   gap: 0.5rem;
 }
 .step-card {
-  background: #f8fafc;
+  background: var(--kf-bg-soft);
 }
 .step-row {
   display: flex;
@@ -345,8 +324,8 @@ async function submit() {
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  background: #e2e8f0;
-  color: #475569;
+  background: var(--kf-border);
+  color: var(--kf-text-secondary);
   font-size: 0.75rem;
   font-weight: 700;
 }
@@ -358,7 +337,7 @@ async function submit() {
   margin-top: 0.3rem;
   margin-left: 2.05rem;
   font-size: 0.76rem;
-  color: #64748b;
+  color: var(--kf-text-muted);
 }
 .preview {
   background: #0f172a !important;
@@ -381,11 +360,6 @@ async function submit() {
   color: #e2e8f0;
 }
 .form-error {
-  margin-top: 0.6rem;
-}
-.footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
+  margin-top: 0.25rem;
 }
 </style>

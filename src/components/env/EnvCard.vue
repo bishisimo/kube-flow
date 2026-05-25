@@ -2,7 +2,7 @@
 /**
  * 环境卡片：在环境管理列表中展示单个环境的摘要信息与操作入口。
  *
- * 卡片主体点击 = 编辑；底部按钮触发使用/终端/策略，这些按钮内部已阻止冒泡。
+ * 卡片主体点击 = 编辑；底部按钮触发使用/终端/编辑，这些按钮内部已阻止冒泡。
  */
 import { computed } from "vue";
 import { NButton, NTag } from "naive-ui";
@@ -19,7 +19,6 @@ const emit = defineEmits<{
   (e: "edit", env: Environment): void;
   (e: "use", env: Environment): void;
   (e: "terminal", env: Environment): void;
-  (e: "strategy", env: Environment): void;
 }>();
 
 const isSsh = computed(() => props.env.source === "ssh_tunnel");
@@ -92,8 +91,8 @@ const userTagColor = {
       <NButton size="small" class="act-terminal" @click="emit('terminal', env)">
         终端
       </NButton>
-      <NButton size="small" class="act-strategy" @click="emit('strategy', env)">
-        终端策略
+      <NButton size="small" class="act-edit" @click="emit('edit', env)">
+        编辑
       </NButton>
     </div>
   </article>
@@ -216,7 +215,7 @@ const userTagColor = {
   --n-border-pressed: 1px solid color-mix(in srgb, var(--kf-info) 52%, var(--kf-border));
   --n-border-focus: 1px solid color-mix(in srgb, var(--kf-info) 52%, var(--kf-border));
 }
-.act-strategy {
+.act-edit {
   --n-color: color-mix(in srgb, var(--kf-bg-soft) 84%, var(--kf-surface-strong));
   --n-color-hover: color-mix(in srgb, var(--kf-primary) 14%, var(--kf-surface-strong));
   --n-color-pressed: color-mix(in srgb, var(--kf-primary) 18%, var(--kf-surface-strong));

@@ -11,8 +11,7 @@ import { useEnvManage } from "../features/env/useEnvManage";
 import EnvCard from "../components/env/EnvCard.vue";
 import EnvFilterBar from "../components/env/EnvFilterBar.vue";
 import EnvCreateDialog from "../components/env/EnvCreateDialog.vue";
-import EnvEditDialog from "../components/env/EnvEditDialog.vue";
-import NodeTerminalStrategyDialog from "../components/env/NodeTerminalStrategyDialog.vue";
+import EnvEditDrawer from "../components/env/EnvEditDrawer.vue";
 
 defineOptions({ name: "EnvManage" });
 
@@ -40,9 +39,7 @@ const {
 
 const showCreate = ref(false);
 const showEdit = ref(false);
-const showStrategy = ref(false);
 const editingEnv = ref<Environment | null>(null);
-const strategyEnv = ref<Environment | null>(null);
 
 function openCreate() {
   showCreate.value = true;
@@ -51,11 +48,6 @@ function openCreate() {
 function onEditEnv(env: Environment) {
   editingEnv.value = env;
   showEdit.value = true;
-}
-
-function onStrategyEnv(env: Environment) {
-  strategyEnv.value = env;
-  showStrategy.value = true;
 }
 
 async function onCreated() {
@@ -113,7 +105,6 @@ async function onContextSwitch(env: Environment, ctx: string) {
           @edit="onEditEnv"
           @use="(e) => useEnvAndEmit(e, () => emit('use-env'))"
           @terminal="openEnvTerminal"
-          @strategy="onStrategyEnv"
         />
       </div>
 
@@ -143,17 +134,12 @@ async function onContextSwitch(env: Environment, ctx: string) {
       @created="onCreated"
       @open-ssh-settings="emit('open-ssh-settings')"
     />
-    <EnvEditDialog
+    <EnvEditDrawer
       v-model:visible="showEdit"
       :env="editingEnv"
       @saved="onSaved"
       @removed="onRemoved"
       @context-switch="onContextSwitch"
-    />
-    <NodeTerminalStrategyDialog
-      v-model:visible="showStrategy"
-      :env="strategyEnv"
-      @saved="onSaved"
     />
   </div>
 </template>
