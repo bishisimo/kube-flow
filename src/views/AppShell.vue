@@ -195,6 +195,12 @@ const menuOptions = computed<MenuOption[]>(() => [
   { key: "settings", label: "设置", icon: iconSettings },
 ]);
 
+const isNarrowScreen = ref(false);
+let narrowMql: MediaQueryList | null = null;
+function onNarrowChange() {
+  isNarrowScreen.value = narrowMql!.matches;
+}
+
 function onMenuUpdate(key: string) {
   setTab(key as TabId);
 }
@@ -344,10 +350,14 @@ watch(currentTab, (t) => setPaletteContext(t), { immediate: true });
 onMounted(() => {
   installProviders();
   uninstallShortcut = installPaletteShortcut(palette.toggle);
+  narrowMql = window.matchMedia("(max-width: 768px)");
+  narrowMql.addEventListener("change", onNarrowChange);
+  onNarrowChange();
 });
 
 onBeforeUnmount(() => {
   uninstallShortcut?.();
+  narrowMql?.removeEventListener("change", onNarrowChange);
   for (const dispose of disposeProviders) dispose();
 });
 </script>
@@ -362,7 +372,7 @@ onBeforeUnmount(() => {
         </div>
         <NMenu
           mode="horizontal"
-          responsive
+          :responsive="isNarrowScreen"
           :value="currentTab"
           :options="menuOptions"
           class="app-shell-nav"

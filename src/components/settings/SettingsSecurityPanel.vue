@@ -358,13 +358,13 @@ onMounted(async () => {
 .card-desc {
   margin: 0 0 0.75rem;
   font-size: 0.875rem;
-  color: #64748b;
+  color: var(--kf-text-secondary);
   line-height: 1.55;
 }
 .backend-desc {
   margin: 0.75rem 0 0;
   font-size: 0.8125rem;
-  color: #94a3b8;
+  color: var(--kf-text-muted);
   line-height: 1.5;
 }
 .sec-card-head {
@@ -382,12 +382,12 @@ onMounted(async () => {
 }
 .path-label {
   font-weight: 500;
-  color: #475569;
+  color: var(--kf-text-secondary);
   flex-shrink: 0;
 }
 .path-value {
   flex: 1;
-  color: #64748b;
+  color: var(--kf-text-muted);
   font-family: ui-monospace, monospace;
   font-size: 0.8125rem;
   word-break: break-all;
@@ -404,7 +404,7 @@ onMounted(async () => {
 .option-label {
   font-size: 0.8125rem;
   font-weight: 500;
-  color: #64748b;
+  color: var(--kf-text-secondary);
   margin-bottom: 0.5rem;
 }
 .cred-row {
@@ -412,23 +412,23 @@ onMounted(async () => {
   align-items: center;
   gap: 0.75rem;
   padding: 0.5rem 0.75rem;
-  background: #f8fafc;
+  background: color-mix(in srgb, var(--kf-text-primary) 5%, var(--kf-mix-surface));
   border-radius: 8px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--kf-border);
   font-size: 0.875rem;
   margin-bottom: 0.5rem;
 }
 .cred-name {
   flex: 1;
   font-family: ui-monospace, monospace;
-  color: #1e293b;
+  color: var(--kf-text-primary);
   font-size: 0.8125rem;
   min-width: 0;
   word-break: break-all;
 }
 .empty-tip {
   font-size: 0.875rem;
-  color: #94a3b8;
+  color: var(--kf-text-muted);
   margin: 0 0 0.5rem;
 }
 .msg-alert {
