@@ -196,9 +196,15 @@ watch(
     lastResizeCols = 0;
     lastResizeRows = 0;
     resetTerminalView();
-    await setupListeners();
+    // 先 fit + resize，再设置监听：确保远端 shell 启动时 PTY 尺寸正确，
+    // 避免 readline/bash/mysql 因宽度不匹配导致光标错位
     if (id) {
-      // RAF 确保新布局完成后再 fit
+      fitAddon?.fit();
+      trySendResize();
+    }
+    await setupListeners();
+    // 二次 RAF 兜底：layout 可能在 setupListeners 期间发生变化
+    if (id) {
       requestAnimationFrame(fitAndResize);
     }
   }
@@ -215,10 +221,12 @@ watch(
 onMounted(async () => {
   initTerminal();
   resetTerminalView();
-  await setupListeners();
+  // 先 fit + resize 再 setupListeners：保证远端 PTY 在 shell 输出前获得正确尺寸
   if (props.streamId) {
+    fitAddon?.fit();
     trySendResize();
   }
+  await setupListeners();
 });
 
 onUnmounted(() => {
