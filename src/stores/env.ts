@@ -21,6 +21,9 @@ export interface EnvViewState {
 }
 
 const envViewStorageCache = new Map<string, Storage<EnvViewState>>();
+
+/** 各环境工作台视图快照（与 localStorage 同步，供跨 Tab 组件 reactive 读取）。 */
+export const envViewStateById = ref<Record<string, EnvViewState>>({});
 function getEnvViewStorage(envId: string): Storage<EnvViewState> {
   if (!envViewStorageCache.has(envId)) {
     envViewStorageCache.set(
@@ -68,17 +71,25 @@ function getEnvViewStateFromStorage(envId: string): EnvViewState | null {
   return stored.kind ? stored : null;
 }
 
+function mergeEnvViewState(envId: string, state: Partial<EnvViewState>): EnvViewState {
+  const existing =
+    envViewStateById.value[envId] ??
+    getEnvViewStateFromStorage(envId) ?? {
+      namespace: null,
+      kind: "namespaces",
+      nameFilter: "",
+      nodeFilter: "all",
+      podIpFilter: "",
+      labelSelector: "",
+      customTarget: null,
+    };
+  return { ...existing, ...state };
+}
+
 function setEnvViewStateToStorage(envId: string, state: Partial<EnvViewState>) {
-  const existing = getEnvViewStateFromStorage(envId) ?? {
-    namespace: null,
-    kind: "namespaces",
-    nameFilter: "",
-    nodeFilter: "all",
-    podIpFilter: "",
-    labelSelector: "",
-    customTarget: null,
-  };
-  getEnvViewStorage(envId).write({ ...existing, ...state });
+  const next = mergeEnvViewState(envId, state);
+  getEnvViewStorage(envId).write(next);
+  envViewStateById.value = { ...envViewStateById.value, [envId]: next };
 }
 
 function defaultEnvViewState(): EnvViewState {
@@ -94,11 +105,13 @@ function defaultEnvViewState(): EnvViewState {
 }
 
 export function readEnvViewState(envId: string): EnvViewState {
-  return getEnvViewStateFromStorage(envId) ?? defaultEnvViewState();
+  return envViewStateById.value[envId] ?? getEnvViewStateFromStorage(envId) ?? defaultEnvViewState();
 }
 
 export function resetEnvViewState(envId: string): void {
-  getEnvViewStorage(envId).write(defaultEnvViewState());
+  const next = defaultEnvViewState();
+  getEnvViewStorage(envId).write(next);
+  envViewStateById.value = { ...envViewStateById.value, [envId]: next };
 }
 
 const environments = ref<Environment[]>([]);
@@ -179,8 +192,8 @@ export function useEnvStore() {
     await loadEnvironments();
   }
 
-  function getEnvViewState(envId: string): EnvViewState | null {
-    return getEnvViewStateFromStorage(envId);
+  function getEnvViewState(envId: string): EnvViewState {
+    return readEnvViewState(envId);
   }
 
   function setEnvViewState(envId: string, state: Partial<EnvViewState>) {

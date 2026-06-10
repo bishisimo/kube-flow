@@ -5,7 +5,7 @@ import { NLayout, NLayoutSider } from "naive-ui";
 defineOptions({ name: "Main" });
 import { extractErrorMessage } from "../utils/errorMessage";
 import { createStorage } from "../utils/storage";
-import { useEnvStore, workbenchPendingNav, setEnvNamespaces } from "../stores/env";
+import { useEnvStore, readEnvViewState, workbenchPendingNav, setEnvNamespaces } from "../stores/env";
 import EnvBar from "../components/EnvBar.vue";
 import WorkbenchBreadcrumb from "../components/workbench/WorkbenchBreadcrumb.vue";
 import WorkbenchToolbar from "../components/workbench/WorkbenchToolbar.vue";
@@ -30,6 +30,7 @@ import {
   useWorkbenchResourceWatch,
   useWorkbenchFilterUi,
   getWorkbenchResourceDescriptor,
+  WORKBENCH_ALL_NAMESPACES_SENTINEL,
   useWorkbenchRecents,
   useWorkbenchWatch,
   useWorkbenchListUi,
@@ -86,7 +87,7 @@ const RESOURCE_KINDS = RESOURCE_KINDS_FLAT;
 const VALID_KINDS = buildValidResourceKindSet(RESOURCE_KINDS);
 const API_KIND_TO_ID = buildApiKindToIdMap(RESOURCE_KINDS);
 
-const { openedEnvs, currentEnv, currentId, setCurrent, touchEnv, loadEnvironments, getEnvViewState, setEnvViewState } = useEnvStore();
+const { openedEnvs, currentEnv, currentId, setCurrent, touchEnv, loadEnvironments, setEnvViewState } = useEnvStore();
 const {
   favoriteNamespaces,
   recentNamespaces,
@@ -211,27 +212,39 @@ type SelectedResourceRef = {
 
 const selectedResource = ref<SelectedResourceRef | null>(null);
 
+/** 恢复环境视图状态时跳过 kind 变更副作用与持久化写入，避免覆盖刚读出的缓存。 */
+const restoringEnvViewState = ref(false);
+
+function listNamespaceKeyForCache(kind: ResourceKind, namespace: string | null): string | null {
+  const descriptor = getWorkbenchResourceDescriptor(kind);
+  if (kind === "namespaces" || descriptor.capabilities.clusterScoped) return null;
+  return namespace ?? WORKBENCH_ALL_NAMESPACES_SENTINEL;
+}
+
+function applyEnvViewCache(envId: string) {
+  const labelSel = labelSelector.value.trim() || null;
+  applyCachedView(envId, selectedKind.value, listNamespaceKeyForCache(selectedKind.value, selectedNamespace.value), labelSel);
+}
+
 function restoreEnvViewState(envId: string) {
-  const stored = getEnvViewState(envId);
-  if (stored) {
-    selectedNamespace.value = stored.namespace;
-    selectedKind.value = (VALID_KINDS.has(stored.kind) ? stored.kind : "namespaces") as ResourceKind;
-    selectedCustomTarget.value = stored.customTarget ?? null;
-    nameFilter.value = stored.nameFilter ?? "";
-    nodeFilter.value = stored.nodeFilter ?? "all";
-    podIpFilter.value = stored.podIpFilter ?? "";
-    labelSelector.value = stored.labelSelector ?? "";
-  } else {
-    selectedNamespace.value = null;
-    selectedKind.value = "namespaces";
-    selectedCustomTarget.value = null;
-    nameFilter.value = "";
-    nodeFilter.value = "all";
-    podIpFilter.value = "";
-    labelSelector.value = "";
-  }
+  restoringEnvViewState.value = true;
+  const stored = readEnvViewState(envId);
+  selectedKind.value = (VALID_KINDS.has(stored.kind) ? stored.kind : "namespaces") as ResourceKind;
+  const descriptor = getWorkbenchResourceDescriptor(selectedKind.value);
+  selectedNamespace.value =
+    selectedKind.value === "namespaces" || descriptor.capabilities.clusterScoped
+      ? null
+      : (stored.namespace ?? null);
+  selectedCustomTarget.value = stored.customTarget ?? null;
+  nameFilter.value = stored.nameFilter ?? "";
+  nodeFilter.value = stored.nodeFilter ?? "all";
+  podIpFilter.value = stored.podIpFilter ?? "";
+  labelSelector.value = stored.labelSelector ?? "";
   selectedResource.value = null;
   drillFrom.value = null;
+  nextTick(() => {
+    restoringEnvViewState.value = false;
+  });
 }
 function selectKindAndClearDrill(kind: ResourceKind) {
   touchRecentKind(kind);
@@ -307,8 +320,13 @@ function onDrillBreadcrumbNamespace() {
 }
 
 function saveEnvViewState(envId: string) {
+  const descriptor = getWorkbenchResourceDescriptor(selectedKind.value);
+  const ns =
+    selectedKind.value === "namespaces" || descriptor.capabilities.clusterScoped
+      ? null
+      : selectedNamespace.value;
   setEnvViewState(envId, {
-    namespace: selectedNamespace.value,
+    namespace: ns,
     kind: selectedKind.value,
     nameFilter: nameFilter.value,
     nodeFilter: nodeFilter.value,
@@ -507,6 +525,7 @@ function resetTransientWorkbenchState() {
 function beginEnvSwitch(nextEnvId: string | null) {
   viewSessionId.value += 1;
   resetTransientWorkbenchState();
+  clearResourceCollections();
   beginListSwitch(
     nextEnvId,
     nextEnvId ? (openedEnvs.value.find((env) => env.id === nextEnvId)?.display_name ?? "新环境") : ""
@@ -649,6 +668,8 @@ function selectNamespace(ns: string | null) {
   selectedNamespace.value = ns;
   nsDropdownOpen.value = false;
   if (ns) touchRecentNamespace(ns);
+  const id = currentId.value;
+  if (id && !restoringEnvViewState.value) saveEnvViewState(id);
 }
 
 async function refreshNamespaceOptions() {
@@ -717,7 +738,7 @@ const selectedRowKeys = ref<Set<string>>(new Set());
 /** 批量删除模式：为 true 时显示复选框列 */
 const batchDeleteMode = ref(false);
 
-const { navigateTo } = useWorkbenchNavigation({
+const { navigateTo: navigateToWorkbench } = useWorkbenchNavigation({
   selectedKind,
   selectedCustomTarget,
   selectedNamespace,
@@ -732,6 +753,12 @@ const { navigateTo } = useWorkbenchNavigation({
   drillFrom,
   requestListReload,
 });
+
+function navigateTo(...args: Parameters<typeof navigateToWorkbench>) {
+  navigateToWorkbench(...args);
+  const id = currentId.value;
+  if (id && !restoringEnvViewState.value) saveEnvViewState(id);
+}
 
 const {
   isCellDrillable,
@@ -1406,8 +1433,6 @@ onMounted(async () => {
   hydrateFromStorage();
   hydrateFavoriteKinds();
   void ensureAppSettingsLoaded();
-  const id = currentId.value;
-  if (id) restoreEnvViewState(id);
   document.addEventListener("click", onDocClick);
   unlistenConnection = await setupConnectionProgressListener();
   workbenchResourcePaletteAdapter.value = {
@@ -1473,18 +1498,25 @@ onUnmounted(() => {
   workbenchResourcePaletteAdapter.value = null;
 });
 
-watch(selectedKind, () => {
+watch(selectedKind, (newKind) => {
+  if (restoringEnvViewState.value) return;
   selectedCustomTarget.value = null;
   sortBy.value = "creationTime";
   sortOrder.value = "desc";
   nodeFilter.value = "all";
   podIpFilter.value = "";
+  if (newKind === "namespaces" || getWorkbenchResourceDescriptor(newKind).capabilities.clusterScoped) {
+    selectedNamespace.value = null;
+  }
 });
 watch(currentId, (id, prevId) => {
   if (prevId) saveEnvViewState(prevId);
   beginEnvSwitch(id);
   loadRecentNamespacesForEnv(id);
-  if (id) restoreEnvViewState(id);
+  if (id) {
+    restoreEnvViewState(id);
+    applyEnvViewCache(id);
+  }
 });
 watch(nsDropdownOpen, (open) => {
   if (!open) return;
@@ -1524,15 +1556,16 @@ watch(kindFilter, (q) => {
   scheduleCustomResourceResolve(false);
 });
 watch([selectedNamespace, selectedKind, selectedCustomTarget, nameFilter, nodeFilter, podIpFilter, labelSelector], () => {
+  if (restoringEnvViewState.value) return;
   const id = currentId.value;
   if (id) saveEnvViewState(id);
 });
 
 /** 把当前环境的命名空间列表同步到全局共享 store，供命令面板等只读消费。 */
 watch(
-  [currentId, namespaceOptions],
-  ([id, ns]) => {
-    if (!id) return;
+  [currentId, namespaceOptions, envSwitching],
+  ([id, ns, switching]) => {
+    if (!id || switching) return;
     setEnvNamespaces(id, ns.map((n) => n.name));
   },
   { immediate: true },
@@ -1670,9 +1703,10 @@ watch(
   { immediate: true }
 );
 
-// 在列表 Watch 启动前恢复视图，避免先用默认「全部 / namespaces」拉取并覆盖缓存。
+// 在列表 Watch 启动前恢复视图并应用内存缓存，避免先用默认「全部 / namespaces」拉取并覆盖缓存。
 if (currentId.value) {
   restoreEnvViewState(currentId.value);
+  applyEnvViewCache(currentId.value);
 }
 
 const { applyWatch } = useWorkbenchResourceWatch({
@@ -1706,6 +1740,7 @@ const { applyWatch } = useWorkbenchResourceWatch({
   sshAuth,
   setConnecting,
   setDisconnected,
+  restoringEnvViewState,
 });
 applyWatchExecutor = applyWatch;
 

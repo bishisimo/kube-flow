@@ -71,6 +71,7 @@ export type UseWorkbenchResourceWatchOptions = {
   sshAuth: SshAuthLike;
   setConnecting: (envId: string) => void;
   setDisconnected: (envId: string, msg: string) => void;
+  restoringEnvViewState: Ref<boolean>;
 };
 
 /**
@@ -241,8 +242,11 @@ export function useWorkbenchResourceWatch(o: UseWorkbenchResourceWatchOptions) {
   });
 
   watch(
-    [o.currentId, o.selectedNamespace, o.selectedKind, o.selectedCustomTarget],
+    [o.currentId, o.selectedNamespace, o.selectedKind, o.selectedCustomTarget, o.restoringEnvViewState],
     () => {
+      // 环境切换期间 selectedKind/selectedNamespace 尚未还原为新环境的值，
+      // 跳过本次触发，等 restoreEnvViewState 完成后由后续 watcher 触发正确加载
+      if (o.restoringEnvViewState.value) return;
       const id = o.currentId.value;
       if (o.selectedCustomTarget.value) {
         if (id) kubeStopWatch(id).catch((e) => console.warn("[watch] stop failed:", e));

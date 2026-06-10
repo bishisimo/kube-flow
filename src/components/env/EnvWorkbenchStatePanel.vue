@@ -6,7 +6,7 @@ import { ref, computed, watch, h } from "vue";
 import { NButton, NDataTable, NPopconfirm } from "naive-ui";
 import type { DataTableColumns } from "naive-ui";
 import type { Environment } from "../../api/env";
-import { readEnvViewState, resetEnvViewState } from "../../stores/env";
+import { readEnvViewState, resetEnvViewState, envViewStateById } from "../../stores/env";
 import {
   buildRecentNamespaceChartItems,
   buildWorkbenchContextTableRows,
@@ -29,6 +29,7 @@ const viewRevision = ref(0);
 const viewState = computed(() => {
   if (!props.env) return null;
   void viewRevision.value;
+  void envViewStateById.value[props.env.id];
   return readEnvViewState(props.env.id);
 });
 
