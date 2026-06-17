@@ -2,9 +2,11 @@
 //! 前端传 camelCase，通过 serde(rename_all = "camelCase") 映射到后端 snake_case。
 
 use crate::commands::kube_command_context::{err_str, CommandResult};
+use crate::config::EnvViewState;
 use crate::env::types::EnvironmentContext;
 use crate::env::{EnvService, Environment, KubeContextInfo, SshTunnel};
 use serde::Deserialize;
+use std::collections::HashMap;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,7 +69,8 @@ pub fn env_update(env: Environment) -> CommandResult<()> {
 
 #[tauri::command]
 pub fn env_delete(id: String) -> CommandResult<()> {
-    EnvService::delete(&id).map_err(err_str)
+    EnvService::delete(&id).map_err(err_str)?;
+    crate::config::env_view_state::remove(&id).map_err(err_str)
 }
 
 #[tauri::command]
@@ -153,4 +156,26 @@ pub fn env_ensure_ssh_tunnel_for_host(
         args.local_port,
     )
     .map_err(err_str)
+}
+
+#[tauri::command]
+pub fn env_view_state_list() -> CommandResult<HashMap<String, EnvViewState>> {
+    crate::config::env_view_state::list_all().map_err(err_str)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EnvViewStateSetArgs {
+    pub env_id: String,
+    pub state: EnvViewState,
+}
+
+#[tauri::command]
+pub fn env_view_state_set(args: EnvViewStateSetArgs) -> CommandResult<()> {
+    crate::config::env_view_state::set(&args.env_id, args.state).map_err(err_str)
+}
+
+#[tauri::command]
+pub fn env_view_state_delete(env_id: String) -> CommandResult<()> {
+    crate::config::env_view_state::remove(&env_id).map_err(err_str)
 }

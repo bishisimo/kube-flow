@@ -4,6 +4,13 @@ import App from "./App.vue";
 import router from "./router";
 import { installDefaultSpellcheckPolicy } from "./bootstrap/spellcheckPolicy";
 import { installEscapeWindowGuard } from "./bootstrap/escapeWindowGuard";
+import { hydrateEnvViewStates } from "./stores/env";
+import { applyOrchestratorHydration, getOrchestratorPersistSnapshot } from "./stores/orchestrator";
+import { applyPackagesHydration, packages } from "./stores/orchestratorPackages";
+import {
+  hydrateOrchestratorData,
+  registerOrchestratorPersistGetter,
+} from "./stores/orchestratorPersistence";
 import "./styles/kf-select-toolbar.css";
 import "./styles/kf-password-input.css";
 
@@ -26,5 +33,21 @@ window.addEventListener("unhandledrejection", (event) => {
 });
 
 const root = document.getElementById("app");
-app.mount("#app");
-if (root) installDefaultSpellcheckPolicy(root);
+
+async function bootstrap() {
+  registerOrchestratorPersistGetter(() => ({
+    ...getOrchestratorPersistSnapshot(),
+    packages: packages.value,
+  }));
+  await Promise.all([
+    hydrateEnvViewStates(),
+    hydrateOrchestratorData((data) => {
+      applyOrchestratorHydration(data);
+      applyPackagesHydration(data.packages);
+    }),
+  ]);
+  app.mount("#app");
+  if (root) installDefaultSpellcheckPolicy(root);
+}
+
+void bootstrap();

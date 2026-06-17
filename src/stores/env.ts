@@ -4,93 +4,24 @@
 import { ref, computed } from "vue";
 import type { Environment } from "../api/env";
 import type { ResolvedAliasTarget } from "../api/types/kube";
+import {
+  envViewStateDelete,
+  envViewStateList,
+  envViewStateSet,
+  type EnvViewState,
+} from "../api/envViewState";
 import { envList, envTouch, envDelete } from "../api/env";
 import { kubeRemoveClient } from "../api/kube";
-import { createStorage, type Storage } from "../utils/storage";
+
+export type { EnvViewState } from "../api/envViewState";
 
 const ENV_VIEW_STATE_KEY_PREFIX = "kube-flow:env-view";
 
-export interface EnvViewState {
-  namespace: string | null;
-  kind: string;
-  nameFilter: string;
-  nodeFilter: string;
-  podIpFilter: string;
-  labelSelector: string;
-  customTarget?: ResolvedAliasTarget | null;
-}
-
-const envViewStorageCache = new Map<string, Storage<EnvViewState>>();
-
-/** 各环境工作台视图快照（与 localStorage 同步，供跨 Tab 组件 reactive 读取）。 */
+/** 各环境工作台视图快照（与 app data JSON 同步，供跨 Tab 组件 reactive 读取）。 */
 export const envViewStateById = ref<Record<string, EnvViewState>>({});
-function getEnvViewStorage(envId: string): Storage<EnvViewState> {
-  if (!envViewStorageCache.has(envId)) {
-    envViewStorageCache.set(
-      envId,
-      createStorage<EnvViewState>({
-        key: `${ENV_VIEW_STATE_KEY_PREFIX}:${envId}`,
-        version: 5,
-        fallback: {
-          namespace: null,
-          kind: "namespaces",
-          nameFilter: "",
-          nodeFilter: "all",
-          podIpFilter: "",
-          labelSelector: "",
-          customTarget: null,
-        },
-        migrate: (old) => {
-          const o = old as {
-            namespace?: string | null;
-            kind?: string;
-            nameFilter?: string;
-            nodeFilter?: string;
-            podIpFilter?: string;
-            labelSelector?: string;
-            customTarget?: ResolvedAliasTarget | null;
-          } | null;
-          return {
-            namespace: o?.namespace ?? null,
-            kind: typeof o?.kind === "string" ? o.kind : "namespaces",
-            nameFilter: typeof o?.nameFilter === "string" ? o.nameFilter : "",
-            nodeFilter: typeof o?.nodeFilter === "string" ? o.nodeFilter : "all",
-            podIpFilter: typeof o?.podIpFilter === "string" ? o.podIpFilter : "",
-            labelSelector: typeof o?.labelSelector === "string" ? o.labelSelector : "",
-            customTarget: o?.customTarget ?? null,
-          };
-        },
-      })
-    );
-  }
-  return envViewStorageCache.get(envId)!;
-}
 
-function getEnvViewStateFromStorage(envId: string): EnvViewState | null {
-  const stored = getEnvViewStorage(envId).read();
-  return stored.kind ? stored : null;
-}
-
-function mergeEnvViewState(envId: string, state: Partial<EnvViewState>): EnvViewState {
-  const existing =
-    envViewStateById.value[envId] ??
-    getEnvViewStateFromStorage(envId) ?? {
-      namespace: null,
-      kind: "namespaces",
-      nameFilter: "",
-      nodeFilter: "all",
-      podIpFilter: "",
-      labelSelector: "",
-      customTarget: null,
-    };
-  return { ...existing, ...state };
-}
-
-function setEnvViewStateToStorage(envId: string, state: Partial<EnvViewState>) {
-  const next = mergeEnvViewState(envId, state);
-  getEnvViewStorage(envId).write(next);
-  envViewStateById.value = { ...envViewStateById.value, [envId]: next };
-}
+let hydrated = false;
+let hydratePromise: Promise<void> | null = null;
 
 function defaultEnvViewState(): EnvViewState {
   return {
@@ -104,14 +35,119 @@ function defaultEnvViewState(): EnvViewState {
   };
 }
 
+/** 从旧版 localStorage 读取单环境视图状态（仅用于一次性迁移）。 */
+function readLegacyEnvViewStateFromLocalStorage(envId: string): EnvViewState | null {
+  try {
+    const raw = localStorage.getItem(`${ENV_VIEW_STATE_KEY_PREFIX}:${envId}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { v?: number; data?: unknown } | EnvViewState;
+    const data =
+      parsed && typeof parsed === "object" && "data" in parsed && parsed.data
+        ? (parsed as { data: EnvViewState }).data
+        : (parsed as EnvViewState);
+    if (!data || typeof data !== "object" || typeof data.kind !== "string" || !data.kind) {
+      return null;
+    }
+    return {
+      namespace: data.namespace ?? null,
+      kind: data.kind,
+      nameFilter: typeof data.nameFilter === "string" ? data.nameFilter : "",
+      nodeFilter: typeof data.nodeFilter === "string" ? data.nodeFilter : "all",
+      podIpFilter: typeof data.podIpFilter === "string" ? data.podIpFilter : "",
+      labelSelector: typeof data.labelSelector === "string" ? data.labelSelector : "",
+      customTarget: data.customTarget ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function listLegacyEnvViewStateEnvIds(): string[] {
+  const prefix = `${ENV_VIEW_STATE_KEY_PREFIX}:`;
+  const ids: string[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key?.startsWith(prefix)) ids.push(key.slice(prefix.length));
+  }
+  return ids;
+}
+
+function mergeEnvViewState(envId: string, state: Partial<EnvViewState>): EnvViewState {
+  const existing = envViewStateById.value[envId] ?? defaultEnvViewState();
+  return { ...existing, ...state };
+}
+
+async function persistEnvViewState(envId: string, state: EnvViewState): Promise<void> {
+  try {
+    await envViewStateSet(envId, state);
+  } catch (e) {
+    console.error("[env-view-state] persist failed:", e);
+  }
+}
+
+function setEnvViewStateToStorage(envId: string, state: Partial<EnvViewState>) {
+  const next = mergeEnvViewState(envId, state);
+  envViewStateById.value = { ...envViewStateById.value, [envId]: next };
+  void persistEnvViewState(envId, next);
+}
+
+/**
+ * 从 app data 目录加载各环境工作台视图状态；启动时调用一次。
+ * 若磁盘无数据，会尝试从旧版 localStorage 迁移并写回磁盘。
+ */
+export async function hydrateEnvViewStates(): Promise<void> {
+  if (hydrated) return;
+  if (hydratePromise) return hydratePromise;
+
+  hydratePromise = (async () => {
+    const fromDisk = await envViewStateList().catch((e) => {
+      console.error("[env-view-state] load failed:", e);
+      return {} as Record<string, EnvViewState>;
+    });
+
+    const merged: Record<string, EnvViewState> = { ...fromDisk };
+    const legacyEnvIds = new Set([
+      ...Object.keys(fromDisk),
+      ...listLegacyEnvViewStateEnvIds(),
+    ]);
+
+    for (const envId of legacyEnvIds) {
+      const legacy = readLegacyEnvViewStateFromLocalStorage(envId);
+      if (!legacy) continue;
+      const disk = fromDisk[envId];
+      const shouldMigrate = !disk || (disk.kind === "namespaces" && legacy.kind !== "namespaces");
+      if (shouldMigrate) {
+        merged[envId] = legacy;
+        await persistEnvViewState(envId, legacy);
+      }
+    }
+
+    envViewStateById.value = merged;
+    hydrated = true;
+  })();
+
+  return hydratePromise;
+}
+
+export async function ensureEnvViewStatesHydrated(): Promise<void> {
+  return hydrateEnvViewStates();
+}
+
+/** 退出或切环境前确保指定环境的视图状态已写入磁盘。 */
+export async function flushEnvViewState(envId: string): Promise<void> {
+  await ensureEnvViewStatesHydrated();
+  const state = envViewStateById.value[envId];
+  if (!state) return;
+  await persistEnvViewState(envId, state);
+}
+
 export function readEnvViewState(envId: string): EnvViewState {
-  return envViewStateById.value[envId] ?? getEnvViewStateFromStorage(envId) ?? defaultEnvViewState();
+  return envViewStateById.value[envId] ?? defaultEnvViewState();
 }
 
 export function resetEnvViewState(envId: string): void {
   const next = defaultEnvViewState();
-  getEnvViewStorage(envId).write(next);
-  envViewStateById.value = { ...envViewStateById.value, [envId]: next };
+  setEnvViewStateToStorage(envId, next);
 }
 
 const environments = ref<Environment[]>([]);
@@ -189,6 +225,9 @@ export function useEnvStore() {
       const rest = [...openedIds.value];
       currentId.value = rest.length > 0 ? rest[0] : null;
     }
+    await envViewStateDelete(id).catch((e) => console.warn("[env-view-state] delete failed:", e));
+    delete envViewStateById.value[id];
+    envViewStateById.value = { ...envViewStateById.value };
     await loadEnvironments();
   }
 

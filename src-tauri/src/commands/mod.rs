@@ -12,6 +12,8 @@ pub mod env_commands;
 pub mod kube;
 pub mod kube_command_context;
 pub mod log_commands;
+pub mod orchestrator_commands;
+pub mod storage_commands;
 pub mod terminal_commands;
 
 /// 向后兼容：保留 kube_commands 路径，所有符号来自 kube 子模块。

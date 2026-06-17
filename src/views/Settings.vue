@@ -69,12 +69,14 @@ import { useEnvStore } from "../stores/env";
 import { useSnapshotCenterStore } from "../stores/snapshotCenter";
 import { appChromeScheme, setAppChromeScheme, APP_CHROME_OPTIONS } from "../stores/appChromeTheme";
 import SettingsSecurityPanel from "../components/settings/SettingsSecurityPanel.vue";
+import SettingsDataPanel from "../components/settings/SettingsDataPanel.vue";
 
-type CategoryId = "appearance" | "workspace" | "debug" | "ssh" | "security";
+type CategoryId = "appearance" | "workspace" | "debug" | "ssh" | "security" | "data";
 
 const CATEGORIES: { id: CategoryId; label: string; icon: string }[] = [
   { id: "appearance", label: "外观", icon: "🎨" },
   { id: "workspace", label: "工作流", icon: "🧭" },
+  { id: "data", label: "数据", icon: "💾" },
   { id: "debug", label: "调试", icon: "🔧" },
   { id: "ssh", label: "SSH 隧道", icon: "📡" },
   { id: "security", label: "安全与凭证", icon: "🔒" },
@@ -954,6 +956,14 @@ const menuOptions = computed<MenuOption[]>(() =>
       <!-- 安全与凭证 -->
       <template v-if="activeCategory === 'security'">
         <SettingsSecurityPanel />
+      </template>
+
+      <!-- 数据与存储 -->
+      <template v-if="activeCategory === 'data'">
+        <SettingsDataPanel
+          @open-workspace="activeCategory = 'workspace'"
+          @open-debug="activeCategory = 'debug'"
+        />
       </template>
 
       <!-- 外观 -->

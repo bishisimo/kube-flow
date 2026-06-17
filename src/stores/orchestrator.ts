@@ -3,7 +3,10 @@
  * 应用包管理（Package / PackageVersion / Deployment）已迁移至 orchestratorPackages.ts。
  */
 import { ref } from "vue";
-import { createStorage } from "../utils/storage";
+import {
+  queueOrchestratorPersist,
+  type OrchestratorPersistedData,
+} from "./orchestratorPersistence";
 import {
   uid,
   nowIso,
@@ -35,32 +38,10 @@ import type {
   OrchestratorFocusTarget,
 } from "./orchestratorTypes";
 
-// ── Storage ───────────────────────────────────────────────────────────────────
-
-export const manifestStorage = createStorage<OrchestratorManifest[]>({
-  key: "kube-flow:orchestrator:manifests",
-  version: 1,
-  fallback: [],
-  migrate: (old) => {
-    const arr = Array.isArray(old) ? old : [];
-    return arr.filter((m) => m && typeof m === "object") as OrchestratorManifest[];
-  },
-});
-
-const batchStorage = createStorage<OrchestratorImportBatch[]>({
-  key: "kube-flow:orchestrator:import-batches",
-  version: 1,
-  fallback: [],
-  migrate: (old) => {
-    const arr = Array.isArray(old) ? old : [];
-    return arr.filter((item) => item && typeof item === "object") as OrchestratorImportBatch[];
-  },
-});
-
 // ── State ─────────────────────────────────────────────────────────────────────
 
-export const manifests = ref<OrchestratorManifest[]>(manifestStorage.read());
-const importBatches = ref<OrchestratorImportBatch[]>(batchStorage.read());
+export const manifests = ref<OrchestratorManifest[]>([]);
+export const importBatches = ref<OrchestratorImportBatch[]>([]);
 const switchToOrchestratorRequested = ref(0);
 const orchestratorFocusTarget = ref<OrchestratorFocusTarget | null>(null);
 
@@ -80,6 +61,23 @@ export function rebuildManifestIndex() {
 }
 
 rebuildManifestIndex();
+
+function persistOrchestratorSnapshot() {
+  queueOrchestratorPersist();
+}
+
+export function applyOrchestratorHydration(data: Pick<OrchestratorPersistedData, "manifests" | "importBatches">) {
+  manifests.value = data.manifests;
+  importBatches.value = data.importBatches;
+  rebuildManifestIndex();
+}
+
+export function getOrchestratorPersistSnapshot(): Pick<OrchestratorPersistedData, "manifests" | "importBatches"> {
+  return {
+    manifests: manifests.value,
+    importBatches: importBatches.value,
+  };
+}
 
 // ── Manifest CRUD ─────────────────────────────────────────────────────────────
 
@@ -101,7 +99,7 @@ function upsertFromWorkbenchSync(
     existing.yaml = sanitizedYaml;
     existing.updated_at = now;
     existing.history = pushHistory(existing.history, "sync", sanitizedYaml);
-    manifestStorage.write(manifests.value);
+    persistOrchestratorSnapshot();
     rebuildManifestIndex();
     return existing;
   }
@@ -125,7 +123,7 @@ function upsertFromWorkbenchSync(
   };
   manifests.value = [item, ...manifests.value];
   rebuildManifestIndex();
-  manifestStorage.write(manifests.value);
+  persistOrchestratorSnapshot();
   return item;
 }
 
@@ -136,7 +134,7 @@ function saveManifestYaml(id: string, yaml: string, action: ManifestHistoryItem[
   target.yaml = yaml;
   target.updated_at = nowIso();
   target.history = pushHistory(target.history, action, yaml);
-  manifestStorage.write(manifests.value);
+  persistOrchestratorSnapshot();
   return true;
 }
 
@@ -145,7 +143,7 @@ function setManifestComponent(id: string, component: string): boolean {
   if (!target) return false;
   target.component = normalizeComponent(component);
   target.updated_at = nowIso();
-  manifestStorage.write(manifests.value);
+  persistOrchestratorSnapshot();
   return true;
 }
 
@@ -170,7 +168,7 @@ function createManifestDraft(envId: string, envName: string, component: string, 
   };
   manifests.value = [item, ...manifests.value];
   rebuildManifestIndex();
-  manifestStorage.write(manifests.value);
+  persistOrchestratorSnapshot();
   return item;
 }
 
@@ -185,14 +183,14 @@ function setManifestIdentity(
   target.resource_namespace = identity.namespace;
   target.updated_at = nowIso();
   rebuildManifestIndex();
-  manifestStorage.write(manifests.value);
+  persistOrchestratorSnapshot();
   return true;
 }
 
 function deleteManifest(id: string) {
   manifests.value = manifests.value.filter((m) => m.id !== id);
   rebuildManifestIndex();
-  manifestStorage.write(manifests.value);
+  persistOrchestratorSnapshot();
 }
 
 function importManifestsToEnv(
@@ -244,7 +242,7 @@ function importManifestsToEnv(
       },
       ...importBatches.value,
     ].slice(0, 100);
-    batchStorage.write(importBatches.value);
+    persistOrchestratorSnapshot();
   }
 
   for (const resource of resources) {
@@ -294,8 +292,13 @@ function importManifestsToEnv(
   }
 
   rebuildManifestIndex();
-  manifestStorage.write(manifests.value);
+  persistOrchestratorSnapshot();
   return { created, updated, skipped, manifestIds, batchId };
+}
+
+function clearImportBatchesRecords() {
+  importBatches.value = [];
+  persistOrchestratorSnapshot();
 }
 
 function requestSwitchToOrchestrator(target?: OrchestratorFocusTarget | null) {
@@ -317,5 +320,6 @@ export function useOrchestratorStore() {
     setManifestIdentity,
     deleteManifest,
     importManifestsToEnv,
+    clearImportBatchesRecords,
   };
 }

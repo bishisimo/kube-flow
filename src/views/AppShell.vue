@@ -14,7 +14,8 @@ import {
 import { NIcon, NMenu, NSpace } from "naive-ui";
 import { kfSpace } from "../kf";
 import type { MenuOption } from "naive-ui";
-import { useEnvStore } from "../stores/env";
+import { useEnvStore, hydrateEnvViewStates, flushEnvViewState } from "../stores/env";
+import { flushOrchestratorData } from "../stores/orchestratorPersistence";
 import { useShellStore } from "../stores/shell";
 import { useLogCenterStore } from "../stores/logCenter";
 import { useSnapshotCenterStore } from "../stores/snapshotCenter";
@@ -115,7 +116,25 @@ function onUseEnv() {
 }
 
 onMounted(async () => {
+  await hydrateEnvViewStates();
   await loadEnvironments();
+
+  try {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    void getCurrentWindow().onCloseRequested(async (event) => {
+      const id = currentId.value;
+      if (!id) return;
+      event.preventDefault();
+      try {
+        await flushEnvViewState(id);
+        await flushOrchestratorData();
+      } finally {
+        await getCurrentWindow().destroy();
+      }
+    });
+  } catch {
+    // 非 Tauri 环境（如纯 Web 预览）跳过
+  }
 });
 
 /** 构造一个返回 NIcon(内联 SVG) 的渲染函数，供 NMenu 的 icon 字段使用。 */

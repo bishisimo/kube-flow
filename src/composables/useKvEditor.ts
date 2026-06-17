@@ -32,6 +32,7 @@ export interface KvEditorState {
   addRow: (factory: () => KeyValueRow) => void;
   removeRow: (index: number) => void;
   onSave: () => void;
+  validateFormat: () => string[];
   onFormatConfirmApply: () => void;
   onFormatConfirmCancel: () => void;
   onControlCharConfirmApply: () => void;
@@ -148,6 +149,13 @@ export function useKvEditor(cb: KvEditorCallbacks): KvEditorState {
     formatConfirmKeys.value = [];
   }
 
+  /** 独立校验各配置项的格式是否符合 key 后缀要求。更新 formatConfirmKeys 并返回不合法 key 列表。 */
+  function validateFormat(): string[] {
+    const formatMismatch = validateFormatBySuffix(rows.value);
+    formatConfirmKeys.value = formatMismatch;
+    return formatMismatch;
+  }
+
   function onControlCharConfirmApply() {
     controlCharConfirmKeys.value = [];
     doApply();
@@ -172,6 +180,7 @@ export function useKvEditor(cb: KvEditorCallbacks): KvEditorState {
     addRow,
     removeRow,
     onSave,
+    validateFormat,
     onFormatConfirmApply,
     onFormatConfirmCancel,
     onControlCharConfirmApply,

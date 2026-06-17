@@ -4,7 +4,9 @@
  * 以及跨环境的包同步与组件复制操作。
  */
 import { ref } from "vue";
-import { createStorage } from "../utils/storage";
+import {
+  queueOrchestratorPersist,
+} from "./orchestratorPersistence";
 import {
   uid,
   nowIso,
@@ -27,35 +29,23 @@ export type {
 } from "./orchestratorTypes";
 
 // ── 导入 manifests 状态（只在此文件读写，不触发循环依赖） ──────────────────────
-import { manifests, manifestStorage, manifestIndex, rebuildManifestIndex, manifestKey } from "./orchestrator";
+import {
+  manifests,
+  manifestIndex,
+  rebuildManifestIndex,
+  manifestKey,
+} from "./orchestrator";
 
-// ── Storage ───────────────────────────────────────────────────────────────────
+// ── State ─────────────────────────────────────────────────────────────────────
 
-const packageStorage = createStorage<OrchestratorPackage[]>({
-  key: "kube-flow:orchestrator:packages",
-  version: 1,
-  fallback: [],
-  migrate: (old) => {
-    const arr = Array.isArray(old) ? old : [];
-    return arr
-      .filter((p) => p && typeof p === "object")
-      .map((p) => {
-        const pkg = p as OrchestratorPackage;
-        const versions = Array.isArray(pkg.versions)
-          ? pkg.versions.map((v) => ({
-              ...v,
-              tag: typeof v.tag === "string" && v.tag.trim() ? v.tag.trim() : null,
-            }))
-          : [];
-        return { ...pkg, versions, deployments: Array.isArray(pkg.deployments) ? pkg.deployments : [] } as OrchestratorPackage;
-      });
-  },
-});
+export const packages = ref<OrchestratorPackage[]>([]);
 
-const packages = ref<OrchestratorPackage[]>(packageStorage.read());
+export function applyPackagesHydration(items: OrchestratorPackage[]) {
+  packages.value = items;
+}
 
 function persistPackages() {
-  packageStorage.write(packages.value);
+  queueOrchestratorPersist();
 }
 
 // ── Package CRUD ──────────────────────────────────────────────────────────────
@@ -217,7 +207,7 @@ function syncPackageVersionToEnv(
     copied += 1;
   }
   rebuildManifestIndex();
-  manifestStorage.write(manifests.value);
+  queueOrchestratorPersist();
   return { copied, updated, skipped, manifestIds };
 }
 
@@ -309,7 +299,7 @@ function copyComponentToEnv(
     copied += 1;
   }
   rebuildManifestIndex();
-  manifestStorage.write(manifests.value);
+  queueOrchestratorPersist();
   return { copied, updated, skipped };
 }
 

@@ -5,7 +5,7 @@ import { NLayout, NLayoutSider } from "naive-ui";
 defineOptions({ name: "Main" });
 import { extractErrorMessage } from "../utils/errorMessage";
 import { createStorage } from "../utils/storage";
-import { useEnvStore, readEnvViewState, workbenchPendingNav, setEnvNamespaces } from "../stores/env";
+import { useEnvStore, readEnvViewState, workbenchPendingNav, setEnvNamespaces, flushEnvViewState } from "../stores/env";
 import EnvBar from "../components/EnvBar.vue";
 import WorkbenchBreadcrumb from "../components/workbench/WorkbenchBreadcrumb.vue";
 import WorkbenchToolbar from "../components/workbench/WorkbenchToolbar.vue";
@@ -230,11 +230,8 @@ function restoreEnvViewState(envId: string) {
   restoringEnvViewState.value = true;
   const stored = readEnvViewState(envId);
   selectedKind.value = (VALID_KINDS.has(stored.kind) ? stored.kind : "namespaces") as ResourceKind;
-  const descriptor = getWorkbenchResourceDescriptor(selectedKind.value);
   selectedNamespace.value =
-    selectedKind.value === "namespaces" || descriptor.capabilities.clusterScoped
-      ? null
-      : (stored.namespace ?? null);
+    selectedKind.value === "namespaces" ? null : (stored.namespace ?? null);
   selectedCustomTarget.value = stored.customTarget ?? null;
   nameFilter.value = stored.nameFilter ?? "";
   nodeFilter.value = stored.nodeFilter ?? "all";
@@ -320,11 +317,7 @@ function onDrillBreadcrumbNamespace() {
 }
 
 function saveEnvViewState(envId: string) {
-  const descriptor = getWorkbenchResourceDescriptor(selectedKind.value);
-  const ns =
-    selectedKind.value === "namespaces" || descriptor.capabilities.clusterScoped
-      ? null
-      : selectedNamespace.value;
+  const ns = selectedKind.value === "namespaces" ? null : selectedNamespace.value;
   setEnvViewState(envId, {
     namespace: ns,
     kind: selectedKind.value,
@@ -1505,12 +1498,12 @@ watch(selectedKind, (newKind) => {
   sortOrder.value = "desc";
   nodeFilter.value = "all";
   podIpFilter.value = "";
-  if (newKind === "namespaces" || getWorkbenchResourceDescriptor(newKind).capabilities.clusterScoped) {
+  if (newKind === "namespaces") {
     selectedNamespace.value = null;
   }
 });
-watch(currentId, (id, prevId) => {
-  if (prevId) saveEnvViewState(prevId);
+watch(currentId, async (id, prevId) => {
+  if (prevId) await flushEnvViewState(prevId);
   beginEnvSwitch(id);
   loadRecentNamespacesForEnv(id);
   if (id) {

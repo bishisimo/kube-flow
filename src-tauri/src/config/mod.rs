@@ -2,7 +2,9 @@
 
 mod app_settings;
 mod crd_display;
+pub mod env_view_state;
 mod kube_flow;
+pub mod orchestrator_data;
 mod paths;
 mod ssh_config;
 
@@ -10,6 +12,7 @@ pub use app_settings::{
     AppSettingsConfig, GpuResourceRule, LogDisplayFormat, LogDisplayOrder, LogLevel,
     ResourceDeployStrategy, SecurityConfig,
 };
+pub use env_view_state::EnvViewState;
 pub use kube_flow::{KubeFlowConfig, KubeFlowConfigFile};
 pub use paths::{
     app_data_dir, app_settings_config_path, debug_log_path, debug_logs_dir, ensure_app_data_dir,
@@ -33,4 +36,6 @@ pub enum ConfigError {
     Toml(#[from] toml::de::Error),
     #[error("toml serialize: {0}")]
     TomlSer(#[from] toml::ser::Error),
+    #[error("json: {0}")]
+    Json(#[from] serde_json::Error),
 }

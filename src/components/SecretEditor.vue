@@ -66,6 +66,7 @@ const {
   addRow,
   removeRow,
   onSave,
+  validateFormat,
   onFormatConfirmApply,
   onFormatConfirmCancel,
   onControlCharConfirmApply,
@@ -123,6 +124,13 @@ const {
   emit,
 });
 
+function onFormatCheck() {
+  const invalid = validateFormat();
+  if (invalid.length === 0) {
+    window.alert("所有配置项格式正确");
+  }
+}
+
 const secretSelectedRow = computed(() => selectedRow.value as SecretRow | null);
 
 function getDisplayValue(row: SecretRow): string {
@@ -155,6 +163,16 @@ function getDisplayValue(row: SecretRow): string {
           @click="showDecoded = !showDecoded"
         >
           {{ showDecoded ? "原始" : "解析" }}
+        </NButton>
+        <NButton
+          size="small"
+          title="格式校验"
+          :disabled="hasEmptyRow"
+          @click="onFormatCheck"
+        >
+          <template #icon>
+            <span class="format-check-icon">✓</span>
+          </template>
         </NButton>
         <NButton type="primary" :disabled="saving || hasEmptyRow" :loading="saving" @click="onSave">
           应用
