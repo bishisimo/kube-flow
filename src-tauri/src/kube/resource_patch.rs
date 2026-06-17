@@ -1,9 +1,11 @@
-//! 资源快捷 Patch：如批量修改容器镜像，使用 Strategic Merge Patch。
+//! 资源快捷 Patch：如批量修改容器镜像、结构化区块编辑，使用 Strategic Merge Patch。
 
 use crate::kube::resource_get;
 use crate::kube::resources::ResourceError;
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, StatefulSet};
-use kube::api::{Api, Patch, PatchParams};
+use kube::api::{Api, DynamicObject, Patch, PatchParams};
+use kube::core::{GroupVersion, GroupVersionKind};
+use kube::discovery::{self, ApiCapabilities, ApiResource, Scope};
 use kube::Client;
 use serde::Deserialize;
 
@@ -108,5 +110,70 @@ pub async fn patch_container_images(
         _ => return Err(ResourceError::UnsupportedKind(kind.to_string())),
     }
 
+    Ok(())
+}
+
+async fn resolve_dynamic_api(
+    client: &Client,
+    gvk: &GroupVersionKind,
+    namespace: Option<&str>,
+) -> Result<Api<DynamicObject>, ResourceError> {
+    let (ar, caps): (ApiResource, ApiCapabilities) =
+        discovery::pinned_kind(client, gvk).await.map_err(|e| {
+            ResourceError::Serialize(format!(
+                "无法解析资源类型 {}/{} {}：{}",
+                gvk.group, gvk.version, gvk.kind, e
+            ))
+        })?;
+
+    let api = match caps.scope {
+        Scope::Cluster => Api::<DynamicObject>::all_with(client.clone(), &ar),
+        Scope::Namespaced => Api::<DynamicObject>::namespaced_with(
+            client.clone(),
+            namespace.unwrap_or("default"),
+            &ar,
+        ),
+    };
+    Ok(api)
+}
+
+/// 对已有资源执行 Strategic Merge Patch（用于工作台结构化区块编辑）。
+pub async fn patch_resource_strategic(
+    client: &Client,
+    kind: &str,
+    name: &str,
+    namespace: Option<&str>,
+    patch: serde_json::Value,
+) -> Result<(), ResourceError> {
+    let yaml_str = resource_get::get_resource_yaml(client, kind, name, namespace).await?;
+    let obj: serde_json::Value = serde_yaml::from_str(&yaml_str)
+        .map_err(|e| ResourceError::Serialize(format!("yaml parse: {}", e)))?;
+
+    let api_version = obj
+        .get("apiVersion")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ResourceError::Serialize("missing apiVersion".to_string()))?;
+    let obj_kind = obj
+        .get("kind")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ResourceError::Serialize("missing kind".to_string()))?;
+
+    if obj_kind != kind {
+        return Err(ResourceError::Serialize(format!(
+            "kind mismatch: expected {}, got {}",
+            kind, obj_kind
+        )));
+    }
+
+    let gv = api_version
+        .parse::<GroupVersion>()
+        .map_err(|e| ResourceError::Serialize(format!("invalid apiVersion: {}", e)))?;
+    let gvk = gv.with_kind(kind);
+
+    let api = resolve_dynamic_api(client, &gvk, namespace).await?;
+    let pp = PatchParams::default();
+    api.patch(name, &pp, &Patch::Strategic(patch))
+        .await
+        .map_err(ResourceError::Kube)?;
     Ok(())
 }

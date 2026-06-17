@@ -137,6 +137,7 @@ pub fn run() {
             commands::kube_commands::kube_apply_resource,
             commands::kube_commands::kube_deploy_resource,
             commands::kube_commands::kube_patch_container_images,
+            commands::kube_commands::kube_patch_resource_strategic,
             commands::kube_commands::kube_get_tunnel_local_port,
             commands::kube_commands::kube_remove_client,
             commands::kube_commands::kube_refresh_resource_aliases,

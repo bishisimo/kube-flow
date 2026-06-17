@@ -328,6 +328,16 @@ export function kubePatchContainerImages(
   return invoke("kube_patch_container_images", { envId, kind, name, namespace, patches });
 }
 
+export function kubePatchResourceStrategic(
+  envId: string,
+  kind: string,
+  name: string,
+  namespace: string | null,
+  patch: Record<string, unknown>
+): Promise<void> {
+  return invoke("kube_patch_resource_strategic", { envId, kind, name, namespace, patch });
+}
+
 // ─── Tunnel ───────────────────────────────────────────────────────────────────
 
 /** 若该环境为 SSH 隧道且隧道已建立，返回本地映射端口；否则返回 null。 */

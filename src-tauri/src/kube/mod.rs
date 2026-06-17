@@ -32,7 +32,7 @@ pub use resource_graph::{build_graph, ResourceGraph};
 pub use resource_log::{
     get_pod_container_names, get_pod_logs, run_pod_log_stream, PodLogStreamStore,
 };
-pub use resource_patch::{patch_container_images, ContainerImagePatch};
+pub use resource_patch::{patch_container_images, patch_resource_strategic, ContainerImagePatch};
 pub use resource_watch::{start_watch, WatchStore};
 pub use resources::{
     list_cluster_role_bindings, list_cluster_roles, list_config_maps, list_cron_jobs,

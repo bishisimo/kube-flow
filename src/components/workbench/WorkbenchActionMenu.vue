@@ -139,7 +139,7 @@ const menuOptions = computed<WBOption[]>(() => {
 
   const flowItems: WBOption[] = [];
   if (r && (r.kind === "ConfigMap" || r.kind === "Secret")) {
-    flowItems.push({ key: "openEditConfig", label: "修改配置", tail: "Config", tone: "flow", emit: "openEditConfig" });
+    flowItems.push({ key: "openEditConfig", label: "编辑配置", tail: "KV / YAML", tone: "flow", emit: "openEditConfig" });
   }
   if (r && WORKBENCH_IMAGE_PATCH_KINDS.has(r.kind)) {
     flowItems.push({ key: "openChangeImage", label: "修改镜像", tail: "Image", tone: "flow", emit: "openChangeImage" });

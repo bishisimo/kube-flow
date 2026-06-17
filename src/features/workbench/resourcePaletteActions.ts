@@ -91,8 +91,8 @@ export function buildResourcePaletteValueCandidates(
   if (r.kind === "ConfigMap" || r.kind === "Secret") {
     out.push({
       value: "openEditConfig",
-      title: "修改配置",
-      subtitle: "Config",
+      title: "编辑配置",
+      subtitle: "KV / YAML",
       icon: "✏️",
     });
   }

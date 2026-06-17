@@ -6,8 +6,8 @@ use crate::kube::resource_graph::registry::build_default_registry;
 use crate::kube::{
     apply_resource_yaml, build_graph, delete_dynamic_resource, delete_resource,
     deploy_resource_yaml, describe_dynamic_resource, describe_resource, get_dynamic_resource_yaml,
-    get_pod_container_names, get_resource_yaml, patch_container_images, ContainerImagePatch,
-    DescribeResult, KubeClientStore, ResourceGraph,
+    get_pod_container_names, get_resource_yaml, patch_container_images, patch_resource_strategic,
+    ContainerImagePatch, DescribeResult, KubeClientStore, ResourceGraph,
 };
 use tauri::State;
 
@@ -114,6 +114,21 @@ pub async fn kube_patch_container_images(
 ) -> CommandResult<()> {
     let (_env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
     patch_container_images(&client, &kind, &name, namespace.as_deref(), &patches)
+        .await
+        .map_err(err_str)
+}
+
+#[tauri::command]
+pub async fn kube_patch_resource_strategic(
+    store: State<'_, KubeClientStore>,
+    env_id: String,
+    kind: String,
+    name: String,
+    namespace: Option<String>,
+    patch: serde_json::Value,
+) -> CommandResult<()> {
+    let (_env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
+    patch_resource_strategic(&client, &kind, &name, namespace.as_deref(), patch)
         .await
         .map_err(err_str)
 }

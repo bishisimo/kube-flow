@@ -1,19 +1,18 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
 import * as jsYaml from "js-yaml";
-import { NButton, NCheckbox, NDrawer, NDrawerContent, NInput, NSelect, NSpace, NTab, NTabs } from "naive-ui";
+import { NButton, NCheckbox, NDrawer, NDrawerContent, NInput, NSelect, NSpace, NTab, NTabs, useMessage } from "naive-ui";
 import { kfSpace } from "../kf";
 import { extractErrorMessage } from "../utils/errorMessage";
 import { stripManagedFields } from "../utils/yaml";
 import { marked } from "marked";
 import { CodeEditor } from "monaco-editor-vue3";
-import ConfigMapEditor from "./ConfigMapEditor.vue";
 import PodLogPanel from "./PodLogPanel.vue";
 import ResourceTopologyPanel from "./ResourceTopologyPanel.vue";
 import WorkloadLogPanel from "./WorkloadLogPanel.vue";
-import SecretEditor from "./SecretEditor.vue";
 import ResourceSnapshotPanel from "./ResourceSnapshotPanel.vue";
 import ResourceSnapshotViewer from "./ResourceSnapshotViewer.vue";
+import ResourceStructuredPanel from "./resourceEdit/ResourceStructuredPanel.vue";
 import {
   kubeApplyResource,
   kubeDescribeDynamicResource,
@@ -21,7 +20,6 @@ import {
   kubeGetDynamicResource,
   kubeGetResource,
 } from "../api/kube";
-import { useYamlMonacoTheme } from "../stores/yamlTheme";
 import {
   createResourceSnapshot,
   deleteResourceSnapshot,
@@ -32,8 +30,10 @@ import {
   type ResourceSnapshotItem,
 } from "../stores/resourceSnapshots";
 import { ensureAutoSnapshotSettingLoaded } from "../stores/appSettings";
+import { useYamlMonacoTheme } from "../stores/yamlTheme";
 import { strongholdAdjacentModalTrapFocusEnabled, useStrongholdAuthStore } from "../stores/strongholdAuth";
 import type { SelectedResource } from "../features/workbench/contracts";
+import type { EditIntent } from "../features/resourceEdit";
 import { createStorage } from "../utils/storage";
 
 export type { SelectedResource };
@@ -66,18 +66,19 @@ const emit = defineEmits<{
   }): void;
 }>();
 
-type DetailTab = "yaml" | "describe" | "edit" | "editConfig" | "logs" | "topology" | "snapshots" | "taints";
+type DetailTab = "yaml" | "edit" | "describe" | "logs" | "topology" | "snapshots" | "taints";
 const VALID_DETAIL_TABS: readonly DetailTab[] = [
   "yaml",
   "edit",
   "describe",
   "taints",
   "logs",
-  "editConfig",
   "topology",
   "snapshots",
 ];
 const activeTab = ref<DetailTab>("yaml");
+const message = useMessage();
+const { monacoTheme } = useYamlMonacoTheme();
 
 function onTabChange(v: string | number) {
   if (typeof v !== "string") return;
@@ -87,36 +88,37 @@ function onTabChange(v: string | number) {
 }
 
 const rawYaml = ref("");
-const editYaml = ref("");
-const editConfigYaml = ref("");
+const yamlDraft = ref("");
+const showManagedFields = ref(false);
+const yamlSaving = ref(false);
+const yamlError = ref<string | null>(null);
 const describeMarkdown = ref("");
 const loading = ref(false);
 const describeLoading = ref(false);
 const error = ref<string | null>(null);
 const describeError = ref<string | null>(null);
 const editError = ref<string | null>(null);
-const editInfo = ref<string | null>(null);
 const editSaving = ref(false);
 const snapshotSaving = ref(false);
 const viewingSnapshot = ref<ResourceSnapshotItem | null>(null);
-const showManagedFields = ref(false);
-const { monacoTheme } = useYamlMonacoTheme();
+const editIntent = ref<EditIntent | null>(null);
 const strongholdAuth = useStrongholdAuthStore();
 const nodeTaints = ref<NodeTaintDraft[]>([]);
-
 
 const monacoOptions = {
   fontSize: 13,
   minimap: { enabled: false },
   automaticLayout: true,
-  wordWrap: "on",
-  lineNumbers: "on",
+  wordWrap: "on" as const,
+  lineNumbers: "on" as const,
   scrollBeyondLastLine: false,
 };
-const monacoReadOnlyOptions = {
-  ...monacoOptions,
-  readOnly: true,
-};
+
+const displayYaml = computed(() => {
+  if (!rawYaml.value) return "";
+  if (!showManagedFields.value) return stripManagedFields(rawYaml.value);
+  return rawYaml.value;
+});
 
 const snapshotResourceRef = computed(() =>
   props.envId && props.resource
@@ -130,7 +132,7 @@ const snapshotResourceRef = computed(() =>
 );
 
 const genericSnapshots = computed(() => listResourceSnapshotsByCategory(snapshotResourceRef.value, "all"));
-const currentSnapshotSummary = computed(() => summarizeResourceYaml(resolveCurrentDraftYaml() || rawYaml.value));
+const currentSnapshotSummary = computed(() => summarizeResourceYaml(rawYaml.value));
 const isNodeResource = computed(() => props.resource?.kind === "Node");
 
 const taintsValidationError = computed(() => {
@@ -147,14 +149,69 @@ const taintsValidationError = computed(() => {
   return null;
 });
 
-function resolveCurrentDraftYaml(): string {
-  if (activeTab.value === "taints" && isNodeResource.value && rawYaml.value) {
-    return buildNodeTaintsYaml();
+function resolveEditIntent(initialTab: string | null | undefined): EditIntent | null {
+  if (initialTab === "editConfig") return { mode: "kv" };
+  if (initialTab === "edit") return { mode: "structured" };
+  return null;
+}
+
+function resolveInitialTab(initialTab: string | null | undefined): DetailTab {
+  const kind = props.resource?.kind;
+  if (initialTab === "editConfig" || initialTab === "edit") return "edit";
+  if (initialTab === "yaml") return "yaml";
+  if (
+    initialTab === "logs" &&
+    kind &&
+    (kind === "Pod" ||
+      kind === "Deployment" ||
+      kind === "StatefulSet" ||
+      kind === "DaemonSet")
+  ) {
+    return "logs";
   }
-  if (props.resource?.kind === "ConfigMap" || props.resource?.kind === "Secret") {
-    return editConfigYaml.value || editYaml.value || rawYaml.value;
+  if (initialTab === "taints" && kind === "Node") return "taints";
+  if (initialTab === "topology" && !props.resource?.dynamic) return "topology";
+  if (initialTab === "snapshots") return "snapshots";
+  if (initialTab === "describe") return "describe";
+  return "yaml";
+}
+
+function resetYamlDraft() {
+  yamlDraft.value = displayYaml.value;
+  yamlError.value = null;
+}
+
+async function applyYaml() {
+  const yaml = yamlDraft.value.trim();
+  if (!props.envId || !props.resource || !yaml) return;
+  yamlSaving.value = true;
+  yamlError.value = null;
+  try {
+    const autoSnapshotEnabled = await ensureAutoSnapshotSettingLoaded();
+    const snapshotYaml = rawYaml.value.trim();
+    if (autoSnapshotEnabled && snapshotYaml && snapshotResourceRef.value) {
+      createResourceSnapshot(snapshotResourceRef.value, {
+        yaml: snapshotYaml,
+        category: "resource",
+        source: "before-apply",
+        title: "应用前资源快照",
+      });
+    }
+    await kubeApplyResource(props.envId, yaml);
+    await fetchYaml();
+    resetYamlDraft();
+    message.success("YAML 已应用");
+  } catch (e) {
+    const msg = extractErrorMessage(e);
+    const isStrongholdRequired = await handleStrongholdLocked(msg, () => {
+      void applyYaml();
+    });
+    if (isStrongholdRequired) return;
+    yamlError.value = msg;
+    message.error(msg);
+  } finally {
+    yamlSaving.value = false;
   }
-  return editYaml.value || rawYaml.value;
 }
 
 function parseNodeTaintsFromYaml(yamlStr: string): NodeTaintDraft[] {
@@ -210,13 +267,11 @@ function addNodeTaint() {
     { key: "", value: "", effect: "NoSchedule" },
   ];
   editError.value = null;
-  editInfo.value = null;
 }
 
 function removeNodeTaint(index: number) {
   nodeTaints.value = nodeTaints.value.filter((_, idx) => idx !== index);
   editError.value = null;
-  editInfo.value = null;
 }
 
 function taintEffectLabel(effect: string): string {
@@ -260,20 +315,6 @@ function onDrawerShowUpdate(value: boolean) {
   if (!value) emit("close");
 }
 
-const displayYaml = computed(() => {
-  if (!rawYaml.value) return "";
-  if (!showManagedFields.value) return stripManagedFields(rawYaml.value);
-  return rawYaml.value;
-});
-
-const yamlContent = ref("");
-watch(
-  () => displayYaml.value,
-  (v) => {
-    yamlContent.value = v || "暂无内容";
-  },
-  { immediate: true }
-);
 
 async function fetchYaml() {
   if (!props.envId || !props.resource) return;
@@ -304,6 +345,37 @@ async function fetchYaml() {
     error.value = msg;
   } finally {
     loading.value = false;
+  }
+}
+
+async function applyTaintsYaml(yaml: string) {
+  if (!props.envId || !props.resource || !yaml.trim()) return;
+  editSaving.value = true;
+  editError.value = null;
+  try {
+    const autoSnapshotEnabled = await ensureAutoSnapshotSettingLoaded();
+    const snapshotYaml = rawYaml.value.trim();
+    if (autoSnapshotEnabled && snapshotYaml && snapshotResourceRef.value) {
+      createResourceSnapshot(snapshotResourceRef.value, {
+        yaml: snapshotYaml,
+        category: "resource",
+        source: "before-apply",
+        title: "应用前资源快照",
+      });
+    }
+    await kubeApplyResource(props.envId, yaml);
+    await fetchYaml();
+    message.success("污点已保存");
+  } catch (e) {
+    const msg = extractErrorMessage(e);
+    const isStrongholdRequired = await handleStrongholdLocked(msg, () => {
+      void applyTaintsYaml(yaml);
+    });
+    if (isStrongholdRequired) return;
+    editError.value = msg;
+    message.error(msg);
+  } finally {
+    editSaving.value = false;
   }
 }
 
@@ -340,52 +412,13 @@ async function fetchDescribe() {
   }
 }
 
-async function applyEdit(yamlOverride?: string) {
-  const yaml = yamlOverride ?? editYaml.value;
-  if (!props.envId || !props.resource || !yaml.trim()) return;
-  editSaving.value = true;
-  editError.value = null;
-  editInfo.value = null;
-  try {
-    const autoSnapshotEnabled = await ensureAutoSnapshotSettingLoaded();
-    const snapshotYaml = (rawYaml.value || editYaml.value || editConfigYaml.value).trim();
-    if (autoSnapshotEnabled && snapshotYaml && snapshotResourceRef.value) {
-      const created = createResourceSnapshot(snapshotResourceRef.value, {
-        yaml: snapshotYaml,
-        category: activeTab.value === "editConfig" ? "config" : "resource",
-        source: "before-apply",
-        title: activeTab.value === "editConfig" ? "应用前配置快照" : "应用前资源快照",
-      });
-      if (!created) {
-        editInfo.value = "配置已应用，但自动快照未能保存（YAML 为空或格式无效）。";
-      }
-    }
-    await kubeApplyResource(props.envId, yaml);
-    await fetchYaml();
-    if (!editInfo.value) {
-      editInfo.value = "已自动保存应用前快照，可在「快照」栏目查看。";
-    }
-    activeTab.value = "yaml";
-  } catch (e) {
-    const msg = extractErrorMessage(e);
-    const isStrongholdRequired = await handleStrongholdLocked(msg, () => {
-      void applyEdit(yaml);
-    });
-    if (isStrongholdRequired) return;
-    editError.value = msg;
-  } finally {
-    editSaving.value = false;
-  }
-}
-
 async function applyNodeTaints() {
   if (!isNodeResource.value || !rawYaml.value) return;
   if (taintsValidationError.value) {
     editError.value = taintsValidationError.value;
-    editInfo.value = null;
     return;
   }
-  await applyEdit(buildNodeTaintsYaml());
+  await applyTaintsYaml(buildNodeTaintsYaml());
   resetNodeTaintsDraft();
 }
 
@@ -398,7 +431,7 @@ function removeSnapshot(snapshot: ResourceSnapshotItem) {
   if (viewingSnapshot.value?.id === snapshot.id) {
     viewingSnapshot.value = null;
   }
-  editInfo.value = "快照已删除。";
+  message.info("快照已删除");
 }
 
 function togglePinSnapshot(snapshot: ResourceSnapshotItem) {
@@ -407,25 +440,19 @@ function togglePinSnapshot(snapshot: ResourceSnapshotItem) {
   if (viewingSnapshot.value?.id === snapshot.id) {
     viewingSnapshot.value = next;
   }
-  editInfo.value = next.pinned
-    ? "快照已置顶，不会参与自动淘汰。"
-    : "已取消置顶，该快照会重新参与自动快照淘汰规则。";
-}
-
-function handleEditorError(message: string) {
-  editError.value = message;
-  editInfo.value = null;
-}
-
-function handleConfigYamlUpdate(yaml: string) {
-  editConfigYaml.value = yaml;
+  message.info(
+    next.pinned
+      ? "快照已置顶，不会参与自动淘汰"
+      : "已取消置顶，该快照会重新参与自动快照淘汰规则",
+  );
 }
 
 function saveManualSnapshot() {
   if (!snapshotResourceRef.value) return;
-  const snapshotYaml = formatResourceSnapshotYaml(resolveCurrentDraftYaml().trim());
+  const snapshotYaml = formatResourceSnapshotYaml(rawYaml.value.trim());
   if (!snapshotYaml) return;
-  const category = activeTab.value === "editConfig" ? "config" : "resource";
+  const kind = props.resource?.kind;
+  const category = kind === "ConfigMap" || kind === "Secret" ? "config" : "resource";
   snapshotSaving.value = true;
   try {
     createResourceSnapshot(snapshotResourceRef.value, {
@@ -435,7 +462,7 @@ function saveManualSnapshot() {
       title: category === "config" ? "手动配置快照" : "手动资源快照",
     });
     editError.value = null;
-    editInfo.value = "当前资源已保存为快照。";
+    message.success("当前资源已保存为快照");
   } finally {
     snapshotSaving.value = false;
   }
@@ -445,40 +472,30 @@ watch(
   () => [props.visible, props.envId, props.resource?.kind, props.resource?.name, props.resource?.namespace, props.initialTab] as const,
   ([visible, envId, kind, name, _namespace, initialTab]) => {
     if (visible && envId && kind && name) {
-      let nextTab: DetailTab = "yaml";
-      if (initialTab === "editConfig" && (kind === "ConfigMap" || kind === "Secret")) {
-        nextTab = "editConfig";
-      } else if (
-        initialTab === "logs" &&
-        (kind === "Pod" ||
-          kind === "Deployment" ||
-          kind === "StatefulSet" ||
-          kind === "DaemonSet")
-      ) {
-        nextTab = "logs";
-      } else if (initialTab === "taints" && kind === "Node") {
-        nextTab = "taints";
-      } else if (initialTab === "topology" && !props.resource?.dynamic) {
-        nextTab = "topology";
-      }
-
-      activeTab.value = nextTab;
+      activeTab.value = resolveInitialTab(initialTab);
+      editIntent.value = resolveEditIntent(initialTab);
       fetchYaml();
     } else {
       rawYaml.value = "";
-      yamlContent.value = "";
-      editYaml.value = "";
-      editConfigYaml.value = "";
+      yamlDraft.value = "";
       describeMarkdown.value = "";
       error.value = null;
+      yamlError.value = null;
       describeError.value = null;
       editError.value = null;
-      editInfo.value = null;
       nodeTaints.value = [];
       viewingSnapshot.value = null;
+      editIntent.value = null;
     }
   },
   { immediate: true }
+);
+
+watch(
+  () => displayYaml.value,
+  () => {
+    if (activeTab.value === "yaml" && rawYaml.value) resetYamlDraft();
+  },
 );
 
 watch(
@@ -487,16 +504,12 @@ watch(
     if (tab === "describe" && props.resource && !describeMarkdown.value && !describeLoading.value) {
       fetchDescribe();
     }
-    if ((tab === "edit" || tab === "editConfig") && yaml) {
-      editYaml.value = stripManagedFields(yaml);
-      editConfigYaml.value = stripManagedFields(yaml);
-      editError.value = null;
-      editInfo.value = null;
+    if (tab === "yaml" && yaml) {
+      resetYamlDraft();
     }
     if (tab === "taints" && yaml && isNodeResource.value) {
       resetNodeTaintsDraft();
       editError.value = null;
-      editInfo.value = null;
     }
   }
 );
@@ -554,11 +567,20 @@ watch(
           >
             <template #suffix>
               <NButton
-                v-if="(activeTab === 'edit' || activeTab === 'taints') && rawYaml"
+                v-if="activeTab === 'yaml' && rawYaml"
+                type="primary"
+                size="small"
+                :loading="yamlSaving"
+                @click="applyYaml()"
+              >
+                {{ yamlSaving ? "保存中…" : "应用" }}
+              </NButton>
+              <NButton
+                v-else-if="activeTab === 'taints' && rawYaml"
                 type="primary"
                 size="small"
                 :loading="editSaving"
-                @click="activeTab === 'taints' ? applyNodeTaints() : applyEdit()"
+                @click="applyNodeTaints()"
               >
                 {{ editSaving ? "保存中…" : "应用" }}
               </NButton>
@@ -579,11 +601,6 @@ watch(
               tab="日志"
             />
             <NTab
-              v-if="resource && (resource.kind === 'ConfigMap' || resource.kind === 'Secret')"
-              name="editConfig"
-              tab="配置"
-            />
-            <NTab
               v-if="resource && !resource.dynamic"
               name="topology"
               tab="关联"
@@ -592,9 +609,9 @@ watch(
           </NTabs>
         </div>
         <div class="drawer-body">
-          <div v-if="loading && (activeTab === 'yaml' || activeTab === 'edit' || activeTab === 'editConfig' || activeTab === 'taints')" class="loading-state">加载中…</div>
+          <div v-if="loading && (activeTab === 'yaml' || activeTab === 'edit' || activeTab === 'taints')" class="loading-state">加载中…</div>
           <div v-else-if="describeLoading && activeTab === 'describe'" class="loading-state">加载中…</div>
-          <div v-else-if="error && (activeTab === 'yaml' || activeTab === 'edit' || activeTab === 'editConfig' || activeTab === 'taints')" class="error-state">{{ error }}</div>
+          <div v-else-if="error && (activeTab === 'yaml' || activeTab === 'edit' || activeTab === 'taints')" class="error-state">{{ error }}</div>
           <div v-else-if="describeError && activeTab === 'describe'" class="error-state">{{ describeError }}</div>
           <div v-else-if="activeTab === 'describe'" class="describe-panel">
             <div v-if="describeMarkdown" class="describe-scroll describe-markdown" v-html="marked.parse(describeMarkdown)"></div>
@@ -602,7 +619,6 @@ watch(
           </div>
           <div v-else-if="activeTab === 'taints' && resource?.kind === 'Node'" class="taints-panel">
             <div v-if="editError" class="edit-error">{{ editError }}</div>
-            <div v-else-if="editInfo" class="edit-info">{{ editInfo }}</div>
             <div v-if="!nodeTaints.length" class="taints-empty">当前节点没有配置污点。</div>
             <div class="taints-list">
               <div v-for="(taint, index) in nodeTaints" :key="index" class="taint-card">
@@ -655,7 +671,7 @@ watch(
           <div v-else-if="activeTab === 'snapshots'" class="snapshot-tab-wrap">
             <ResourceSnapshotPanel
               title="资源快照"
-              subtitle="统一查看和管理当前资源的历史快照；普通 YAML 编辑会保存完整 YAML（不含 managedFields）。手动快照和置顶快照不会参与自动淘汰。"
+              subtitle="统一查看和管理当前资源的历史快照；编辑应用前会自动保存快照（若已开启）。手动快照和置顶快照不会参与自动淘汰。"
               create-label="生成快照"
               :snapshots="genericSnapshots"
               :creating="snapshotSaving"
@@ -692,50 +708,31 @@ watch(
               :workload-name="resource.name"
             />
           </div>
-          <div v-else-if="activeTab === 'editConfig' && rawYaml && (resource?.kind === 'ConfigMap' || resource?.kind === 'Secret')" class="edit-panel">
-            <div v-if="editError" class="edit-error">{{ editError }}</div>
-            <div v-else-if="editInfo" class="edit-info">{{ editInfo }}</div>
-            <div v-if="resource?.kind === 'ConfigMap'" class="edit-scroll">
-              <ConfigMapEditor
-                :raw-yaml="editYaml"
-                :saving="editSaving"
-                @save="(y) => applyEdit(y)"
-                @error="handleEditorError"
-                @update:yaml="handleConfigYamlUpdate"
-              />
-            </div>
-            <div v-else-if="resource?.kind === 'Secret'" class="edit-scroll">
-              <SecretEditor
-                :raw-yaml="editYaml"
-                :saving="editSaving"
-                @save="(y) => applyEdit(y)"
-                @error="handleEditorError"
-                @update:yaml="handleConfigYamlUpdate"
-              />
-            </div>
-          </div>
           <div v-else-if="activeTab === 'edit' && rawYaml" class="edit-panel">
-            <div v-if="editError" class="edit-error">{{ editError }}</div>
-            <div class="edit-scroll">
+            <ResourceStructuredPanel
+              :env-id="props.envId"
+              :resource="resource"
+              :raw-yaml="rawYaml"
+              :initial-intent="editIntent"
+              :refresh-yaml="fetchYaml"
+              :stronghold-locked-handler="handleStrongholdLocked"
+              @navigate="(p) => emit('navigate', p)"
+            />
+          </div>
+          <div v-else-if="activeTab === 'edit'" class="loading-state">加载中…</div>
+          <div v-else-if="activeTab === 'yaml' && rawYaml" class="yaml-panel">
+            <div v-if="yamlError" class="edit-error">{{ yamlError }}</div>
+            <div class="yaml-scroll">
               <CodeEditor
-                v-model:value="editYaml"
+                v-model:value="yamlDraft"
                 language="yaml"
                 :theme="monacoTheme"
                 :options="monacoOptions"
-                class="edit-monaco"
+                class="yaml-monaco"
               />
             </div>
           </div>
-          <div v-else-if="rawYaml" class="yaml-scroll">
-            <CodeEditor
-              v-model:value="yamlContent"
-              language="yaml"
-              :theme="monacoTheme"
-              :options="monacoReadOnlyOptions"
-              class="yaml-monaco"
-            />
-          </div>
-          <div v-else class="loading-state">加载中…</div>
+          <div v-else-if="activeTab === 'yaml'" class="loading-state">加载中…</div>
         </div>
     </NDrawerContent>
   </NDrawer>
@@ -1123,12 +1120,17 @@ watch(
 .taints-validation {
   margin: 0;
 }
-.edit-panel {
+.edit-panel,
+.yaml-panel {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+.edit-panel :deep(.structured-panel) {
+  flex: 1;
+  min-height: 0;
 }
 .edit-error {
   flex-shrink: 0;
