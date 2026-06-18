@@ -95,10 +95,7 @@ watch(
     </NAlert>
 
     <div v-if="showWorkloadForm && session.editability.value.structuredAllowed" class="structured-body">
-      <div class="structured-toolbar">
-        <p class="hint">
-          结构化编辑完整映射 metadata、spec 与 Pod 模板（含 initContainers、containers、volumes 等）。应用时将合并为完整 YAML 并 replace 资源。
-        </p>
+      <div class="structured-toolbar re-toolbar">
         <NButton type="primary" size="small" :loading="session.saving.value" @click="applyStructured">
           {{ session.saving.value ? "保存中…" : "应用" }}
         </NButton>
@@ -131,12 +128,14 @@ watch(
       />
     </div>
 
-    <div v-else class="fallback">
+    <div v-else class="fallback re-fallback">
+      <span class="re-fallback-icon" aria-hidden="true">📄</span>
       <p>此资源类型请使用 YAML 标签进行编辑。</p>
     </div>
   </div>
 </template>
 
+<style src="./resourceEditUi.css"></style>
 <style scoped>
 .structured-panel {
   flex: 1;
@@ -178,22 +177,9 @@ watch(
   -webkit-overflow-scrolling: touch;
 }
 .structured-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  padding: 0.75rem 1rem;
-  border-bottom: 1px solid var(--kf-border);
   flex-shrink: 0;
   flex-wrap: wrap;
-}
-.hint {
-  margin: 0;
-  flex: 1;
-  min-width: 200px;
-  font-size: 0.75rem;
-  color: var(--kf-text-muted);
-  line-height: 1.45;
+  justify-content: flex-end;
 }
 .kv-wrap {
   flex: 1;
@@ -208,9 +194,5 @@ watch(
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 2rem 1rem;
-  text-align: center;
-  color: var(--kf-text-secondary);
-  font-size: 0.875rem;
 }
 </style>

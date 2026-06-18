@@ -556,7 +556,8 @@ watch(
           </NCheckbox>
         </NSpace>
       </template>
-      <div v-if="props.resource" class="drawer-toolbar">
+      <div v-if="props.resource" class="drawer-shell">
+        <div class="drawer-toolbar">
           <NTabs
             :value="activeTab"
             type="segment"
@@ -722,6 +723,9 @@ watch(
           <div v-else-if="activeTab === 'edit'" class="loading-state">加载中…</div>
           <div v-else-if="activeTab === 'yaml' && rawYaml" class="yaml-panel">
             <div v-if="yamlError" class="edit-error">{{ yamlError }}</div>
+            <div class="yaml-toolbar">
+              <span class="yaml-toolbar-hint">完整资源 YAML，编辑后点击右上角「应用」保存</span>
+            </div>
             <div class="yaml-scroll">
               <CodeEditor
                 v-model:value="yamlDraft"
@@ -734,6 +738,7 @@ watch(
           </div>
           <div v-else-if="activeTab === 'yaml'" class="loading-state">加载中…</div>
         </div>
+      </div>
     </NDrawerContent>
   </NDrawer>
   <ResourceSnapshotViewer
@@ -745,6 +750,30 @@ watch(
 </template>
 
 <style scoped>
+.detail-drawer-content:deep(.n-drawer-body),
+.detail-drawer-content:deep(.detail-drawer-body) {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.detail-drawer-content:deep(.n-drawer-body-content-wrapper),
+.detail-drawer-content:deep(.detail-drawer-body-content) {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.drawer-shell {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
 .detail-drawer-header {
   min-width: 0;
   width: 100%;
@@ -1131,6 +1160,40 @@ watch(
 .edit-panel :deep(.structured-panel) {
   flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.edit-panel :deep(.structured-body) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.edit-panel :deep(.structured-scroll) {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.edit-panel :deep(.kv-wrap) {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.yaml-toolbar {
+  flex-shrink: 0;
+  padding: 0.55rem 1rem;
+  border-bottom: 1px solid var(--kf-border);
+  background: color-mix(in srgb, var(--kf-bg-soft) 85%, var(--kf-surface-strong));
+}
+.yaml-toolbar-hint {
+  font-size: 0.75rem;
+  color: var(--kf-text-muted);
 }
 .edit-error {
   flex-shrink: 0;

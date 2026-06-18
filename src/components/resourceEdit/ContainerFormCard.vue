@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { NButton, NCollapse, NCollapseItem, NInput, NInputNumber, NSelect } from "naive-ui";
+import { NInput, NInputNumber, NSelect } from "naive-ui";
 import KeyValueListEditor from "./KeyValueListEditor.vue";
-import type { ContainerDraft } from "../../features/resourceEdit/workloadDraft";
+import ItemTabsEditor from "./ItemTabsEditor.vue";
+import type { ContainerDraft, PortDraft, VolumeMountDraft } from "../../features/resourceEdit/workloadDraft";
 
 const props = defineProps<{
   container: ContainerDraft;
   index: number;
   init?: boolean;
+  /** 在 Tab 面板内展示时隐藏卡片顶栏 */
+  embedded?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -18,62 +21,42 @@ function patch(partial: Partial<ContainerDraft>) {
   emit("update:container", { ...props.container, ...partial });
 }
 
-function addPort() {
-  patch({
-    ports: [...props.container.ports, { name: "", containerPort: null, protocol: "TCP" }],
-  });
+function createEmptyPort(): PortDraft {
+  return { name: "", containerPort: null, protocol: "TCP" };
 }
 
-function removePort(i: number) {
-  patch({ ports: props.container.ports.filter((_, idx) => idx !== i) });
+function createEmptyMount(): VolumeMountDraft {
+  return { name: "", mountPath: "", readOnly: false };
 }
 
-function updatePort(i: number, field: "name" | "containerPort" | "protocol", value: string | number | null) {
-  const ports = props.container.ports.map((p, idx) =>
-    idx === i ? { ...p, [field]: value } : p,
-  );
-  patch({ ports });
+function portLabel(port: PortDraft, index: number) {
+  if (port.name.trim()) return port.name.trim();
+  if (port.containerPort != null) return `:${port.containerPort}`;
+  return `Port ${index + 1}`;
 }
 
-function addMount() {
-  patch({
-    volumeMounts: [...props.container.volumeMounts, { name: "", mountPath: "", readOnly: false }],
-  });
-}
-
-function removeMount(i: number) {
-  patch({ volumeMounts: props.container.volumeMounts.filter((_, idx) => idx !== i) });
-}
-
-function updateMount(
-  i: number,
-  field: "name" | "mountPath" | "readOnly",
-  value: string | boolean,
-) {
-  const volumeMounts = props.container.volumeMounts.map((m, idx) =>
-    idx === i ? { ...m, [field]: value } : m,
-  );
-  patch({ volumeMounts });
+function mountLabel(mount: VolumeMountDraft, index: number) {
+  if (mount.name.trim()) return mount.name.trim();
+  if (mount.mountPath.trim()) return mount.mountPath.trim();
+  return `Mount ${index + 1}`;
 }
 </script>
 
 <template>
-  <NCollapse>
-    <NCollapseItem :title="`${init ? 'Init ' : ''}容器 ${index + 1}: ${container.name || '(未命名)'}`" :name="String(index)">
-      <template #header-extra>
-        <NButton text type="error" size="tiny" @click.stop="emit('remove')">删除</NButton>
-      </template>
-      <div class="container-form">
-        <label class="field">
-          <span class="label">名称</span>
+  <div class="re-container-card" :class="{ 're-container-card--init': init, 're-container-card--embedded': embedded }">
+    <div v-if="!embedded" class="re-container-head">
+      <span class="re-container-badge">{{ init ? "Init" : "Container" }}</span>
+      <span class="re-container-name">{{ container.name || `容器 ${index + 1}` }}</span>
+    </div>
+
+    <div class="re-container-body">
+      <div class="re-field-grid re-field-grid--2">
+        <label class="re-field">
+          <span class="re-label">名称</span>
           <NInput :value="container.name" size="small" @update:value="patch({ name: $event })" />
         </label>
-        <label class="field">
-          <span class="label">镜像</span>
-          <NInput :value="container.image" size="small" spellcheck="false" @update:value="patch({ image: $event })" />
-        </label>
-        <label class="field">
-          <span class="label">imagePullPolicy</span>
+        <label class="re-field">
+          <span class="re-label">imagePullPolicy</span>
           <NSelect
             :value="container.imagePullPolicy"
             size="small"
@@ -85,8 +68,16 @@ function updateMount(
             @update:value="patch({ imagePullPolicy: $event })"
           />
         </label>
-        <label class="field">
-          <span class="label">Command（每行一条）</span>
+      </div>
+
+      <label class="re-field">
+        <span class="re-label">镜像</span>
+        <NInput :value="container.image" size="small" spellcheck="false" @update:value="patch({ image: $event })" />
+      </label>
+
+      <div class="re-field-grid re-field-grid--2">
+        <label class="re-field">
+          <span class="re-label">Command（每行一条）</span>
           <NInput
             :value="container.commandText"
             type="textarea"
@@ -95,8 +86,8 @@ function updateMount(
             @update:value="patch({ commandText: $event })"
           />
         </label>
-        <label class="field">
-          <span class="label">Args（每行一条）</span>
+        <label class="re-field">
+          <span class="re-label">Args（每行一条）</span>
           <NInput
             :value="container.argsText"
             type="textarea"
@@ -105,119 +96,138 @@ function updateMount(
             @update:value="patch({ argsText: $event })"
           />
         </label>
+      </div>
 
-        <KeyValueListEditor
-          title="环境变量 (name / value)"
-          :pairs="container.env.map((e) => ({ key: e.name, value: e.value }))"
-          @update:pairs="patch({ env: $event.map((p) => ({ name: p.key, value: p.value })) })"
-        />
+      <KeyValueListEditor
+        title="环境变量"
+        :pairs="container.env.map((e) => ({ key: e.name, value: e.value }))"
+        @update:pairs="patch({ env: $event.map((p) => ({ name: p.key, value: p.value })) })"
+      />
 
-        <div class="sub-grid">
-          <label class="field">
-            <span class="label">CPU Request</span>
+      <div class="re-block">
+        <div class="re-block-title">Resources</div>
+        <div class="re-field-grid re-field-grid--2">
+          <label class="re-field">
+            <span class="re-label">CPU Request</span>
             <NInput :value="container.cpuRequest" size="small" @update:value="patch({ cpuRequest: $event })" />
           </label>
-          <label class="field">
-            <span class="label">Memory Request</span>
+          <label class="re-field">
+            <span class="re-label">Memory Request</span>
             <NInput :value="container.memoryRequest" size="small" @update:value="patch({ memoryRequest: $event })" />
           </label>
-          <label class="field">
-            <span class="label">CPU Limit</span>
+          <label class="re-field">
+            <span class="re-label">CPU Limit</span>
             <NInput :value="container.cpuLimit" size="small" @update:value="patch({ cpuLimit: $event })" />
           </label>
-          <label class="field">
-            <span class="label">Memory Limit</span>
+          <label class="re-field">
+            <span class="re-label">Memory Limit</span>
             <NInput :value="container.memoryLimit" size="small" @update:value="patch({ memoryLimit: $event })" />
           </label>
         </div>
-
-        <div class="list-block">
-          <div class="list-head">
-            <span class="label">Ports</span>
-            <NButton size="tiny" quaternary @click="addPort">+ 添加</NButton>
-          </div>
-          <div v-for="(port, pi) in container.ports" :key="pi" class="list-row">
-            <NInput :value="port.name" size="small" placeholder="name" @update:value="updatePort(pi, 'name', $event)" />
-            <NInputNumber
-              :value="port.containerPort"
-              size="small"
-              :min="1"
-              placeholder="port"
-              @update:value="updatePort(pi, 'containerPort', $event)"
-            />
-            <NSelect
-              :value="port.protocol"
-              size="small"
-              :options="[
-                { label: 'TCP', value: 'TCP' },
-                { label: 'UDP', value: 'UDP' },
-              ]"
-              @update:value="updatePort(pi, 'protocol', $event)"
-            />
-            <NButton text type="error" size="tiny" @click="removePort(pi)">×</NButton>
-          </div>
-        </div>
-
-        <div class="list-block">
-          <div class="list-head">
-            <span class="label">Volume Mounts</span>
-            <NButton size="tiny" quaternary @click="addMount">+ 添加</NButton>
-          </div>
-          <div v-for="(mount, mi) in container.volumeMounts" :key="mi" class="list-row mounts">
-            <NInput :value="mount.name" size="small" placeholder="volume name" @update:value="updateMount(mi, 'name', $event)" />
-            <NInput :value="mount.mountPath" size="small" placeholder="mountPath" @update:value="updateMount(mi, 'mountPath', $event)" />
-            <NSelect
-              :value="mount.readOnly ? 'true' : 'false'"
-              size="small"
-              :options="[
-                { label: 'RW', value: 'false' },
-                { label: 'RO', value: 'true' },
-              ]"
-              @update:value="updateMount(mi, 'readOnly', $event === 'true')"
-            />
-            <NButton text type="error" size="tiny" @click="removeMount(mi)">×</NButton>
-          </div>
-        </div>
       </div>
-    </NCollapseItem>
-  </NCollapse>
+
+      <div class="re-block">
+        <div class="re-block-title">Ports</div>
+        <ItemTabsEditor
+          :items="container.ports"
+          variant="port"
+          compact
+          empty-hint="未配置端口"
+          :create-item="createEmptyPort"
+          :get-label="portLabel"
+          add-label="添加端口"
+          @update:items="patch({ ports: $event })"
+        >
+          <template #default="{ item, update }">
+            <div class="re-item-panel re-item-panel--compact">
+              <label class="re-field">
+                <span class="re-label">name</span>
+                <NInput
+                  :value="item.name"
+                  size="small"
+                  placeholder="http"
+                  @update:value="update({ ...item, name: $event })"
+                />
+              </label>
+              <div class="re-field-grid re-field-grid--port-meta">
+                <label class="re-field">
+                  <span class="re-label">containerPort</span>
+                  <NInputNumber
+                    :value="item.containerPort"
+                    size="small"
+                    :min="1"
+                    class="re-input-full"
+                    @update:value="update({ ...item, containerPort: $event })"
+                  />
+                </label>
+                <label class="re-field">
+                  <span class="re-label">protocol</span>
+                  <NSelect
+                    :value="item.protocol"
+                    size="small"
+                    :options="[
+                      { label: 'TCP', value: 'TCP' },
+                      { label: 'UDP', value: 'UDP' },
+                    ]"
+                    @update:value="update({ ...item, protocol: $event })"
+                  />
+                </label>
+              </div>
+            </div>
+          </template>
+        </ItemTabsEditor>
+      </div>
+
+      <div class="re-block">
+        <div class="re-block-title">Volume Mounts</div>
+        <ItemTabsEditor
+          :items="container.volumeMounts"
+          variant="mount"
+          compact
+          empty-hint="未配置挂载"
+          :create-item="createEmptyMount"
+          :get-label="mountLabel"
+          add-label="添加挂载"
+          @update:items="patch({ volumeMounts: $event })"
+        >
+          <template #default="{ item, update }">
+            <div class="re-item-panel re-item-panel--compact">
+              <label class="re-field">
+                <span class="re-label">volume</span>
+                <NInput
+                  :value="item.name"
+                  size="small"
+                  placeholder="data"
+                  @update:value="update({ ...item, name: $event })"
+                />
+              </label>
+              <label class="re-field">
+                <span class="re-label">mountPath</span>
+                <NInput
+                  :value="item.mountPath"
+                  size="small"
+                  placeholder="/data"
+                  @update:value="update({ ...item, mountPath: $event })"
+                />
+              </label>
+              <label class="re-field">
+                <span class="re-label">readOnly</span>
+                <NSelect
+                  :value="item.readOnly ? 'true' : 'false'"
+                  size="small"
+                  :options="[
+                    { label: 'RW', value: 'false' },
+                    { label: 'RO', value: 'true' },
+                  ]"
+                  @update:value="update({ ...item, readOnly: $event === 'true' })"
+                />
+              </label>
+            </div>
+          </template>
+        </ItemTabsEditor>
+      </div>
+    </div>
+  </div>
 </template>
 
-<style scoped>
-.container-form {
-  display: grid;
-  gap: 0.75rem;
-}
-.field {
-  display: grid;
-  gap: 0.3rem;
-}
-.label {
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--kf-text-secondary);
-}
-.sub-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.75rem;
-}
-.list-block {
-  display: grid;
-  gap: 0.5rem;
-}
-.list-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.list-row {
-  display: grid;
-  grid-template-columns: 1fr 100px 90px auto;
-  gap: 0.5rem;
-  align-items: center;
-}
-.list-row.mounts {
-  grid-template-columns: 1fr 1fr 80px auto;
-}
-</style>
+<style src="./resourceEditUi.css"></style>

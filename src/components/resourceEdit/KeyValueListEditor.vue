@@ -31,13 +31,13 @@ function updateValue(current: KeyValuePair[], index: number, value: string) {
 </script>
 
 <template>
-  <div class="kv-block">
-    <div class="kv-head">
-      <span class="kv-title">{{ title }}</span>
-      <NButton size="tiny" quaternary @click="addPair(pairs)">+ 添加</NButton>
+  <div class="re-kv-block">
+    <div class="re-kv-head">
+      <span class="re-kv-title">{{ title }}</span>
+      <NButton size="tiny" quaternary class="re-add-btn" @click="addPair(pairs)">+ 添加</NButton>
     </div>
-    <div v-if="!pairs.length" class="kv-empty">暂无条目</div>
-    <div v-for="(pair, i) in pairs" :key="i" class="kv-row">
+    <p v-if="!pairs.length" class="re-empty-hint">暂无条目，点击「添加」新建</p>
+    <div v-for="(pair, i) in pairs" :key="i" class="re-kv-row">
       <NInput
         :value="pair.key"
         size="small"
@@ -52,34 +52,11 @@ function updateValue(current: KeyValuePair[], index: number, value: string) {
         spellcheck="false"
         @update:value="updateValue(pairs, i, $event)"
       />
-      <NButton text type="error" size="tiny" @click="remove(pairs, i)">×</NButton>
+      <div class="re-kv-row-actions">
+        <NButton text type="error" size="tiny" aria-label="删除" @click="remove(pairs, i)">删除</NButton>
+      </div>
     </div>
   </div>
 </template>
 
-<style scoped>
-.kv-block {
-  display: grid;
-  gap: 0.5rem;
-}
-.kv-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.kv-title {
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--kf-text-secondary);
-}
-.kv-empty {
-  font-size: 0.75rem;
-  color: var(--kf-text-muted);
-}
-.kv-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr auto;
-  gap: 0.5rem;
-  align-items: center;
-}
-</style>
+<style src="./resourceEditUi.css"></style>

@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
-import { NButton, NCard, NInput, NInputNumber, NSelect, NSwitch } from "naive-ui";
+import { NCard, NInput, NInputNumber, NSelect, NSwitch } from "naive-ui";
 import KeyValueListEditor from "./KeyValueListEditor.vue";
-import ContainerFormCard from "./ContainerFormCard.vue";
+import ContainerTabsEditor from "./ContainerTabsEditor.vue";
+import ItemTabsEditor from "./ItemTabsEditor.vue";
 import type { K8sObject } from "../../features/resourceEdit/types";
 import {
   createEmptyWorkloadDraft,
   parseWorkloadDraft,
-  type ContainerDraft,
+  type TolerationDraft,
   type VolumeDraft,
   type WorkloadDraft,
 } from "../../features/resourceEdit/workloadDraft";
@@ -43,54 +44,42 @@ watch(
   { deep: true },
 );
 
-function emptyContainer(): ContainerDraft {
+function createEmptyVolume(): VolumeDraft {
   return {
-    name: "",
-    image: "",
-    imagePullPolicy: "IfNotPresent",
-    commandText: "",
-    argsText: "",
-    env: [],
-    cpuRequest: "",
-    memoryRequest: "",
-    cpuLimit: "",
-    memoryLimit: "",
-    ports: [],
-    volumeMounts: [],
-  };
-}
-
-function addInitContainer() {
-  draft.value.initContainers.push(emptyContainer());
-}
-
-function addContainer() {
-  draft.value.containers.push(emptyContainer());
-}
-
-function addVolume() {
-  draft.value.volumes.push({
     name: "",
     type: "emptyDir",
     configMapName: "",
     secretName: "",
     pvcName: "",
     hostPath: "",
-  });
+  };
 }
 
-function addToleration() {
-  draft.value.tolerations.push({ key: "", operator: "Equal", value: "", effect: "" });
+function createEmptyToleration(): TolerationDraft {
+  return { key: "", operator: "Equal", value: "", effect: "" };
 }
 
-function updateVolume(i: number, partial: Partial<VolumeDraft>) {
-  draft.value.volumes[i] = { ...draft.value.volumes[i], ...partial };
+function volumeLabel(vol: VolumeDraft, index: number) {
+  return vol.name.trim() || `Volume ${index + 1}`;
+}
+
+function tolerationLabel(tol: TolerationDraft, index: number) {
+  return tol.key.trim() || `Toleration ${index + 1}`;
 }
 </script>
 
 <template>
   <div class="workload-form">
-    <NCard title="Metadata" size="small" class="module-card">
+    <NCard size="small" class="re-module-card">
+      <template #header>
+        <div class="re-module-head">
+          <span class="re-module-accent re-module-accent--meta" />
+          <div>
+            <div class="re-module-title">Metadata</div>
+            <div class="re-module-desc">资源级 labels 与 annotations</div>
+          </div>
+        </div>
+      </template>
       <KeyValueListEditor
         title="Labels"
         :pairs="draft.metadata.labels"
@@ -103,15 +92,24 @@ function updateVolume(i: number, partial: Partial<VolumeDraft>) {
       />
     </NCard>
 
-    <NCard title="Spec" size="small" class="module-card">
-      <div v-if="kind === 'Deployment' || kind === 'StatefulSet'" class="field">
-        <span class="label">Replicas</span>
+    <NCard size="small" class="re-module-card">
+      <template #header>
+        <div class="re-module-head">
+          <span class="re-module-accent re-module-accent--spec" />
+          <div>
+            <div class="re-module-title">Spec</div>
+            <div class="re-module-desc">副本、策略与调度参数</div>
+          </div>
+        </div>
+      </template>
+      <div v-if="kind === 'Deployment' || kind === 'StatefulSet'" class="re-field">
+        <span class="re-label">Replicas</span>
         <NInputNumber v-model:value="draft.replicas" :min="0" size="small" />
       </div>
 
       <template v-if="kind === 'Deployment'">
-        <div class="field">
-          <span class="label">Strategy</span>
+        <div class="re-field">
+          <span class="re-label">Strategy</span>
           <NSelect
             v-model:value="draft.strategyType"
             size="small"
@@ -121,25 +119,25 @@ function updateVolume(i: number, partial: Partial<VolumeDraft>) {
             ]"
           />
         </div>
-        <div v-if="draft.strategyType === 'RollingUpdate'" class="sub-grid">
-          <label class="field">
-            <span class="label">maxSurge</span>
+        <div v-if="draft.strategyType === 'RollingUpdate'" class="re-sub-grid">
+          <label class="re-field">
+            <span class="re-label">maxSurge</span>
             <NInput v-model:value="draft.maxSurge" size="small" />
           </label>
-          <label class="field">
-            <span class="label">maxUnavailable</span>
+          <label class="re-field">
+            <span class="re-label">maxUnavailable</span>
             <NInput v-model:value="draft.maxUnavailable" size="small" />
           </label>
         </div>
       </template>
 
       <template v-if="kind === 'StatefulSet'">
-        <label class="field">
-          <span class="label">serviceName</span>
+        <label class="re-field">
+          <span class="re-label">serviceName</span>
           <NInput v-model:value="draft.serviceName" size="small" />
         </label>
-        <label class="field">
-          <span class="label">updateStrategy</span>
+        <label class="re-field">
+          <span class="re-label">updateStrategy</span>
           <NSelect
             v-model:value="draft.updateStrategyType"
             size="small"
@@ -152,8 +150,8 @@ function updateVolume(i: number, partial: Partial<VolumeDraft>) {
       </template>
 
       <template v-if="kind === 'DaemonSet'">
-        <label class="field">
-          <span class="label">updateStrategy</span>
+        <label class="re-field">
+          <span class="re-label">updateStrategy</span>
           <NSelect
             v-model:value="draft.updateStrategyType"
             size="small"
@@ -166,33 +164,33 @@ function updateVolume(i: number, partial: Partial<VolumeDraft>) {
       </template>
 
       <template v-if="kind === 'Job'">
-        <div class="sub-grid">
-          <label class="field">
-            <span class="label">parallelism</span>
+        <div class="re-sub-grid">
+          <label class="re-field">
+            <span class="re-label">parallelism</span>
             <NInputNumber v-model:value="draft.parallelism" :min="1" size="small" />
           </label>
-          <label class="field">
-            <span class="label">completions</span>
+          <label class="re-field">
+            <span class="re-label">completions</span>
             <NInputNumber v-model:value="draft.completions" :min="1" size="small" />
           </label>
-          <label class="field">
-            <span class="label">backoffLimit</span>
+          <label class="re-field">
+            <span class="re-label">backoffLimit</span>
             <NInputNumber v-model:value="draft.backoffLimit" :min="0" size="small" />
           </label>
         </div>
       </template>
 
       <template v-if="kind === 'CronJob'">
-        <label class="field">
-          <span class="label">schedule</span>
+        <label class="re-field">
+          <span class="re-label">schedule</span>
           <NInput v-model:value="draft.schedule" size="small" placeholder="0 * * * *" />
         </label>
-        <div class="field row">
-          <span class="label">suspend</span>
+        <div class="re-field row">
+          <span class="re-label">suspend</span>
           <NSwitch v-model:value="draft.suspend" />
         </div>
-        <label class="field">
-          <span class="label">concurrencyPolicy</span>
+        <label class="re-field">
+          <span class="re-label">concurrencyPolicy</span>
           <NSelect
             v-model:value="draft.concurrencyPolicy"
             size="small"
@@ -203,24 +201,33 @@ function updateVolume(i: number, partial: Partial<VolumeDraft>) {
             ]"
           />
         </label>
-        <div class="sub-grid">
-          <label class="field">
-            <span class="label">job parallelism</span>
+        <div class="re-sub-grid">
+          <label class="re-field">
+            <span class="re-label">job parallelism</span>
             <NInputNumber v-model:value="draft.parallelism" :min="1" size="small" />
           </label>
-          <label class="field">
-            <span class="label">job completions</span>
+          <label class="re-field">
+            <span class="re-label">job completions</span>
             <NInputNumber v-model:value="draft.completions" :min="1" size="small" />
           </label>
-          <label class="field">
-            <span class="label">job backoffLimit</span>
+          <label class="re-field">
+            <span class="re-label">job backoffLimit</span>
             <NInputNumber v-model:value="draft.backoffLimit" :min="0" size="small" />
           </label>
         </div>
       </template>
     </NCard>
 
-    <NCard title="Pod Template" size="small" class="module-card">
+    <NCard size="small" class="re-module-card">
+      <template #header>
+        <div class="re-module-head">
+          <span class="re-module-accent re-module-accent--template" />
+          <div>
+            <div class="re-module-title">Pod Template</div>
+            <div class="re-module-desc">initContainers、containers、volumes 与调度</div>
+          </div>
+        </div>
+      </template>
       <KeyValueListEditor
         title="Template Labels"
         :pairs="draft.templateLabels"
@@ -232,99 +239,111 @@ function updateVolume(i: number, partial: Partial<VolumeDraft>) {
         @update:pairs="draft.templateAnnotations = $event"
       />
 
-      <div class="section">
-        <div class="section-head">
-          <h4 class="section-title">Init Containers</h4>
-          <NButton size="tiny" quaternary @click="addInitContainer">+ 添加</NButton>
-        </div>
-        <ContainerFormCard
-          v-for="(c, i) in draft.initContainers"
-          :key="`init-${i}`"
-          :container="c"
-          :index="i"
+      <div class="re-section">
+        <h4 class="re-section-title re-section-title--solo">Init Containers</h4>
+        <ContainerTabsEditor
+          :containers="draft.initContainers"
           init
-          @update:container="draft.initContainers[i] = $event"
-          @remove="draft.initContainers.splice(i, 1)"
+          empty-hint="无 Init 容器（可选）"
+          @update:containers="draft.initContainers = $event"
         />
       </div>
 
-      <div class="section">
-        <div class="section-head">
-          <h4 class="section-title">Containers</h4>
-          <NButton size="tiny" quaternary @click="addContainer">+ 添加</NButton>
-        </div>
-        <ContainerFormCard
-          v-for="(c, i) in draft.containers"
-          :key="`ctr-${i}`"
-          :container="c"
-          :index="i"
-          @update:container="draft.containers[i] = $event"
-          @remove="draft.containers.splice(i, 1)"
+      <div class="re-section">
+        <h4 class="re-section-title re-section-title--solo">Containers</h4>
+        <ContainerTabsEditor
+          :containers="draft.containers"
+          empty-hint="至少添加一个业务容器"
+          @update:containers="draft.containers = $event"
         />
       </div>
 
-      <div class="section">
-        <div class="section-head">
-          <h4 class="section-title">Volumes</h4>
-          <NButton size="tiny" quaternary @click="addVolume">+ 添加</NButton>
-        </div>
-        <div v-for="(vol, vi) in draft.volumes" :key="vi" class="volume-row">
-          <NInput
-            :value="vol.name"
-            size="small"
-            placeholder="name"
-            @update:value="updateVolume(vi, { name: $event })"
-          />
-          <NSelect
-            :value="vol.type"
-            size="small"
-            :options="[
-              { label: 'emptyDir', value: 'emptyDir' },
-              { label: 'configMap', value: 'configMap' },
-              { label: 'secret', value: 'secret' },
-              { label: 'pvc', value: 'pvc' },
-              { label: 'hostPath', value: 'hostPath' },
-            ]"
-            @update:value="updateVolume(vi, { type: $event })"
-          />
-          <NInput
-            v-if="vol.type === 'configMap'"
-            :value="vol.configMapName"
-            size="small"
-            placeholder="configMap name"
-            @update:value="updateVolume(vi, { configMapName: $event })"
-          />
-          <NInput
-            v-else-if="vol.type === 'secret'"
-            :value="vol.secretName"
-            size="small"
-            placeholder="secret name"
-            @update:value="updateVolume(vi, { secretName: $event })"
-          />
-          <NInput
-            v-else-if="vol.type === 'pvc'"
-            :value="vol.pvcName"
-            size="small"
-            placeholder="claimName"
-            @update:value="updateVolume(vi, { pvcName: $event })"
-          />
-          <NInput
-            v-else-if="vol.type === 'hostPath'"
-            :value="vol.hostPath"
-            size="small"
-            placeholder="host path"
-            @update:value="updateVolume(vi, { hostPath: $event })"
-          />
-          <NButton text type="error" size="tiny" @click="draft.volumes.splice(vi, 1)">×</NButton>
-        </div>
+      <div class="re-section">
+        <h4 class="re-section-title re-section-title--solo">Volumes</h4>
+        <ItemTabsEditor
+          :items="draft.volumes"
+          variant="volume"
+          empty-hint="未配置 Volume"
+          :create-item="createEmptyVolume"
+          :get-label="volumeLabel"
+          add-label="添加 Volume"
+          @update:items="draft.volumes = $event"
+        >
+          <template #default="{ item, update }">
+            <div class="re-item-panel">
+              <div class="re-field-grid re-field-grid--2">
+                <label class="re-field">
+                  <span class="re-label">name</span>
+                  <NInput
+                    :value="item.name"
+                    size="small"
+                    placeholder="name"
+                    @update:value="update({ ...item, name: $event })"
+                  />
+                </label>
+                <label class="re-field">
+                  <span class="re-label">type</span>
+                  <NSelect
+                    :value="item.type"
+                    size="small"
+                    :options="[
+                      { label: 'emptyDir', value: 'emptyDir' },
+                      { label: 'configMap', value: 'configMap' },
+                      { label: 'secret', value: 'secret' },
+                      { label: 'pvc', value: 'pvc' },
+                      { label: 'hostPath', value: 'hostPath' },
+                    ]"
+                    @update:value="update({ ...item, type: $event })"
+                  />
+                </label>
+              </div>
+              <label v-if="item.type === 'configMap'" class="re-field">
+                <span class="re-label">configMap</span>
+                <NInput
+                  :value="item.configMapName"
+                  size="small"
+                  placeholder="configMap name"
+                  @update:value="update({ ...item, configMapName: $event })"
+                />
+              </label>
+              <label v-else-if="item.type === 'secret'" class="re-field">
+                <span class="re-label">secret</span>
+                <NInput
+                  :value="item.secretName"
+                  size="small"
+                  placeholder="secret name"
+                  @update:value="update({ ...item, secretName: $event })"
+                />
+              </label>
+              <label v-else-if="item.type === 'pvc'" class="re-field">
+                <span class="re-label">claimName</span>
+                <NInput
+                  :value="item.pvcName"
+                  size="small"
+                  placeholder="claimName"
+                  @update:value="update({ ...item, pvcName: $event })"
+                />
+              </label>
+              <label v-else-if="item.type === 'hostPath'" class="re-field">
+                <span class="re-label">hostPath</span>
+                <NInput
+                  :value="item.hostPath"
+                  size="small"
+                  placeholder="host path"
+                  @update:value="update({ ...item, hostPath: $event })"
+                />
+              </label>
+            </div>
+          </template>
+        </ItemTabsEditor>
       </div>
 
-      <label class="field">
-        <span class="label">serviceAccountName</span>
+      <label class="re-field">
+        <span class="re-label">serviceAccountName</span>
         <NInput v-model:value="draft.serviceAccountName" size="small" />
       </label>
-      <label class="field">
-        <span class="label">restartPolicy</span>
+      <label class="re-field">
+        <span class="re-label">restartPolicy</span>
         <NSelect
           v-model:value="draft.restartPolicy"
           size="small"
@@ -342,80 +361,72 @@ function updateVolume(i: number, partial: Partial<VolumeDraft>) {
         @update:pairs="draft.nodeSelector = $event"
       />
 
-      <div class="section">
-        <div class="section-head">
-          <h4 class="section-title">Tolerations</h4>
-          <NButton size="tiny" quaternary @click="addToleration">+ 添加</NButton>
-        </div>
-        <div v-for="(t, ti) in draft.tolerations" :key="ti" class="toleration-row">
-          <NInput v-model:value="t.key" size="small" placeholder="key" />
-          <NInput v-model:value="t.operator" size="small" placeholder="operator" />
-          <NInput v-model:value="t.value" size="small" placeholder="value" />
-          <NInput v-model:value="t.effect" size="small" placeholder="effect" />
-          <NButton text type="error" size="tiny" @click="draft.tolerations.splice(ti, 1)">×</NButton>
-        </div>
+      <div class="re-section">
+        <h4 class="re-section-title re-section-title--solo">Tolerations</h4>
+        <ItemTabsEditor
+          :items="draft.tolerations"
+          variant="toleration"
+          empty-hint="未配置污点容忍"
+          :create-item="createEmptyToleration"
+          :get-label="tolerationLabel"
+          add-label="添加 Toleration"
+          @update:items="draft.tolerations = $event"
+        >
+          <template #default="{ item, update }">
+            <div class="re-item-panel">
+              <div class="re-field-grid re-field-grid--2">
+                <label class="re-field">
+                  <span class="re-label">key</span>
+                  <NInput
+                    :value="item.key"
+                    size="small"
+                    placeholder="key"
+                    @update:value="update({ ...item, key: $event })"
+                  />
+                </label>
+                <label class="re-field">
+                  <span class="re-label">operator</span>
+                  <NInput
+                    :value="item.operator"
+                    size="small"
+                    placeholder="Equal"
+                    @update:value="update({ ...item, operator: $event })"
+                  />
+                </label>
+                <label class="re-field">
+                  <span class="re-label">value</span>
+                  <NInput
+                    :value="item.value"
+                    size="small"
+                    placeholder="value"
+                    @update:value="update({ ...item, value: $event })"
+                  />
+                </label>
+                <label class="re-field">
+                  <span class="re-label">effect</span>
+                  <NInput
+                    :value="item.effect"
+                    size="small"
+                    placeholder="NoSchedule"
+                    @update:value="update({ ...item, effect: $event })"
+                  />
+                </label>
+              </div>
+            </div>
+          </template>
+        </ItemTabsEditor>
       </div>
     </NCard>
   </div>
 </template>
 
+<style src="./resourceEditUi.css"></style>
 <style scoped>
 .workload-form {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 1rem;
   padding: 1rem;
-  min-height: min-content;
-}
-.module-card {
-  border-radius: 12px;
-}
-.module-card :deep(.n-card__content) {
-  display: grid;
-  gap: 0.85rem;
-}
-.field {
-  display: grid;
-  gap: 0.3rem;
-}
-.field.row {
-  grid-template-columns: auto 1fr;
-  align-items: center;
-}
-.label {
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--kf-text-secondary);
-}
-.sub-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 0.75rem;
-}
-.section {
-  display: grid;
-  gap: 0.65rem;
-  padding-top: 0.5rem;
-  border-top: 1px dashed var(--kf-border);
-}
-.section-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.section-title {
-  margin: 0;
-  font-size: 0.8125rem;
-  font-weight: 700;
-  color: var(--kf-text-primary);
-}
-.volume-row,
-.toleration-row {
-  display: grid;
-  grid-template-columns: 1fr 120px 1fr auto;
-  gap: 0.5rem;
-  align-items: center;
-}
-.toleration-row {
-  grid-template-columns: 1fr 90px 1fr 90px auto;
+  min-width: 0;
 }
 </style>
