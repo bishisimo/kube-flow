@@ -171,7 +171,7 @@ const errorHint = computed(() => {
 
 // ─── Log buffer ───────────────────────────────────────────
 
-const { entries, setLines, appendLines, clear: clearBuffer, levelCounts, lineCount } = useLogBuffer();
+const { entries, setLines, setLinesAsync, appendLines, countLinesInChunk, clear: clearBuffer, levelCounts, lineCount } = useLogBuffer();
 
 // ─── Search / filter state ────────────────────────────────
 
@@ -499,6 +499,7 @@ async function loadLogs() {
   loading.value = true;
   runtimePhase.value = "loading";
   error.value = null;
+  cancelStreamFlush();
   clearBuffer();
   try {
     const content = await kubePodLogs(props.envId, props.namespace, props.podName, {
@@ -509,7 +510,11 @@ async function loadLogs() {
       previous: previousLogs.value,
     });
     if (requestSeq !== activeRequestSeq) return;
-    setLines(content);
+    if (content.length > 200_000) {
+      await setLinesAsync(content);
+    } else {
+      setLines(content);
+    }
     runtimePhase.value = "snapshot";
   } catch (e) {
     const msg = extractErrorMessage(e);
@@ -532,6 +537,7 @@ async function startFollow() {
   loading.value = true;
   runtimePhase.value = "loading";
   error.value = null;
+  cancelStreamFlush();
   clearBuffer();
   newLogCount.value = 0;
   try {
@@ -740,8 +746,58 @@ let unlistenChunk: (() => void) | null = null;
 let unlistenEnd: (() => void) | null = null;
 let streamDecoder = new TextDecoder("utf-8", { fatal: false });
 
+/** 合并流式 chunk，减少逐行 IPC 触发的主线程压力 */
+const STREAM_FLUSH_MS = 32;
+const STREAM_FLUSH_MAX_CHARS = 65_536;
+let pendingStreamText = "";
+let streamFlushRaf = 0;
+let streamFlushTimer: ReturnType<typeof setTimeout> | null = null;
+let streamFlushAnchor = true;
+
 function resetStreamDecoder() {
   streamDecoder = new TextDecoder("utf-8", { fatal: false });
+}
+
+function cancelStreamFlush() {
+  if (streamFlushRaf) {
+    cancelAnimationFrame(streamFlushRaf);
+    streamFlushRaf = 0;
+  }
+  if (streamFlushTimer) {
+    clearTimeout(streamFlushTimer);
+    streamFlushTimer = null;
+  }
+  pendingStreamText = "";
+}
+
+function flushStreamBuffer() {
+  streamFlushRaf = 0;
+  if (streamFlushTimer) {
+    clearTimeout(streamFlushTimer);
+    streamFlushTimer = null;
+  }
+  if (!pendingStreamText) return;
+  const text = pendingStreamText;
+  const wasAtAnchor = streamFlushAnchor;
+  streamFlushAnchor = true;
+  pendingStreamText = "";
+  appendLines(text);
+  if (!wasAtAnchor) {
+    newLogCount.value += countLinesInChunk(text);
+  }
+}
+
+function scheduleStreamFlush(wasAtAnchor: boolean) {
+  if (!wasAtAnchor) streamFlushAnchor = false;
+  if (!streamFlushRaf) {
+    streamFlushRaf = requestAnimationFrame(flushStreamBuffer);
+  }
+  if (!streamFlushTimer) {
+    streamFlushTimer = setTimeout(flushStreamBuffer, STREAM_FLUSH_MS);
+  }
+  if (pendingStreamText.length >= STREAM_FLUSH_MAX_CHARS) {
+    flushStreamBuffer();
+  }
 }
 
 async function setupStreamListeners() {
@@ -753,17 +809,19 @@ async function setupStreamListeners() {
       const wasAtAnchor = isAtAnchor();
       const chunkText = streamDecoder.decode(new Uint8Array(ev.payload.chunk_bytes), { stream: true });
       if (!chunkText) return;
-      appendLines(chunkText);
-      if (!wasAtAnchor) {
-        const chunkLines = chunkText.split("\n").filter((l) => l.trim()).length;
-        newLogCount.value += chunkLines;
-      }
+      pendingStreamText += chunkText;
+      scheduleStreamFlush(wasAtAnchor);
     }
   });
   unlistenEnd = await listen<{ stream_id: string; error?: string }>("pod-log-stream-end", (ev) => {
     if (ev.payload?.stream_id === streamId.value) {
       const finalChunk = streamDecoder.decode();
-      if (finalChunk) appendLines(finalChunk);
+      if (finalChunk) {
+        pendingStreamText += finalChunk;
+        flushStreamBuffer();
+      } else {
+        flushStreamBuffer();
+      }
       resetStreamDecoder();
       streamId.value = null;
       follow.value = false;
@@ -787,6 +845,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener("keydown", onKeydown);
+  cancelStreamFlush();
   if (props.sessionId) unregisterLogStreamSession(props.sessionId);
   stopFollow();
 });

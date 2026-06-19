@@ -31,6 +31,7 @@ export interface KvEditorState {
   selectedRow: Ref<KeyValueRow | null>;
   addRow: (factory: () => KeyValueRow) => void;
   removeRow: (index: number) => void;
+  replaceRows: (next: KeyValueRow[], selectKey?: string | null) => void;
   onSave: () => void;
   validateFormat: () => string[];
   onFormatConfirmApply: () => void;
@@ -65,11 +66,19 @@ export function useKvEditor(cb: KvEditorCallbacks): KvEditorState {
       : null,
   );
 
+  /** 编辑器自身 emit 的 YAML，避免回写后 parseYaml 清掉未填 key 的草稿行。 */
+  let lastEmittedYaml: string | null = null;
+
   // --- watchers ---
 
   watch(
     cb.rawYaml,
     (raw) => {
+      if (lastEmittedYaml !== null && raw === lastEmittedYaml) {
+        lastEmittedYaml = null;
+        return;
+      }
+      lastEmittedYaml = null;
       cb.parseYaml(raw, rows, metadata, selectedIndex);
     },
     { immediate: true },
@@ -79,8 +88,12 @@ export function useKvEditor(cb: KvEditorCallbacks): KvEditorState {
     [rows, metadata],
     () => {
       try {
-        cb.emit("update:yaml", cb.buildYaml(rows.value, metadata.value));
-      } catch {}
+        const built = cb.buildYaml(rows.value, metadata.value);
+        lastEmittedYaml = built;
+        cb.emit("update:yaml", built);
+      } catch {
+        lastEmittedYaml = null;
+      }
     },
     { deep: true },
   );
@@ -101,6 +114,16 @@ export function useKvEditor(cb: KvEditorCallbacks): KvEditorState {
     } else if (selectedIndex.value !== null && selectedIndex.value > index) {
       selectedIndex.value--;
     }
+  }
+
+  function replaceRows(next: KeyValueRow[], selectKey?: string | null) {
+    rows.value = next.map((row) => ({ ...row }));
+    if (selectKey) {
+      const idx = rows.value.findIndex((r) => r.key.trim() === selectKey.trim());
+      selectedIndex.value = idx >= 0 ? idx : rows.value.length > 0 ? rows.value.length - 1 : null;
+      return;
+    }
+    selectedIndex.value = rows.value.length > 0 ? rows.value.length - 1 : null;
   }
 
   // --- save pipeline ---
@@ -179,6 +202,7 @@ export function useKvEditor(cb: KvEditorCallbacks): KvEditorState {
     selectedRow,
     addRow,
     removeRow,
+    replaceRows,
     onSave,
     validateFormat,
     onFormatConfirmApply,

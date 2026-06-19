@@ -1,16 +1,21 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import * as jsYaml from "js-yaml";
-import { NButton, NInput } from "naive-ui";
+import { NButton, NInput, useMessage } from "naive-ui";
 import BaseModal from "./base/BaseModal.vue";
 import ValueEditor from "./ValueEditor.vue";
+import KvBulkImportModal from "./KvBulkImportModal.vue";
 import { useKvEditor, type KeyValueRow } from "../composables/useKvEditor";
 import { getFormatHint, renderSection } from "../utils/kvValidation";
 
-const props = defineProps<{
-  rawYaml: string;
-  saving: boolean;
-}>();
+const props = withDefaults(
+  defineProps<{
+    rawYaml: string;
+    saving: boolean;
+    hideApply?: boolean;
+  }>(),
+  { hideApply: false },
+);
 
 const emit = defineEmits<{
   (e: "save", yaml: string): void;
@@ -19,6 +24,8 @@ const emit = defineEmits<{
 }>();
 
 const binaryDataRows = ref<KeyValueRow[]>([]);
+const bulkImportVisible = ref(false);
+const message = useMessage();
 
 const {
   rows,
@@ -33,8 +40,8 @@ const {
   selectedRow,
   addRow,
   removeRow,
+  replaceRows,
   onSave,
-  validateFormat,
   onFormatConfirmApply,
   onFormatConfirmCancel,
   onControlCharConfirmApply,
@@ -91,11 +98,24 @@ const {
   emit,
 });
 
-function onFormatCheck() {
-  const invalid = validateFormat();
-  if (invalid.length === 0) {
-    window.alert("所有配置项格式正确");
-  }
+defineExpose({
+  save: onSave,
+  hasEmptyRow,
+});
+
+function onBulkImport(payload: {
+  rows: KeyValueRow[];
+  added: number;
+  skipped: number;
+  overwritten: number;
+}) {
+  const lastImported = payload.rows[payload.rows.length - 1]?.key ?? null;
+  replaceRows(payload.rows, lastImported);
+  const parts: string[] = [];
+  if (payload.added) parts.push(`新增 ${payload.added}`);
+  if (payload.overwritten) parts.push(`覆盖 ${payload.overwritten}`);
+  if (payload.skipped) parts.push(`跳过 ${payload.skipped}`);
+  message.success(parts.length ? `导入完成：${parts.join("，")}` : "没有可导入的配置项");
 }
 </script>
 
@@ -116,17 +136,16 @@ function onFormatCheck() {
             <span class="ws-toggle-icon">¶</span>
           </template>
         </NButton>
-        <NButton
-          size="small"
-          title="格式校验"
-          :disabled="hasEmptyRow"
-          @click="onFormatCheck"
-        >
-          <template #icon>
-            <span class="format-check-icon">✓</span>
-          </template>
+        <NButton size="small" secondary @click="bulkImportVisible = true">
+          批量导入
         </NButton>
-        <NButton type="primary" :disabled="saving || hasEmptyRow" :loading="saving" @click="onSave">
+        <NButton
+          v-if="!hideApply"
+          type="primary"
+          :disabled="saving || hasEmptyRow"
+          :loading="saving"
+          @click="onSave"
+        >
           应用
         </NButton>
       </div>
@@ -164,7 +183,16 @@ function onFormatCheck() {
               </NButton>
             </div>
           </div>
-          <NButton quaternary block class="kv-add" :disabled="hasEmptyRow" @click="addRow(() => ({ key: '', value: '' }))">+ 添加</NButton>
+          <NButton
+            v-if="rows.length > 0"
+            quaternary
+            block
+            class="kv-add"
+            :disabled="hasEmptyRow"
+            @click="addRow(() => ({ key: '', value: '' }))"
+          >
+            + 添加配置项
+          </NButton>
         </template>
       </aside>
       <div class="kv-panel">
@@ -188,10 +216,19 @@ function onFormatCheck() {
           </div>
         </template>
         <div v-else class="kv-empty">
-          <p>选择左侧键或点击「添加」新建</p>
+          <p>暂无配置项</p>
+          <NButton type="primary" secondary size="small" @click="addRow(() => ({ key: '', value: '' }))">
+            + 添加配置项
+          </NButton>
         </div>
       </div>
     </div>
+    <KvBulkImportModal
+      :visible="bulkImportVisible"
+      :existing-rows="rows"
+      @close="bulkImportVisible = false"
+      @import="onBulkImport"
+    />
     <BaseModal
       :visible="formatConfirmKeys.length > 0"
       title="格式校验"
@@ -434,8 +471,10 @@ function onFormatCheck() {
 .kv-empty {
   flex: 1;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 0.65rem;
   color: var(--kf-text-muted);
   font-size: 0.875rem;
 }

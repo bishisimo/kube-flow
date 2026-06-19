@@ -19,7 +19,7 @@ const autoSnapshotLimitPerResource = ref(10);
 const terminalInstanceCacheLimit = ref(6);
 const logActiveStreamLimit = ref(3);
 const nodeResourceUsageEnabled = ref(false);
-const whitespaceRenderEnabled = ref(false);
+const whitespaceRenderEnabled = ref(true);
 const loaded = ref(false);
 
 export async function ensureAppSettingsLoaded() {
@@ -58,7 +58,7 @@ export async function ensureAppSettingsLoaded() {
     terminalInstanceCacheLimit.value = 6;
     logActiveStreamLimit.value = 3;
     nodeResourceUsageEnabled.value = false;
-    whitespaceRenderEnabled.value = false;
+    whitespaceRenderEnabled.value = true;
   } finally {
     loaded.value = true;
   }

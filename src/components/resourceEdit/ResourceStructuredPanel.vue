@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, toRef, watch } from "vue";
 import { NAlert, NButton } from "naive-ui";
+import { stripManagedFields } from "../../utils/yaml";
 import ConfigMapEditor from "../ConfigMapEditor.vue";
 import SecretEditor from "../SecretEditor.vue";
 import WorkloadFormEditor from "./WorkloadFormEditor.vue";
@@ -10,7 +11,18 @@ import {
   type EditIntent,
 } from "../../features/resourceEdit";
 import type { WorkloadDraft } from "../../features/resourceEdit/workloadDraft";
-import { workloadDraftToYaml } from "../../features/resourceEdit/workloadDraft";
+import {
+  applyWorkloadDraft,
+  validateWorkloadDraftShell,
+} from "../../features/resourceEdit/workloadDraft";
+import {
+  areWorkloadYamlRegionsDirty,
+  markWorkloadYamlRegionsClean,
+  mergeWorkloadYamlRegions,
+  validateWorkloadYamlRegions,
+  workloadObjectToYaml,
+  type WorkloadYamlRegionState,
+} from "../../features/resourceEdit/workloadRegions";
 import type { SelectedResource } from "../../features/workbench/contracts";
 
 const props = defineProps<{
@@ -28,10 +40,16 @@ const emit = defineEmits<{
     namespace: string | null;
     resourceName?: string | null;
   }): void;
+  (e: "dirty-change", dirty: boolean): void;
 }>();
 
 const initialIntentRef = toRef(props, "initialIntent");
 const workloadDraft = ref<WorkloadDraft | null>(null);
+const workloadBaseline = ref("");
+const workloadRegions = ref<WorkloadYamlRegionState[]>([]);
+const regionsDirty = ref(false);
+const configMapEditorRef = ref<InstanceType<typeof ConfigMapEditor> | null>(null);
+const secretEditorRef = ref<InstanceType<typeof SecretEditor> | null>(null);
 
 const session = useResourceEditSession({
   envId: toRef(props, "envId"),
@@ -45,6 +63,56 @@ const session = useResourceEditSession({
 const kind = computed(() => props.resource?.kind ?? "");
 const isConfigKind = computed(() => kind.value === "ConfigMap" || kind.value === "Secret");
 const showWorkloadForm = computed(() => supportsStructuredEdit(kind.value));
+const configBaseline = computed(() => stripManagedFields(props.rawYaml));
+
+const formDirty = computed(() => {
+  if (!workloadDraft.value) return false;
+  return JSON.stringify(workloadDraft.value) !== workloadBaseline.value;
+});
+
+const isDirty = computed(() => {
+  if (showWorkloadForm.value && session.editability.value.structuredAllowed) {
+    return formDirty.value || regionsDirty.value || areWorkloadYamlRegionsDirty(workloadRegions.value);
+  }
+  if (isConfigKind.value) {
+    return session.configYaml.value !== configBaseline.value;
+  }
+  return false;
+});
+
+watch(isDirty, (dirty) => emit("dirty-change", dirty), { immediate: true });
+
+watch(
+  () => [kind.value, session.parsedObject.value] as const,
+  () => {
+    workloadDraft.value = null;
+    workloadBaseline.value = "";
+    workloadRegions.value = [];
+    regionsDirty.value = false;
+  },
+);
+
+function onWorkloadDraftUpdate(draft: WorkloadDraft) {
+  workloadDraft.value = draft;
+  if (!workloadBaseline.value) {
+    workloadBaseline.value = JSON.stringify(draft);
+  }
+}
+
+function onWorkloadRegionsUpdate(regions: WorkloadYamlRegionState[]) {
+  workloadRegions.value = regions;
+}
+
+function onRegionsDirtyChange(dirty: boolean) {
+  regionsDirty.value = dirty;
+}
+
+watch(
+  () => props.rawYaml,
+  () => {
+    session.resetConfigYaml();
+  },
+);
 
 function navigateToParent() {
   const e = session.editability.value;
@@ -58,16 +126,67 @@ function navigateToParent() {
 
 async function applyStructured() {
   if (!session.parsedObject.value || !workloadDraft.value || !kind.value) return;
-  const yaml = workloadDraftToYaml(session.parsedObject.value, workloadDraft.value, kind.value);
+
+  const shellError = validateWorkloadDraftShell(workloadDraft.value);
+  if (shellError) {
+    session.error.value = shellError;
+    return;
+  }
+  const regionError = validateWorkloadYamlRegions(workloadRegions.value);
+  if (regionError) {
+    session.error.value = regionError;
+    return;
+  }
+
+  session.error.value = null;
+  const fromForm = applyWorkloadDraft(session.parsedObject.value, workloadDraft.value, kind.value);
+  const { obj, error } = mergeWorkloadYamlRegions(fromForm, kind.value, workloadRegions.value);
+  if (error) {
+    session.error.value = error;
+    return;
+  }
+
+  const yaml = workloadObjectToYaml(obj);
   await session.applyFullYaml(yaml);
+  if (!session.error.value) {
+    workloadBaseline.value = JSON.stringify(workloadDraft.value);
+    workloadRegions.value = markWorkloadYamlRegionsClean(workloadRegions.value);
+    regionsDirty.value = false;
+  }
 }
 
-watch(
-  () => props.rawYaml,
-  () => {
-    session.resetConfigYaml();
-  },
-);
+async function applyConfig() {
+  if (kind.value === "ConfigMap") {
+    configMapEditorRef.value?.save();
+    return;
+  }
+  secretEditorRef.value?.save();
+}
+
+const applyDisabled = computed(() => {
+  if (!isConfigKind.value) return false;
+  if (kind.value === "ConfigMap") {
+    return Boolean(configMapEditorRef.value?.hasEmptyRow);
+  }
+  return Boolean(secretEditorRef.value?.hasEmptyRow);
+});
+
+async function apply() {
+  if (showWorkloadForm.value && session.editability.value.structuredAllowed) {
+    await applyStructured();
+    return;
+  }
+  if (isConfigKind.value) {
+    await applyConfig();
+  }
+}
+
+defineExpose({
+  apply,
+  isDirty,
+  saving: computed(() => session.saving.value),
+  applyDisabled,
+});
 </script>
 
 <template>
@@ -95,16 +214,13 @@ watch(
     </NAlert>
 
     <div v-if="showWorkloadForm && session.editability.value.structuredAllowed" class="structured-body">
-      <div class="structured-toolbar re-toolbar">
-        <NButton type="primary" size="small" :loading="session.saving.value" @click="applyStructured">
-          {{ session.saving.value ? "保存中…" : "应用" }}
-        </NButton>
-      </div>
       <div class="structured-scroll">
         <WorkloadFormEditor
           :kind="kind"
           :obj="session.parsedObject.value"
-          @update:draft="workloadDraft = $event"
+          @update:draft="onWorkloadDraftUpdate"
+          @update:regions="onWorkloadRegionsUpdate"
+          @regions-dirty-change="onRegionsDirtyChange"
         />
       </div>
     </div>
@@ -112,6 +228,8 @@ watch(
     <div v-else-if="isConfigKind" class="kv-wrap">
       <ConfigMapEditor
         v-if="kind === 'ConfigMap'"
+        ref="configMapEditorRef"
+        hide-apply
         :raw-yaml="session.configYaml.value"
         :saving="session.saving.value"
         @save="(y) => session.applyFullYaml(y)"
@@ -120,6 +238,8 @@ watch(
       />
       <SecretEditor
         v-else
+        ref="secretEditorRef"
+        hide-apply
         :raw-yaml="session.configYaml.value"
         :saving="session.saving.value"
         @save="(y) => session.applyFullYaml(y)"
@@ -175,11 +295,6 @@ watch(
   overflow-x: hidden;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-}
-.structured-toolbar {
-  flex-shrink: 0;
-  flex-wrap: wrap;
-  justify-content: flex-end;
 }
 .kv-wrap {
   flex: 1;

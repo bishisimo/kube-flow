@@ -1,7 +1,6 @@
 <script setup lang="ts" generic="T">
 import { computed, ref, watch } from "vue";
-
-export type ItemTabsVariant = "container" | "init" | "volume" | "toleration" | "mount" | "port";
+import { NPopconfirm } from "naive-ui";
 
 const props = withDefaults(
   defineProps<{
@@ -9,16 +8,18 @@ const props = withDefaults(
     createItem: () => T;
     getLabel: (item: T, index: number) => string;
     emptyHint?: string;
-    variant?: ItemTabsVariant;
     addLabel?: string;
-    /** 容器内嵌套时使用更紧凑的 Tab 条 */
+    /** 更紧凑的 Tab 条 */
     compact?: boolean;
+    /** 删除前弹出确认 */
+    confirmRemove?: boolean;
+    removeConfirmText?: (item: T, index: number) => string;
   }>(),
   {
     emptyHint: "暂无条目",
-    variant: "container",
     addLabel: "添加",
     compact: false,
+    confirmRemove: false,
   },
 );
 
@@ -34,6 +35,8 @@ const activeIndex = computed(() => {
 });
 
 const activeItem = computed(() => props.items[activeIndex.value] ?? null);
+
+const shouldConfirmRemove = computed(() => props.confirmRemove);
 
 function syncActiveTab() {
   const len = props.items.length;
@@ -75,22 +78,48 @@ function addItem() {
 function updateActive(value: T) {
   updateAt(activeIndex.value, value);
 }
+
+function confirmMessage(item: T, index: number) {
+  return props.removeConfirmText?.(item, index) ?? `确认删除「${props.getLabel(item, index)}」？`;
+}
 </script>
 
 <template>
-  <div class="re-item-tabs" :class="[`re-item-tabs--${variant}`, { 're-item-tabs--compact': compact }]">
+  <div class="re-item-tabs re-item-tabs--neutral" :class="{ 're-item-tabs--compact': compact }">
     <div class="re-item-tabbar">
       <div class="re-item-tabbar__track">
         <button
           v-for="(item, index) in items"
-          :key="`${variant}-${index}`"
+          :key="index"
           type="button"
           class="re-item-tab"
           :class="{ 're-item-tab--active': activeTab === String(index) }"
           @click="activeTab = String(index)"
         >
           <span class="re-item-tab__label">{{ getLabel(item, index) }}</span>
+          <NPopconfirm
+            v-if="shouldConfirmRemove"
+            :positive-text="'删除'"
+            :negative-text="'取消'"
+            @positive-click="removeAt(index)"
+          >
+            <template #trigger>
+              <span
+                class="re-item-tab__close"
+                role="button"
+                tabindex="0"
+                aria-label="删除"
+                @click.stop
+                @keydown.enter.prevent.stop
+                @keydown.space.prevent.stop
+              >
+                ×
+              </span>
+            </template>
+            {{ confirmMessage(item, index) }}
+          </NPopconfirm>
           <span
+            v-else
             class="re-item-tab__close"
             role="button"
             tabindex="0"

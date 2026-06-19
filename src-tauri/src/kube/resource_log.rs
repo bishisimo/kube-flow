@@ -14,6 +14,8 @@ use crate::kube::resource_get;
 
 const POD_LOG_CHUNK_EVENT: &str = "pod-log-chunk";
 const POD_LOG_STREAM_END_EVENT: &str = "pod-log-stream-end";
+const EMIT_MAX_BYTES: usize = 16 * 1024;
+const EMIT_MAX_LINES: usize = 64;
 
 /// 获取 Pod 的容器名称列表（含 initContainers），用于日志页面的容器选择。
 pub async fn get_pod_container_names(
@@ -133,17 +135,24 @@ pub async fn run_pod_log_stream(
 
     match api.log_stream(&pod_name, &lp).await {
         Ok(mut reader) => {
+            let mut emit_buf: Vec<u8> = Vec::with_capacity(EMIT_MAX_BYTES);
+
             loop {
-                let mut chunk = Vec::new();
-                match reader.read_until(b'\n', &mut chunk).await {
+                let mut line = Vec::new();
+                match reader.read_until(b'\n', &mut line).await {
                     Ok(0) => break,
                     Ok(_) => {
-                        let payload = serde_json::json!({
-                            "stream_id": stream_id,
-                            "chunk_bytes": chunk,
-                        });
-                        if app.emit(POD_LOG_CHUNK_EVENT, payload).is_err() {
-                            break;
+                        emit_buf.extend_from_slice(&line);
+                        let line_count = emit_buf.iter().filter(|&&b| b == b'\n').count();
+                        if emit_buf.len() >= EMIT_MAX_BYTES || line_count >= EMIT_MAX_LINES {
+                            let payload = serde_json::json!({
+                                "stream_id": stream_id,
+                                "chunk_bytes": emit_buf,
+                            });
+                            if app.emit(POD_LOG_CHUNK_EVENT, payload).is_err() {
+                                break;
+                            }
+                            emit_buf = Vec::with_capacity(EMIT_MAX_BYTES);
                         }
                     }
                     Err(e) => {
@@ -154,9 +163,16 @@ pub async fn run_pod_log_stream(
                                 "error": e.to_string()
                             }),
                         );
-                        break;
+                        return;
                     }
                 }
+            }
+            if !emit_buf.is_empty() {
+                let payload = serde_json::json!({
+                    "stream_id": stream_id,
+                    "chunk_bytes": emit_buf,
+                });
+                let _ = app.emit(POD_LOG_CHUNK_EVENT, payload);
             }
         }
         Err(e) => {

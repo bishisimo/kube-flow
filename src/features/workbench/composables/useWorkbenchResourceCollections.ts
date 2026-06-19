@@ -253,14 +253,18 @@ export function useWorkbenchResourceCollections(options: UseWorkbenchResourceCol
   ): boolean {
     const cachedNamespaces = namespaceCache.get(envId);
     const entry = resourceCache.get(buildResourceCacheKey(envId, kind, namespace, labelSelector));
-    if (!cachedNamespaces && !entry) return false;
+    if (!entry) {
+      // 仅有命名空间缓存不算视图命中：切换环境或刷新时仍需拉取当前 kind 的列表。
+      if (cachedNamespaces) {
+        namespaceOptions.value = [...cachedNamespaces];
+      }
+      return false;
+    }
     clearResourceCollections();
     if (cachedNamespaces) {
       namespaceOptions.value = [...cachedNamespaces];
     }
-    if (entry) {
-      setResourceItems(kind, [...entry.items]);
-    }
+    setResourceItems(kind, [...entry.items]);
     options.envSwitching.value = false;
     options.listLoading.value = false;
     options.listError.value = null;

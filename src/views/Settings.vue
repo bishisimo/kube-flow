@@ -105,7 +105,7 @@ const currentResourceDeployStrategy = ref<ResourceDeployStrategy>("create_replac
 const currentTerminalInstanceCacheLimit = ref(6);
 const currentLogActiveStreamLimit = ref(3);
 const currentNodeResourceUsageEnabled = ref(false);
-const currentWhitespaceRenderEnabled = ref(false);
+const currentWhitespaceRenderEnabled = ref(true);
 const builtinGpuResourceNames = ref<string[]>([]);
 const customGpuResourceRules = ref<GpuResourceRule[]>([]);
 const sshConfigPath = ref("");
@@ -412,7 +412,7 @@ async function load() {
     currentTerminalInstanceCacheLimit.value = 6;
     currentLogActiveStreamLimit.value = 3;
     currentNodeResourceUsageEnabled.value = false;
-    currentWhitespaceRenderEnabled.value = false;
+    currentWhitespaceRenderEnabled.value = true;
     builtinGpuResourceNames.value = ["*/gpu"];
     customGpuResourceRules.value = [{ display_name: "", resource_name: "" }];
   }
@@ -843,19 +843,21 @@ const menuOptions = computed<MenuOption[]>(() =>
                 <NButton size="small" :disabled="sshConfigLoading || sshConfigSaving" @click="() => startNewSshEntry()"
                   >新增</NButton>
               </div>
-              <button
-                v-for="entry in sshConfigEntries"
-                :key="entry.host"
-                type="button"
-                class="ssh-host-item"
-                :class="{ active: selectedSshHost === entry.host, disabled: !entry.editable }"
-                @click="selectSshEntry(entry)"
-              >
-                <span class="ssh-host-name">{{ entry.host }}</span>
-                <span class="ssh-host-target">{{ formatSshEntryLabel(entry) }}</span>
-              </button>
-              <div v-if="!sshConfigEntries.length && !sshConfigLoading" class="ssh-host-empty">
-                还没有 Host，新增一个即可用于 SSH 隧道环境。
+              <div class="ssh-host-list-body">
+                <button
+                  v-for="entry in sshConfigEntries"
+                  :key="entry.host"
+                  type="button"
+                  class="ssh-host-item"
+                  :class="{ active: selectedSshHost === entry.host, disabled: !entry.editable }"
+                  @click="selectSshEntry(entry)"
+                >
+                  <span class="ssh-host-name">{{ entry.host }}</span>
+                  <span class="ssh-host-target">{{ formatSshEntryLabel(entry) }}</span>
+                </button>
+                <div v-if="!sshConfigEntries.length && !sshConfigLoading" class="ssh-host-empty">
+                  还没有 Host，新增一个即可用于 SSH 隧道环境。
+                </div>
               </div>
             </aside>
 
@@ -1197,15 +1199,25 @@ const menuOptions = computed<MenuOption[]>(() =>
   align-items: start;
 }
 .ssh-host-list {
+  display: flex;
+  flex-direction: column;
+  max-height: min(28rem, calc(100vh - 14rem));
   border: 1px solid var(--kf-border, #e2e8f0);
   border-radius: 8px;
   overflow: hidden;
   background: var(--kf-bg-soft, #f8fafc);
 }
+.ssh-host-list-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
 .ssh-host-list-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-shrink: 0;
   padding: 0.6rem 0.7rem;
   border-bottom: 1px solid var(--kf-border, #e2e8f0);
   font-size: 0.8125rem;

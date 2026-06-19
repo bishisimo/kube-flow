@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, computed } from "vue";
 import * as jsYaml from "js-yaml";
-import { NButton, NInput } from "naive-ui";
+import { NButton, NInput, useMessage } from "naive-ui";
 import BaseModal from "./base/BaseModal.vue";
 import ValueEditor from "./ValueEditor.vue";
+import KvBulkImportModal from "./KvBulkImportModal.vue";
 import { useKvEditor, type KeyValueRow } from "../composables/useKvEditor";
 import { getFormatHint, dumpInlineScalar, renderSection } from "../utils/kvValidation";
 
@@ -12,10 +13,14 @@ interface SecretRow extends KeyValueRow {
   rawBase64: string;
 }
 
-const props = defineProps<{
-  rawYaml: string;
-  saving: boolean;
-}>();
+const props = withDefaults(
+  defineProps<{
+    rawYaml: string;
+    saving: boolean;
+    hideApply?: boolean;
+  }>(),
+  { hideApply: false },
+);
 
 const emit = defineEmits<{
   (e: "save", yaml: string): void;
@@ -24,7 +29,8 @@ const emit = defineEmits<{
 }>();
 
 const secretType = ref("Opaque");
-const showDecoded = ref(false);
+const bulkImportVisible = ref(false);
+const message = useMessage();
 
 function decodeBase64(s: string): string {
   try {
@@ -65,6 +71,7 @@ const {
   selectedRow,
   addRow,
   removeRow,
+  replaceRows,
   onSave,
   validateFormat,
   onFormatConfirmApply,
@@ -133,8 +140,33 @@ function onFormatCheck() {
 
 const secretSelectedRow = computed(() => selectedRow.value as SecretRow | null);
 
-function getDisplayValue(row: SecretRow): string {
-  return showDecoded.value ? row.value : (row.rawBase64 || (row.value ? encodeBase64(row.value) : ""));
+defineExpose({
+  save: onSave,
+  hasEmptyRow,
+});
+
+function toSecretRows(imported: KeyValueRow[]): SecretRow[] {
+  return imported.map((row) => ({
+    key: row.key,
+    value: row.value,
+    rawBase64: "",
+  }));
+}
+
+function onBulkImport(payload: {
+  rows: KeyValueRow[];
+  added: number;
+  skipped: number;
+  overwritten: number;
+}) {
+  const secretRows = toSecretRows(payload.rows);
+  const lastImported = secretRows[secretRows.length - 1]?.key ?? null;
+  replaceRows(secretRows, lastImported);
+  const parts: string[] = [];
+  if (payload.added) parts.push(`新增 ${payload.added}`);
+  if (payload.overwritten) parts.push(`覆盖 ${payload.overwritten}`);
+  if (payload.skipped) parts.push(`跳过 ${payload.skipped}`);
+  message.success(parts.length ? `导入完成：${parts.join("，")}` : "没有可导入的配置项");
 }
 </script>
 
@@ -157,15 +189,6 @@ function getDisplayValue(row: SecretRow): string {
         </NButton>
         <NButton
           size="small"
-          :secondary="!showDecoded"
-          :type="showDecoded ? 'primary' : 'default'"
-          class="kv-parse-btn"
-          @click="showDecoded = !showDecoded"
-        >
-          {{ showDecoded ? "原始" : "解析" }}
-        </NButton>
-        <NButton
-          size="small"
           title="格式校验"
           :disabled="hasEmptyRow"
           @click="onFormatCheck"
@@ -174,7 +197,16 @@ function getDisplayValue(row: SecretRow): string {
             <span class="format-check-icon">✓</span>
           </template>
         </NButton>
-        <NButton type="primary" :disabled="saving || hasEmptyRow" :loading="saving" @click="onSave">
+        <NButton size="small" secondary @click="bulkImportVisible = true">
+          批量导入
+        </NButton>
+        <NButton
+          v-if="!hideApply"
+          type="primary"
+          :disabled="saving || hasEmptyRow"
+          :loading="saving"
+          @click="onSave"
+        >
           应用
         </NButton>
       </div>
@@ -212,7 +244,16 @@ function getDisplayValue(row: SecretRow): string {
               </NButton>
             </div>
           </div>
-          <NButton quaternary block class="kv-add" :disabled="hasEmptyRow" @click="addRow(() => ({ key: '', value: '', rawBase64: '' }))">+ 添加</NButton>
+          <NButton
+            v-if="rows.length > 0"
+            quaternary
+            block
+            class="kv-add"
+            :disabled="hasEmptyRow"
+            @click="addRow(() => ({ key: '', value: '', rawBase64: '' }))"
+          >
+            + 添加配置项
+          </NButton>
         </template>
       </aside>
       <div class="kv-panel">
@@ -227,24 +268,28 @@ function getDisplayValue(row: SecretRow): string {
             />
           </div>
           <div class="kv-panel-body">
-            <template v-if="showDecoded">
-              <ValueEditor
-                :model-value="secretSelectedRow.value"
-                fill-height
-                :show-whitespace="effectiveWhitespace"
-                @update:model-value="secretSelectedRow.value = $event"
-              />
-            </template>
-            <div v-else class="kv-raw-panel">
-              <pre class="kv-raw-content">{{ getDisplayValue(secretSelectedRow) || "(空)" }}</pre>
-            </div>
+            <ValueEditor
+              :model-value="secretSelectedRow.value"
+              fill-height
+              :show-whitespace="effectiveWhitespace"
+              @update:model-value="secretSelectedRow.value = $event"
+            />
           </div>
         </template>
         <div v-else class="kv-empty">
-          <p>选择左侧键或点击「添加」新建</p>
+          <p>暂无配置项</p>
+          <NButton type="primary" secondary size="small" @click="addRow(() => ({ key: '', value: '', rawBase64: '' }))">
+            + 添加配置项
+          </NButton>
         </div>
       </div>
     </div>
+    <KvBulkImportModal
+      :visible="bulkImportVisible"
+      :existing-rows="rows"
+      @close="bulkImportVisible = false"
+      @import="onBulkImport"
+    />
     <BaseModal
       :visible="formatConfirmKeys.length > 0"
       title="格式校验"
@@ -306,24 +351,6 @@ function getDisplayValue(row: SecretRow): string {
 .ws-toggle-icon {
   font-family: serif;
   font-size: 1rem;
-}
-.kv-parse-btn {
-  padding: 0.4rem 0.75rem;
-  border: 1px solid var(--kf-border);
-  border-radius: 6px;
-  background: var(--kf-surface-strong);
-  font-size: 0.8125rem;
-  color: var(--kf-text-secondary);
-  cursor: pointer;
-}
-.kv-parse-btn:hover {
-  background: var(--kf-bg-soft);
-  border-color: var(--kf-border-strong);
-}
-.kv-parse-btn.active {
-  background: var(--kf-primary-soft);
-  border-color: var(--kf-primary);
-  color: var(--kf-primary);
 }
 .kv-main {
   flex: 1;
@@ -499,29 +526,13 @@ function getDisplayValue(row: SecretRow): string {
   padding: 1rem;
   overflow: hidden;
 }
-.kv-raw-panel {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: 1rem;
-  background: var(--kf-bg-soft);
-  border-radius: 8px;
-  border: 1px solid var(--kf-border);
-}
-.kv-raw-content {
-  margin: 0;
-  font-family: ui-monospace, monospace;
-  font-size: 0.8125rem;
-  line-height: 1.6;
-  color: var(--kf-text-primary);
-  white-space: pre-wrap;
-  word-break: break-all;
-}
 .kv-empty {
   flex: 1;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 0.65rem;
   color: var(--kf-text-muted);
   font-size: 0.875rem;
 }

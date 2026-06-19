@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
 import * as jsYaml from "js-yaml";
-import { NButton, NCheckbox, NDrawer, NDrawerContent, NInput, NSelect, NSpace, NTab, NTabs, useMessage } from "naive-ui";
+import { NButton, NCheckbox, NDrawer, NDrawerContent, NInput, NSelect, NSpace, NTab, NTabs, useDialog, useMessage } from "naive-ui";
 import { kfSpace } from "../kf";
 import { extractErrorMessage } from "../utils/errorMessage";
 import { stripManagedFields } from "../utils/yaml";
@@ -78,13 +78,54 @@ const VALID_DETAIL_TABS: readonly DetailTab[] = [
 ];
 const activeTab = ref<DetailTab>("yaml");
 const message = useMessage();
+const dialog = useDialog();
 const { monacoTheme } = useYamlMonacoTheme();
 
-function onTabChange(v: string | number) {
+const drawerShow = ref(props.visible);
+
+watch(
+  () => props.visible,
+  (visible) => {
+    drawerShow.value = visible;
+  },
+);
+
+function needsConfirmLeave(tab: DetailTab) {
+  if (tab === "edit" && editDirty.value) return true;
+  if (tab === "yaml" && yamlDirty.value) return true;
+  return false;
+}
+
+function confirmDiscardUnsaved() {
+  return new Promise<boolean>((resolve) => {
+    dialog.warning({
+      title: "未保存的修改",
+      content: "当前编辑内容尚未应用，离开后将丢失。确定继续吗？",
+      positiveText: "离开",
+      negativeText: "继续编辑",
+      onPositiveClick: () => {
+        resolve(true);
+        return true;
+      },
+      onNegativeClick: () => {
+        resolve(false);
+        return true;
+      },
+      onClose: () => resolve(false),
+    });
+  });
+}
+
+async function onTabChange(v: string | number) {
   if (typeof v !== "string") return;
-  if ((VALID_DETAIL_TABS as readonly string[]).includes(v)) {
-    activeTab.value = v as DetailTab;
+  if (!(VALID_DETAIL_TABS as readonly string[]).includes(v)) return;
+  const next = v as DetailTab;
+  if (next === activeTab.value) return;
+  if (needsConfirmLeave(activeTab.value)) {
+    const ok = await confirmDiscardUnsaved();
+    if (!ok) return;
   }
+  activeTab.value = next;
 }
 
 const rawYaml = ref("");
@@ -102,6 +143,9 @@ const editSaving = ref(false);
 const snapshotSaving = ref(false);
 const viewingSnapshot = ref<ResourceSnapshotItem | null>(null);
 const editIntent = ref<EditIntent | null>(null);
+const editDirty = ref(false);
+const structuredPanelRef = ref<InstanceType<typeof ResourceStructuredPanel> | null>(null);
+const structuredEditSaving = computed(() => Boolean(structuredPanelRef.value?.saving));
 const strongholdAuth = useStrongholdAuthStore();
 const nodeTaints = ref<NodeTaintDraft[]>([]);
 
@@ -119,6 +163,19 @@ const displayYaml = computed(() => {
   if (!showManagedFields.value) return stripManagedFields(rawYaml.value);
   return rawYaml.value;
 });
+
+const yamlDirty = computed(() => {
+  if (!rawYaml.value) return false;
+  return yamlDraft.value !== displayYaml.value;
+});
+
+const editUnsavedVisible = computed(() => {
+  if (activeTab.value === "edit") return editDirty.value;
+  if (activeTab.value === "yaml") return yamlDirty.value;
+  return false;
+});
+
+const structuredApplyDisabled = computed(() => Boolean(structuredPanelRef.value?.applyDisabled));
 
 const snapshotResourceRef = computed(() =>
   props.envId && props.resource
@@ -311,8 +368,20 @@ function onDrawerWidthUpdate(value: number) {
   drawerWidthStorage.write(w);
 }
 
-function onDrawerShowUpdate(value: boolean) {
-  if (!value) emit("close");
+async function onDrawerShowUpdate(value: boolean) {
+  if (value) {
+    drawerShow.value = true;
+    return;
+  }
+  if (needsConfirmLeave(activeTab.value)) {
+    const ok = await confirmDiscardUnsaved();
+    if (!ok) {
+      drawerShow.value = true;
+      return;
+    }
+  }
+  drawerShow.value = false;
+  emit("close");
 }
 
 
@@ -471,6 +540,7 @@ function saveManualSnapshot() {
 watch(
   () => [props.visible, props.envId, props.resource?.kind, props.resource?.name, props.resource?.namespace, props.initialTab] as const,
   ([visible, envId, kind, name, _namespace, initialTab]) => {
+    editDirty.value = false;
     if (visible && envId && kind && name) {
       activeTab.value = resolveInitialTab(initialTab);
       editIntent.value = resolveEditIntent(initialTab);
@@ -518,7 +588,7 @@ watch(
 
 <template>
   <NDrawer
-    :show="visible"
+    :show="drawerShow"
     placement="right"
     resizable
     :width="drawerWidth"
@@ -567,6 +637,7 @@ watch(
             @update:value="onTabChange"
           >
             <template #suffix>
+              <span v-if="editUnsavedVisible" class="edit-dirty-tag">未保存</span>
               <NButton
                 v-if="activeTab === 'yaml' && rawYaml"
                 type="primary"
@@ -575,6 +646,16 @@ watch(
                 @click="applyYaml()"
               >
                 {{ yamlSaving ? "保存中…" : "应用" }}
+              </NButton>
+              <NButton
+                v-else-if="activeTab === 'edit' && rawYaml"
+                type="primary"
+                size="small"
+                :loading="structuredEditSaving"
+                :disabled="structuredApplyDisabled"
+                @click="structuredPanelRef?.apply()"
+              >
+                {{ structuredEditSaving ? "保存中…" : "应用" }}
               </NButton>
               <NButton
                 v-else-if="activeTab === 'taints' && rawYaml"
@@ -711,21 +792,20 @@ watch(
           </div>
           <div v-else-if="activeTab === 'edit' && rawYaml" class="edit-panel">
             <ResourceStructuredPanel
+              ref="structuredPanelRef"
               :env-id="props.envId"
               :resource="resource"
               :raw-yaml="rawYaml"
               :initial-intent="editIntent"
               :refresh-yaml="fetchYaml"
               :stronghold-locked-handler="handleStrongholdLocked"
+              @dirty-change="editDirty = $event"
               @navigate="(p) => emit('navigate', p)"
             />
           </div>
           <div v-else-if="activeTab === 'edit'" class="loading-state">加载中…</div>
           <div v-else-if="activeTab === 'yaml' && rawYaml" class="yaml-panel">
             <div v-if="yamlError" class="edit-error">{{ yamlError }}</div>
-            <div class="yaml-toolbar">
-              <span class="yaml-toolbar-hint">完整资源 YAML，编辑后点击右上角「应用」保存</span>
-            </div>
             <div class="yaml-scroll">
               <CodeEditor
                 v-model:value="yamlDraft"
@@ -1148,6 +1228,13 @@ watch(
 }
 .taints-validation {
   margin: 0;
+}
+.edit-dirty-tag {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #b45309;
+  white-space: nowrap;
 }
 .edit-panel,
 .yaml-panel {

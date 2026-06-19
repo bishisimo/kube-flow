@@ -146,8 +146,8 @@ pub struct AppSettingsConfig {
     /// 是否在工作台 Node 列表中展示资源使用量统计；默认关闭。
     #[serde(default)]
     pub node_resource_usage_enabled: bool,
-    /// 是否在编辑器中默认渲染空白字符（空格、制表符等）并开启保存时控制字符校验；默认关闭。
-    #[serde(default)]
+    /// 是否在编辑器中默认渲染空白字符（空格、制表符等）并开启保存时控制字符校验；默认开启。
+    #[serde(default = "default_whitespace_render_enabled")]
     pub whitespace_render_enabled: bool,
     /// 用户扩展的 GPU 资源规则。
     #[serde(default = "default_custom_gpu_resource_rules")]
@@ -175,6 +175,10 @@ fn default_terminal_instance_cache_limit() -> u32 {
 
 fn default_log_active_stream_limit() -> u32 {
     3
+}
+
+fn default_whitespace_render_enabled() -> bool {
+    true
 }
 
 fn default_custom_gpu_resource_rules() -> Vec<GpuResourceRule> {
@@ -423,7 +427,7 @@ struct AppSettingsFile {
     resource_deploy_strategy: String,
     #[serde(default)]
     node_resource_usage_enabled: bool,
-    #[serde(default)]
+    #[serde(default = "default_whitespace_render_enabled")]
     whitespace_render_enabled: bool,
     #[serde(default = "default_custom_gpu_resource_rules")]
     custom_gpu_resource_rules: Vec<GpuResourceRule>,
@@ -436,7 +440,9 @@ impl AppSettingsConfig {
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(AppSettingsConfig::default());
+                let mut config = AppSettingsConfig::default();
+                config.whitespace_render_enabled = true;
+                return Ok(config);
             }
             Err(e) => return Err(ConfigError::Io(e)),
         };

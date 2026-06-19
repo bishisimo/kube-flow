@@ -30,6 +30,8 @@ export interface LogBufferOptions {
 }
 
 const DEFAULT_MAX_LINES = 10000;
+/** 大批量解析时每批行数，批间让出主线程 */
+const PARSE_YIELD_EVERY = 400;
 
 // ─── Level 解析 ───────────────────────────────────────────
 
@@ -50,22 +52,22 @@ const LEVEL_ALIASES: Record<string, LogLevel> = {
   silly: "debug",
 };
 
+function emptyLevelCounts(): Record<LogLevel, number> {
+  return { error: 0, warn: 0, info: 0, debug: 0, unknown: 0 };
+}
+
 function normalizeLevel(raw: unknown): LogLevel {
   if (typeof raw !== "string") return "unknown";
   return LEVEL_ALIASES[raw.toLowerCase()] ?? "unknown";
 }
 
 function extractLevelFromText(line: string): LogLevel {
-  // [LEVEL] or [LEVEL]:
   const bracket = line.match(/\[\s*(error|fatal|panic|critical|err|warn(?:ing)?|wrn|info|notice|debug|trace|verbose)\s*\]/i);
   if (bracket) return normalizeLevel(bracket[1]);
-  // level=VALUE (logfmt)
   const logfmt = line.match(/\blevel\s*=\s*(error|fatal|panic|critical|err|warn(?:ing)?|wrn|info|notice|debug|trace|verbose)\b/i);
   if (logfmt) return normalizeLevel(logfmt[1]);
-  // severity=VALUE
   const sev = line.match(/\bseverity\s*[:=]\s*["']?(ERROR|FATAL|CRITICAL|WARN(?:ING)?|INFO|NOTICE|DEBUG|TRACE|VERBOSE)\b/i);
   if (sev) return normalizeLevel(sev[1]);
-  // Bare keywords (last resort)
   if (/\b(?:ERROR|FATAL|PANIC|CRITICAL)\b/.test(line)) return "error";
   if (/\b(?:WARN|WARNING)\b/.test(line)) return "warn";
   if (/\bINFO\b/.test(line)) return "info";
@@ -76,13 +78,11 @@ function extractLevelFromText(line: string): LogLevel {
 // ─── Timestamp 解析 ───────────────────────────────────────
 
 function extractTimestamp(line: string): { ms: number | null; raw: string | null } {
-  // ISO 8601: 2024-01-15T10:30:00.000Z or 2024-01-15T10:30:00+08:00
   const iso = line.match(/\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/);
   if (iso) {
     const ms = Date.parse(iso[0]);
     if (!Number.isNaN(ms)) return { ms, raw: iso[0] };
   }
-  // Unix epoch seconds: 1705312200 (10+ digits)
   const epoch = line.match(/\b(\d{10})(?:\.\d+)?\b/);
   if (epoch) {
     const sec = Number(epoch[1]);
@@ -118,7 +118,6 @@ function parseLogLine(raw: string, index: number): LogEntry {
     return { index, raw: trimmed, level: "unknown", timestamp: null, timestampRaw: null, fields: null };
   }
 
-  // 尝试 JSON 解析
   if (trimmed.startsWith("{")) {
     try {
       const obj = JSON.parse(trimmed) as Record<string, unknown>;
@@ -142,7 +141,6 @@ function parseLogLine(raw: string, index: number): LogEntry {
     }
   }
 
-  // 尝试 logfmt
   const logfmt = parseLogfmt(trimmed);
   if (logfmt) {
     const level = normalizeLevel(logfmt.level ?? logfmt.severity ?? logfmt.lvl);
@@ -155,9 +153,25 @@ function parseLogLine(raw: string, index: number): LogEntry {
     return { index, raw: trimmed, level: level !== "unknown" ? level : extractLevelFromText(trimmed), timestamp: tsMs, timestampRaw: tsStr ?? null, fields: logfmt as unknown as Record<string, unknown> };
   }
 
-  // 纯文本 fallback
   const { ms, raw: tsRaw } = extractTimestamp(trimmed);
   return { index, raw: trimmed, level: extractLevelFromText(trimmed), timestamp: ms, timestampRaw: tsRaw, fields: null };
+}
+
+function parseChunkLines(chunk: string, startIndex: number): { entries: LogEntry[]; nextIndex: number } {
+  const lines = chunk.split("\n");
+  const entries: LogEntry[] = [];
+  let nextIndex = startIndex;
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    entries.push(parseLogLine(line, nextIndex++));
+  }
+  return { entries, nextIndex };
+}
+
+function yieldToMainThread(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
 }
 
 // ─── Composable ───────────────────────────────────────────
@@ -165,60 +179,99 @@ function parseLogLine(raw: string, index: number): LogEntry {
 export function useLogBuffer(options?: LogBufferOptions) {
   const maxLines = options?.maxLines ?? DEFAULT_MAX_LINES;
   const entries: Ref<LogEntry[]> = ref([]);
+  const levelCounts = ref<Record<LogLevel, number>>(emptyLevelCounts());
   let nextIndex = 0;
 
-  /** 一次性设置全部内容（用于非 follow 模式加载） */
+  function applyLevelDelta(batch: LogEntry[], sign: 1 | -1) {
+    if (!batch.length) return;
+    const counts = { ...levelCounts.value };
+    for (const entry of batch) {
+      counts[entry.level] += sign;
+    }
+    levelCounts.value = counts;
+  }
+
+  function commitEntries(newEntries: LogEntry[]) {
+    if (newEntries.length === 0) return;
+
+    let kept = entries.value;
+    let dropped: LogEntry[] = [];
+    const overflow = kept.length + newEntries.length - maxLines;
+    if (overflow > 0) {
+      dropped = kept.slice(0, overflow);
+      kept = kept.slice(overflow);
+    }
+
+    applyLevelDelta(dropped, -1);
+    applyLevelDelta(newEntries, 1);
+    entries.value = kept.length ? [...kept, ...newEntries] : [...newEntries];
+  }
+
+  /** 一次性设置全部内容（用于非 follow 模式加载，小批量同步解析） */
   function setLines(content: string) {
+    const { entries: parsed, nextIndex: ni } = parseChunkLines(content, nextIndex);
+    nextIndex = ni;
+    const final = parsed.length > maxLines ? parsed.slice(parsed.length - maxLines) : parsed;
+    const counts = emptyLevelCounts();
+    for (const entry of final) {
+      counts[entry.level]++;
+    }
+    levelCounts.value = counts;
+    entries.value = final;
+  }
+
+  /** 大批量快照加载：分批解析并让出主线程，避免长时间阻塞 UI */
+  async function setLinesAsync(content: string): Promise<void> {
     const lines = content.split("\n");
     const result: LogEntry[] = [];
+    let parsed = 0;
     for (const line of lines) {
       if (!line.trim()) continue;
       result.push(parseLogLine(line, nextIndex++));
+      parsed += 1;
+      if (parsed % PARSE_YIELD_EVERY === 0) {
+        await yieldToMainThread();
+      }
     }
-    entries.value = result;
-  }
-
-  /** 追加一块文本（用于 follow 流式接收） */
-  function appendLines(chunk: string) {
-    const lines = chunk.split("\n");
-    const newEntries: LogEntry[] = [];
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      newEntries.push(parseLogLine(line, nextIndex++));
-    }
-    if (newEntries.length === 0) return;
-
-    const combined = [...entries.value, ...newEntries];
-    // 超过上限时淘汰头部
-    if (combined.length > maxLines) {
-      entries.value = combined.slice(combined.length - maxLines);
-    } else {
-      entries.value = combined;
-    }
-  }
-
-  /** 清空缓冲区 */
-  function clear() {
-    entries.value = [];
-    nextIndex = 0;
-  }
-
-  /** 按级别统计 */
-  const levelCounts = computed(() => {
-    const counts: Record<LogLevel, number> = { error: 0, warn: 0, info: 0, debug: 0, unknown: 0 };
-    for (const entry of entries.value) {
+    const final = result.length > maxLines ? result.slice(result.length - maxLines) : result;
+    const counts = emptyLevelCounts();
+    for (const entry of final) {
       counts[entry.level]++;
     }
-    return counts;
-  });
+    levelCounts.value = counts;
+    entries.value = final;
+  }
+
+  /** 追加一块文本（用于 follow 流式接收）；同批内只触发一次响应式更新 */
+  function appendLines(chunk: string) {
+    const { entries: parsed, nextIndex: ni } = parseChunkLines(chunk, nextIndex);
+    nextIndex = ni;
+    commitEntries(parsed);
+  }
+
+  /** 统计追加块中的非空行数（用于新日志角标） */
+  function countLinesInChunk(chunk: string): number {
+    let count = 0;
+    for (const line of chunk.split("\n")) {
+      if (line.trim()) count += 1;
+    }
+    return count;
+  }
+
+  function clear() {
+    entries.value = [];
+    levelCounts.value = emptyLevelCounts();
+    nextIndex = 0;
+  }
 
   return {
     entries,
     setLines,
+    setLinesAsync,
     appendLines,
+    countLinesInChunk,
     clear,
     levelCounts,
-    /** 当前行数 */
     lineCount: computed(() => entries.value.length),
   };
 }

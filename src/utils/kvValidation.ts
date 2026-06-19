@@ -25,6 +25,23 @@ export function getFormatHint(key: string): string {
   return "";
 }
 
+/** 对单个配置项校验 value 是否符合 key 后缀所暗示的格式。返回 null 表示无需校验（无后缀/空值）。 */
+export function validateValueFormat(key: string, value: string): boolean | null {
+  const fmt = getFormatHint(key);
+  if (!fmt) return null;
+  const v = value.trim();
+  if (!v) return null;
+  if (fmt === "yaml") {
+    try { jsYaml.load(v); return true; }
+    catch { return false; }
+  }
+  if (fmt === "json") {
+    try { JSON.parse(v); return true; }
+    catch { return false; }
+  }
+  return null;
+}
+
 /** 校验 value 是否符合 key 后缀所暗示的格式；返回不符合的 key 列表。空值视为通过。 */
 export function validateFormatBySuffix(rows: KeyValueRow[]): string[] {
   const invalid: string[] = [];

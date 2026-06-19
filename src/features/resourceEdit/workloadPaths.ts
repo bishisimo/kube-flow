@@ -14,6 +14,16 @@ export function isWorkloadKind(kind: string): boolean {
   return WORKLOAD_KINDS.has(kind);
 }
 
+/** Pod 模板（含 metadata）在资源对象中的路径。 */
+export function getPodTemplatePath(kind: string): string[] {
+  switch (kind) {
+    case "CronJob":
+      return ["spec", "jobTemplate", "spec", "template"];
+    default:
+      return ["spec", "template"];
+  }
+}
+
 /** Pod 模板 spec 在资源对象中的 JSON 路径。 */
 export function getPodTemplateSpecPath(kind: string): string[] {
   switch (kind) {

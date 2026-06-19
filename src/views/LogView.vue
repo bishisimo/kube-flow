@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
-import { NAlert, NButton, NEmpty, NScrollbar } from "naive-ui";
+import { ref, watch, onMounted, onBeforeUnmount } from "vue";
+import { NAlert, NButton, NEmpty } from "naive-ui";
 import {
   logReadFile,
   logRead,
@@ -11,6 +11,7 @@ import {
 } from "../api/log";
 import { useLogStore } from "../stores/log";
 import { extractErrorMessage } from "../utils/errorMessage";
+import VirtualLogList, { type VirtualLogItem } from "../components/VirtualLogList.vue";
 
 const props = defineProps<{
   visible?: boolean;
@@ -27,10 +28,17 @@ const displayFormat = ref<LogDisplayFormat>("json");
 const autoRefreshTimer = ref<number | null>(null);
 const realtimeEnabled = ref(false);
 
-interface LogLine {
+const LOG_VIEW_MAX_LINES = 10_000;
+const LOG_LINE_HEIGHT = 22;
+const PARSE_YIELD_EVERY = 400;
+
+interface AppLogLine {
+  index: number;
   level: string;
   text: string;
 }
+
+const displayLines = ref<AppLogLine[]>([]);
 
 function parseLevel(line: string): string {
   try {
@@ -41,58 +49,79 @@ function parseLevel(line: string): string {
   }
 }
 
-const lines = computed<LogLine[]>(() => {
-  const rawLines = rawContent.value
-    .split("\n")
-    .filter((line) => line.trim().length > 0);
-  const ordered = displayOrder.value === "desc" ? [...rawLines].reverse() : rawLines;
-  return ordered.map((line) => {
-    const level = parseLevel(line);
-    let text: string;
-    if (displayFormat.value === "text") {
-      try {
-        const obj = JSON.parse(line) as {
-          ts?: string;
-          level?: string;
-          resource?: string;
-          env_id?: string;
-          result?: string;
-          item_count?: number;
-          error?: string;
-          raw_sample?: string;
-        };
-        const parts: string[] = [];
-        if (obj.ts) parts.push(`[${obj.ts}]`);
-        if (obj.level) parts.push(`[${obj.level}]`);
-        if (obj.resource) parts.push(obj.resource);
-        if (obj.result) parts.push(obj.result);
-        const extras: string[] = [];
-        if (obj.env_id) extras.push(`env=${obj.env_id}`);
-        if (obj.item_count != null) extras.push(`${obj.item_count} items`);
-        if (obj.error) extras.push(`err=${obj.error}`);
-        if (obj.raw_sample) extras.push(obj.raw_sample);
-        if (extras.length) parts.push("(" + extras.join(" ") + ")");
-        text = parts.join(" ");
-      } catch {
-        text = line;
-      }
-    } else {
-      text = line;
+function formatLineText(line: string): string {
+  if (displayFormat.value === "text") {
+    try {
+      const obj = JSON.parse(line) as {
+        ts?: string;
+        level?: string;
+        resource?: string;
+        env_id?: string;
+        result?: string;
+        item_count?: number;
+        error?: string;
+        raw_sample?: string;
+      };
+      const parts: string[] = [];
+      if (obj.ts) parts.push(`[${obj.ts}]`);
+      if (obj.level) parts.push(`[${obj.level}]`);
+      if (obj.resource) parts.push(obj.resource);
+      if (obj.result) parts.push(obj.result);
+      const extras: string[] = [];
+      if (obj.env_id) extras.push(`env=${obj.env_id}`);
+      if (obj.item_count != null) extras.push(`${obj.item_count} items`);
+      if (obj.error) extras.push(`err=${obj.error}`);
+      if (obj.raw_sample) extras.push(obj.raw_sample);
+      if (extras.length) parts.push("(" + extras.join(" ") + ")");
+      return parts.join(" ");
+    } catch {
+      return line;
     }
-    return { level, text };
-  });
-});
+  }
+  return line;
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function renderLine(item: VirtualLogItem): string {
+  const line = item as AppLogLine;
+  return `<span class="log-level-${line.level}">${escapeHtml(line.text)}</span>`;
+}
+
+async function rebuildDisplayLines(content: string): Promise<void> {
+  const rawLines = content.split("\n").filter((line) => line.trim().length > 0);
+  const tail = rawLines.length > LOG_VIEW_MAX_LINES ? rawLines.slice(-LOG_VIEW_MAX_LINES) : rawLines;
+  const ordered = displayOrder.value === "desc" ? [...tail].reverse() : tail;
+  const result: AppLogLine[] = [];
+  for (let i = 0; i < ordered.length; i++) {
+    const line = ordered[i];
+    result.push({
+      index: i,
+      level: parseLevel(line),
+      text: formatLineText(line),
+    });
+    if ((i + 1) % PARSE_YIELD_EVERY === 0) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+  }
+  displayLines.value = result;
+}
 
 async function refresh() {
   loading.value = true;
   error.value = null;
   try {
     const settings = await logGetDisplaySettings();
-    rawContent.value = props.selectedFileName
-      ? await logReadFile(props.selectedFileName)
-      : await logRead();
+    const content = props.selectedFileName ? await logReadFile(props.selectedFileName) : await logRead();
+    rawContent.value = content;
     displayOrder.value = settings.order;
     displayFormat.value = settings.format;
+    await rebuildDisplayLines(content);
   } catch (e) {
     error.value = extractErrorMessage(e);
   } finally {
@@ -128,6 +157,7 @@ async function clear() {
   try {
     await logClear();
     rawContent.value = "";
+    displayLines.value = [];
   } catch (e) {
     error.value = extractErrorMessage(e);
   } finally {
@@ -163,6 +193,11 @@ watch(
     startAutoRefreshIfNeeded();
   }
 );
+watch([displayOrder, displayFormat], () => {
+  if (rawContent.value) {
+    void rebuildDisplayLines(rawContent.value);
+  }
+});
 onMounted(refresh);
 onMounted(startAutoRefreshIfNeeded);
 onBeforeUnmount(stopAutoRefresh);
@@ -196,23 +231,19 @@ onBeforeUnmount(stopAutoRefresh);
       </div>
     </header>
     <NAlert v-if="error" type="error" :show-icon="true" class="err-box">{{ error }}</NAlert>
-    <NScrollbar
-      v-else
-      class="log-scroll"
-      trigger="hover"
-    >
-      <div class="log-content" role="log">
-        <template v-if="lines.length">
-          <div
-            v-for="(line, i) in lines"
-            :key="i"
-            class="log-line"
-            :class="'log-level-' + line.level"
-          >{{ line.text }}</div>
-        </template>
-        <NEmpty v-else class="log-empty" description="暂无日志" />
-      </div>
-    </NScrollbar>
+    <div v-else class="log-scroll">
+      <VirtualLogList
+        v-if="displayLines.length"
+        :items="displayLines"
+        :item-height="LOG_LINE_HEIGHT"
+        :buffer="30"
+        auto-anchor="bottom"
+        content-class="log-content"
+        :content-style="{ flex: '1', minHeight: '0' }"
+        :render-line="renderLine"
+      />
+      <NEmpty v-else class="log-empty" description="暂无日志" />
+    </div>
   </div>
 </template>
 
@@ -249,35 +280,36 @@ onBeforeUnmount(stopAutoRefresh);
 .log-scroll {
   flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 .log-content {
-  margin: 0;
-  padding: 1rem;
   font-family: ui-monospace, monospace;
   font-size: 0.8125rem;
   line-height: 1.5;
   background: var(--kf-bg-soft);
+  padding: 1rem;
   min-height: 120px;
 }
-.log-line {
+.log-content :deep(.virtual-log-line) {
   white-space: pre-wrap;
   word-break: break-all;
-  padding: 0.1rem 0;
 }
-.log-level-error {
+.log-content :deep(.log-level-error) {
   color: var(--kf-danger);
   font-weight: 500;
 }
-.log-level-warn {
+.log-content :deep(.log-level-warn) {
   color: var(--kf-warning);
 }
-.log-level-info {
+.log-content :deep(.log-level-info) {
   color: var(--kf-text-primary);
 }
-.log-level-debug {
+.log-content :deep(.log-level-debug) {
   color: var(--kf-text-secondary);
 }
-.log-level-off {
+.log-content :deep(.log-level-off) {
   color: var(--kf-text-muted);
 }
 .log-empty {

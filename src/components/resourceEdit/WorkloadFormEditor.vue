@@ -1,18 +1,23 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
-import { NCard, NInput, NInputNumber, NSelect, NSwitch } from "naive-ui";
+import { ref, computed, watch } from "vue";
+import { NInput, NSelect, NTab, NTabs } from "naive-ui";
+import CollapsibleModuleCard from "./CollapsibleModuleCard.vue";
 import KeyValueListEditor from "./KeyValueListEditor.vue";
-import ContainerTabsEditor from "./ContainerTabsEditor.vue";
-import ItemTabsEditor from "./ItemTabsEditor.vue";
+import WorkloadRegionPanel from "./WorkloadRegionPanel.vue";
 import type { K8sObject } from "../../features/resourceEdit/types";
 import {
   createEmptyWorkloadDraft,
   parseWorkloadDraft,
-  type TolerationDraft,
-  type VolumeDraft,
   type WorkloadDraft,
 } from "../../features/resourceEdit/workloadDraft";
 import { isWorkloadKind } from "../../features/resourceEdit/workloadPaths";
+import {
+  areWorkloadYamlRegionsDirty,
+  extractWorkloadYamlRegions,
+  isWorkloadYamlRegionDirty,
+  regionsForGroup,
+  type WorkloadYamlRegionState,
+} from "../../features/resourceEdit/workloadRegions";
 
 const props = defineProps<{
   kind: string;
@@ -21,19 +26,70 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "update:draft", draft: WorkloadDraft): void;
+  (e: "update:regions", regions: WorkloadYamlRegionState[]): void;
+  (e: "regions-dirty-change", dirty: boolean): void;
 }>();
 
 const draft = ref<WorkloadDraft>(createEmptyWorkloadDraft());
+const regions = ref<WorkloadYamlRegionState[]>([]);
+const podSection = ref<"labels" | "yaml" | "scheduling" | "pod">("yaml");
+const moduleResetKey = ref(0);
+const metaExpanded = ref(false);
+const specExpanded = ref(false);
+
+const schedulingTabLabel = computed(() => {
+  const dirty = regionsForGroup(regions.value, "scheduling").some(isWorkloadYamlRegionDirty);
+  return dirty ? "调度 ·" : "调度";
+});
+
+const podTabLabel = computed(() => {
+  const dirty = regionsForGroup(regions.value, "pod").some(isWorkloadYamlRegionDirty);
+  return dirty ? "Pod ·" : "Pod";
+});
+
+const labelsTabLabel = computed(() => {
+  const dirty = regionsForGroup(regions.value, "template").some(isWorkloadYamlRegionDirty);
+  return dirty ? "标签 ·" : "标签";
+});
+
+const metaSummary = computed(() => {
+  const labels = draft.value.metadata.labels.length;
+  const annotations = draft.value.metadata.annotations.length;
+  if (!labels && !annotations) return "无 labels / annotations";
+  return `${labels} labels · ${annotations} annotations`;
+});
+
+const specSummary = computed(() => {
+  const dirty = regionsForGroup(regions.value, "resource").some(isWorkloadYamlRegionDirty);
+  return dirty ? "已修改" : "YAML";
+});
 
 watch(
   () => [props.kind, props.obj] as const,
   ([kind, obj]) => {
+    podSection.value = "yaml";
     if (!obj || !isWorkloadKind(kind)) {
       draft.value = createEmptyWorkloadDraft();
+      regions.value = [];
+      metaExpanded.value = false;
+      specExpanded.value = false;
+      moduleResetKey.value += 1;
+      emit("update:regions", regions.value);
+      emit("regions-dirty-change", false);
       return;
     }
-    draft.value = parseWorkloadDraft(obj, kind);
+    const parsed = parseWorkloadDraft(obj, kind);
+    draft.value = parsed;
+    regions.value = extractWorkloadYamlRegions(obj, kind);
+    metaExpanded.value =
+      parsed.metadata.labels.length > 0 || parsed.metadata.annotations.length > 0;
+    specExpanded.value = regionsForGroup(regions.value, "resource").some(
+      (r) => r.yaml.trim() && r.yaml.trim() !== "{}\n",
+    );
+    moduleResetKey.value += 1;
     emit("update:draft", draft.value);
+    emit("update:regions", regions.value);
+    emit("regions-dirty-change", areWorkloadYamlRegionsDirty(regions.value));
   },
   { immediate: true, deep: true },
 );
@@ -44,42 +100,25 @@ watch(
   { deep: true },
 );
 
-function createEmptyVolume(): VolumeDraft {
-  return {
-    name: "",
-    type: "emptyDir",
-    configMapName: "",
-    secretName: "",
-    pvcName: "",
-    hostPath: "",
-  };
-}
-
-function createEmptyToleration(): TolerationDraft {
-  return { key: "", operator: "Equal", value: "", effect: "" };
-}
-
-function volumeLabel(vol: VolumeDraft, index: number) {
-  return vol.name.trim() || `Volume ${index + 1}`;
-}
-
-function tolerationLabel(tol: TolerationDraft, index: number) {
-  return tol.key.trim() || `Toleration ${index + 1}`;
-}
+watch(
+  regions,
+  (value) => {
+    emit("update:regions", value);
+    emit("regions-dirty-change", areWorkloadYamlRegionsDirty(value));
+  },
+  { deep: true },
+);
 </script>
 
 <template>
   <div class="workload-form">
-    <NCard size="small" class="re-module-card">
-      <template #header>
-        <div class="re-module-head">
-          <span class="re-module-accent re-module-accent--meta" />
-          <div>
-            <div class="re-module-title">Metadata</div>
-            <div class="re-module-desc">资源级 labels 与 annotations</div>
-          </div>
-        </div>
-      </template>
+    <CollapsibleModuleCard
+      title="Metadata"
+      accent="meta"
+      :summary="metaSummary"
+      :default-expanded="metaExpanded"
+      :reset-key="moduleResetKey"
+    >
       <KeyValueListEditor
         title="Labels"
         :pairs="draft.metadata.labels"
@@ -90,333 +129,81 @@ function tolerationLabel(tol: TolerationDraft, index: number) {
         :pairs="draft.metadata.annotations"
         @update:pairs="draft.metadata.annotations = $event"
       />
-    </NCard>
+    </CollapsibleModuleCard>
 
-    <NCard size="small" class="re-module-card">
-      <template #header>
-        <div class="re-module-head">
-          <span class="re-module-accent re-module-accent--spec" />
-          <div>
-            <div class="re-module-title">Spec</div>
-            <div class="re-module-desc">副本、策略与调度参数</div>
-          </div>
-        </div>
-      </template>
-      <div v-if="kind === 'Deployment' || kind === 'StatefulSet'" class="re-field">
-        <span class="re-label">Replicas</span>
-        <NInputNumber v-model:value="draft.replicas" :min="0" size="small" />
-      </div>
-
-      <template v-if="kind === 'Deployment'">
-        <div class="re-field">
-          <span class="re-label">Strategy</span>
-          <NSelect
-            v-model:value="draft.strategyType"
-            size="small"
-            :options="[
-              { label: 'RollingUpdate', value: 'RollingUpdate' },
-              { label: 'Recreate', value: 'Recreate' },
-            ]"
-          />
-        </div>
-        <div v-if="draft.strategyType === 'RollingUpdate'" class="re-sub-grid">
-          <label class="re-field">
-            <span class="re-label">maxSurge</span>
-            <NInput v-model:value="draft.maxSurge" size="small" />
-          </label>
-          <label class="re-field">
-            <span class="re-label">maxUnavailable</span>
-            <NInput v-model:value="draft.maxUnavailable" size="small" />
-          </label>
-        </div>
-      </template>
-
-      <template v-if="kind === 'StatefulSet'">
-        <label class="re-field">
-          <span class="re-label">serviceName</span>
-          <NInput v-model:value="draft.serviceName" size="small" />
-        </label>
-        <label class="re-field">
-          <span class="re-label">updateStrategy</span>
-          <NSelect
-            v-model:value="draft.updateStrategyType"
-            size="small"
-            :options="[
-              { label: 'RollingUpdate', value: 'RollingUpdate' },
-              { label: 'OnDelete', value: 'OnDelete' },
-            ]"
-          />
-        </label>
-      </template>
-
-      <template v-if="kind === 'DaemonSet'">
-        <label class="re-field">
-          <span class="re-label">updateStrategy</span>
-          <NSelect
-            v-model:value="draft.updateStrategyType"
-            size="small"
-            :options="[
-              { label: 'RollingUpdate', value: 'RollingUpdate' },
-              { label: 'OnDelete', value: 'OnDelete' },
-            ]"
-          />
-        </label>
-      </template>
-
-      <template v-if="kind === 'Job'">
-        <div class="re-sub-grid">
-          <label class="re-field">
-            <span class="re-label">parallelism</span>
-            <NInputNumber v-model:value="draft.parallelism" :min="1" size="small" />
-          </label>
-          <label class="re-field">
-            <span class="re-label">completions</span>
-            <NInputNumber v-model:value="draft.completions" :min="1" size="small" />
-          </label>
-          <label class="re-field">
-            <span class="re-label">backoffLimit</span>
-            <NInputNumber v-model:value="draft.backoffLimit" :min="0" size="small" />
-          </label>
-        </div>
-      </template>
-
-      <template v-if="kind === 'CronJob'">
-        <label class="re-field">
-          <span class="re-label">schedule</span>
-          <NInput v-model:value="draft.schedule" size="small" placeholder="0 * * * *" />
-        </label>
-        <div class="re-field row">
-          <span class="re-label">suspend</span>
-          <NSwitch v-model:value="draft.suspend" />
-        </div>
-        <label class="re-field">
-          <span class="re-label">concurrencyPolicy</span>
-          <NSelect
-            v-model:value="draft.concurrencyPolicy"
-            size="small"
-            :options="[
-              { label: 'Allow', value: 'Allow' },
-              { label: 'Forbid', value: 'Forbid' },
-              { label: 'Replace', value: 'Replace' },
-            ]"
-          />
-        </label>
-        <div class="re-sub-grid">
-          <label class="re-field">
-            <span class="re-label">job parallelism</span>
-            <NInputNumber v-model:value="draft.parallelism" :min="1" size="small" />
-          </label>
-          <label class="re-field">
-            <span class="re-label">job completions</span>
-            <NInputNumber v-model:value="draft.completions" :min="1" size="small" />
-          </label>
-          <label class="re-field">
-            <span class="re-label">job backoffLimit</span>
-            <NInputNumber v-model:value="draft.backoffLimit" :min="0" size="small" />
-          </label>
-        </div>
-      </template>
-    </NCard>
-
-    <NCard size="small" class="re-module-card">
-      <template #header>
-        <div class="re-module-head">
-          <span class="re-module-accent re-module-accent--template" />
-          <div>
-            <div class="re-module-title">Pod Template</div>
-            <div class="re-module-desc">initContainers、containers、volumes 与调度</div>
-          </div>
-        </div>
-      </template>
-      <KeyValueListEditor
-        title="Template Labels"
-        :pairs="draft.templateLabels"
-        @update:pairs="draft.templateLabels = $event"
+    <CollapsibleModuleCard
+      title="Spec"
+      accent="spec"
+      :summary="specSummary"
+      :default-expanded="specExpanded"
+      :reset-key="moduleResetKey"
+    >
+      <WorkloadRegionPanel
+        group="resource"
+        :regions="regions"
+        @update:regions="regions = $event"
       />
-      <KeyValueListEditor
-        title="Template Annotations"
-        :pairs="draft.templateAnnotations"
-        @update:pairs="draft.templateAnnotations = $event"
-      />
+    </CollapsibleModuleCard>
 
-      <div class="re-section">
-        <h4 class="re-section-title re-section-title--solo">Init Containers</h4>
-        <ContainerTabsEditor
-          :containers="draft.initContainers"
-          init
-          empty-hint="无 Init 容器（可选）"
-          @update:containers="draft.initContainers = $event"
+    <CollapsibleModuleCard title="Pod Template" accent="template" :collapsible="false">
+      <NTabs v-model:value="podSection" type="segment" size="small" class="re-pod-section-tabs">
+        <NTab name="yaml" tab="容器 / Volumes" />
+        <NTab name="labels" :tab="labelsTabLabel" />
+        <NTab name="scheduling" :tab="schedulingTabLabel" />
+        <NTab name="pod" :tab="podTabLabel" />
+      </NTabs>
+
+      <div v-if="podSection === 'labels'" class="re-pod-section">
+        <WorkloadRegionPanel
+          group="template"
+          :regions="regions"
+          @update:regions="regions = $event"
         />
       </div>
 
-      <div class="re-section">
-        <h4 class="re-section-title re-section-title--solo">Containers</h4>
-        <ContainerTabsEditor
-          :containers="draft.containers"
-          empty-hint="至少添加一个业务容器"
-          @update:containers="draft.containers = $event"
+      <div v-if="podSection === 'yaml'" class="re-pod-section">
+        <WorkloadRegionPanel
+          group="workload"
+          :regions="regions"
+          @update:regions="regions = $event"
         />
       </div>
 
-      <div class="re-section">
-        <h4 class="re-section-title re-section-title--solo">Volumes</h4>
-        <ItemTabsEditor
-          :items="draft.volumes"
-          variant="volume"
-          empty-hint="未配置 Volume"
-          :create-item="createEmptyVolume"
-          :get-label="volumeLabel"
-          add-label="添加 Volume"
-          @update:items="draft.volumes = $event"
-        >
-          <template #default="{ item, update }">
-            <div class="re-item-panel">
-              <div class="re-field-grid re-field-grid--2">
-                <label class="re-field">
-                  <span class="re-label">name</span>
-                  <NInput
-                    :value="item.name"
-                    size="small"
-                    placeholder="name"
-                    @update:value="update({ ...item, name: $event })"
-                  />
-                </label>
-                <label class="re-field">
-                  <span class="re-label">type</span>
-                  <NSelect
-                    :value="item.type"
-                    size="small"
-                    :options="[
-                      { label: 'emptyDir', value: 'emptyDir' },
-                      { label: 'configMap', value: 'configMap' },
-                      { label: 'secret', value: 'secret' },
-                      { label: 'pvc', value: 'pvc' },
-                      { label: 'hostPath', value: 'hostPath' },
-                    ]"
-                    @update:value="update({ ...item, type: $event })"
-                  />
-                </label>
-              </div>
-              <label v-if="item.type === 'configMap'" class="re-field">
-                <span class="re-label">configMap</span>
-                <NInput
-                  :value="item.configMapName"
-                  size="small"
-                  placeholder="configMap name"
-                  @update:value="update({ ...item, configMapName: $event })"
-                />
-              </label>
-              <label v-else-if="item.type === 'secret'" class="re-field">
-                <span class="re-label">secret</span>
-                <NInput
-                  :value="item.secretName"
-                  size="small"
-                  placeholder="secret name"
-                  @update:value="update({ ...item, secretName: $event })"
-                />
-              </label>
-              <label v-else-if="item.type === 'pvc'" class="re-field">
-                <span class="re-label">claimName</span>
-                <NInput
-                  :value="item.pvcName"
-                  size="small"
-                  placeholder="claimName"
-                  @update:value="update({ ...item, pvcName: $event })"
-                />
-              </label>
-              <label v-else-if="item.type === 'hostPath'" class="re-field">
-                <span class="re-label">hostPath</span>
-                <NInput
-                  :value="item.hostPath"
-                  size="small"
-                  placeholder="host path"
-                  @update:value="update({ ...item, hostPath: $event })"
-                />
-              </label>
-            </div>
-          </template>
-        </ItemTabsEditor>
-      </div>
-
-      <label class="re-field">
-        <span class="re-label">serviceAccountName</span>
-        <NInput v-model:value="draft.serviceAccountName" size="small" />
-      </label>
-      <label class="re-field">
-        <span class="re-label">restartPolicy</span>
-        <NSelect
-          v-model:value="draft.restartPolicy"
-          size="small"
-          :options="[
-            { label: 'Always', value: 'Always' },
-            { label: 'OnFailure', value: 'OnFailure' },
-            { label: 'Never', value: 'Never' },
-          ]"
+      <div v-if="podSection === 'scheduling'" class="re-pod-section">
+        <WorkloadRegionPanel
+          group="scheduling"
+          :regions="regions"
+          @update:regions="regions = $event"
         />
-      </label>
-
-      <KeyValueListEditor
-        title="nodeSelector"
-        :pairs="draft.nodeSelector"
-        @update:pairs="draft.nodeSelector = $event"
-      />
-
-      <div class="re-section">
-        <h4 class="re-section-title re-section-title--solo">Tolerations</h4>
-        <ItemTabsEditor
-          :items="draft.tolerations"
-          variant="toleration"
-          empty-hint="未配置污点容忍"
-          :create-item="createEmptyToleration"
-          :get-label="tolerationLabel"
-          add-label="添加 Toleration"
-          @update:items="draft.tolerations = $event"
-        >
-          <template #default="{ item, update }">
-            <div class="re-item-panel">
-              <div class="re-field-grid re-field-grid--2">
-                <label class="re-field">
-                  <span class="re-label">key</span>
-                  <NInput
-                    :value="item.key"
-                    size="small"
-                    placeholder="key"
-                    @update:value="update({ ...item, key: $event })"
-                  />
-                </label>
-                <label class="re-field">
-                  <span class="re-label">operator</span>
-                  <NInput
-                    :value="item.operator"
-                    size="small"
-                    placeholder="Equal"
-                    @update:value="update({ ...item, operator: $event })"
-                  />
-                </label>
-                <label class="re-field">
-                  <span class="re-label">value</span>
-                  <NInput
-                    :value="item.value"
-                    size="small"
-                    placeholder="value"
-                    @update:value="update({ ...item, value: $event })"
-                  />
-                </label>
-                <label class="re-field">
-                  <span class="re-label">effect</span>
-                  <NInput
-                    :value="item.effect"
-                    size="small"
-                    placeholder="NoSchedule"
-                    @update:value="update({ ...item, effect: $event })"
-                  />
-                </label>
-              </div>
-            </div>
-          </template>
-        </ItemTabsEditor>
       </div>
-    </NCard>
+
+      <div v-if="podSection === 'pod'" class="re-pod-section">
+        <div class="re-field-grid re-field-grid--2 re-pod-quick-fields">
+          <label class="re-field">
+            <span class="re-label">ServiceAccount</span>
+            <NInput v-model:value="draft.serviceAccountName" size="small" />
+          </label>
+          <label class="re-field">
+            <span class="re-label">重启策略</span>
+            <NSelect
+              v-model:value="draft.restartPolicy"
+              size="small"
+              :options="[
+                { label: 'Always', value: 'Always' },
+                { label: 'OnFailure', value: 'OnFailure' },
+                { label: 'Never', value: 'Never' },
+              ]"
+            />
+          </label>
+        </div>
+
+        <WorkloadRegionPanel
+          group="pod"
+          :regions="regions"
+          @update:regions="regions = $event"
+        />
+      </div>
+    </CollapsibleModuleCard>
   </div>
 </template>
 
@@ -425,8 +212,12 @@ function tolerationLabel(tol: TolerationDraft, index: number) {
 .workload-form {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
-  padding: 1rem;
+  gap: 0.75rem;
+  padding: 0.75rem;
   min-width: 0;
+}
+
+.re-pod-quick-fields {
+  margin-bottom: 0.25rem;
 }
 </style>
