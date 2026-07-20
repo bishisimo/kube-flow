@@ -39,3 +39,21 @@ export function hostShellResize(streamId: string, cols: number, rows: number): P
 export function hostShellStop(streamId: string): Promise<void> {
   return invoke("host_shell_stop", { streamId });
 }
+
+export function hostFileUpload(
+  envId: string,
+  localPath: string,
+  remotePath: string,
+  overwrite = false
+): Promise<string> {
+  return invoke("host_file_upload", { envId, localPath, remotePath, overwrite });
+}
+
+export function hostFileDownload(
+  envId: string,
+  remotePath: string,
+  localPath: string,
+  overwrite = false
+): Promise<string> {
+  return invoke("host_file_download", { envId, remotePath, localPath, overwrite });
+}

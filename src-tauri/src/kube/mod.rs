@@ -6,11 +6,14 @@ pub mod resource_apply;
 pub mod resource_delete;
 pub mod resource_describe;
 mod resource_dynamic;
+pub mod file_transfer;
 pub mod resource_exec;
+pub mod resource_file;
 pub mod resource_get;
 pub mod resource_graph;
 pub mod resource_log;
 pub mod resource_patch;
+pub mod resource_replicas;
 pub mod resource_watch;
 pub mod resources;
 pub mod session_store;
@@ -26,13 +29,16 @@ pub use resource_describe::{describe_dynamic_resource, describe_resource, Descri
 pub use resource_dynamic::{
     delete_dynamic_resource, get_dynamic_resource_yaml, list_crd_instances, DynamicCrdInstanceItem,
 };
+pub use file_transfer::FileTransferStore;
 pub use resource_exec::{run_pod_exec, PodExecStore};
+pub use resource_file::{download_file_from_pod, upload_file_to_pod};
 pub use resource_get::get_resource_yaml;
 pub use resource_graph::{build_graph, ResourceGraph};
 pub use resource_log::{
     get_pod_container_names, get_pod_logs, run_pod_log_stream, PodLogStreamStore,
 };
 pub use resource_patch::{patch_container_images, patch_resource_strategic, ContainerImagePatch};
+pub use resource_replicas::{restart_workload, resume_workload, stop_workload};
 pub use resource_watch::{start_watch, WatchStore};
 pub use resources::{
     list_cluster_role_bindings, list_cluster_roles, list_config_maps, list_cron_jobs,

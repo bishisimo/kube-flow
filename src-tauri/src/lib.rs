@@ -7,6 +7,7 @@ mod debug_log;
 mod env;
 mod kube;
 mod ssh_askpass;
+mod ssh_sftp;
 
 use tauri::Manager;
 
@@ -14,12 +15,14 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             commands::setup_app_state(app)?;
             let _ = crate::debug_log::init_current_debug_log_path();
             Ok(())
         })
         .on_window_event(|window, event| {
+            // 仅发关闭信号并 kill SSH 子进程；不在事件循环线程上 join，避免卡住退出。
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 if let Some(store) = window
                     .app_handle()
@@ -127,7 +130,12 @@ pub fn run() {
             commands::terminal_commands::host_shell_stdin,
             commands::terminal_commands::host_shell_resize,
             commands::terminal_commands::host_shell_stop,
+            commands::terminal_commands::host_file_upload,
+            commands::terminal_commands::host_file_download,
             commands::kube_commands::kube_pod_logs,
+            commands::kube_commands::kube_pod_file_upload,
+            commands::kube_commands::kube_pod_file_download,
+            commands::kube_commands::file_transfer_cancel,
             commands::kube_commands::kube_get_resource,
             commands::kube_commands::kube_list_crd_instances,
             commands::kube_commands::kube_get_dynamic_resource,
@@ -138,6 +146,9 @@ pub fn run() {
             commands::kube_commands::kube_deploy_resource,
             commands::kube_commands::kube_patch_container_images,
             commands::kube_commands::kube_patch_resource_strategic,
+            commands::kube_commands::kube_stop_workload,
+            commands::kube_commands::kube_resume_workload,
+            commands::kube_commands::kube_restart_workload,
             commands::kube_commands::kube_get_tunnel_local_port,
             commands::kube_commands::kube_remove_client,
             commands::kube_commands::kube_refresh_resource_aliases,

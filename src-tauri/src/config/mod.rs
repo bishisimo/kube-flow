@@ -22,7 +22,7 @@ pub use ssh_config::{
     default_config_path_string as ssh_config_default_path, delete_entry as ssh_config_delete_entry,
     get_host_config as ssh_config_get_host_config, list_entries as ssh_config_list_entries,
     list_hosts as ssh_config_list_hosts, resolve_proxy_command as ssh_config_resolve_proxy_command,
-    upsert_entry as ssh_config_upsert_entry, SshConfigEntry,
+    upsert_entry as ssh_config_upsert_entry, SshConfigEntry, SshHostConfig,
 };
 
 use std::io;

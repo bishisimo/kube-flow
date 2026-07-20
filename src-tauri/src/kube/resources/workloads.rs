@@ -6,6 +6,7 @@ use super::{
 };
 use crate::kube::resource_get::get_resource_value;
 use crate::kube::resource_graph::selector_to_string;
+use super::saved_replicas_from_annotations;
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::Api;
@@ -38,6 +39,9 @@ pub struct DeploymentItem {
     pub replicas: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ready: Option<i32>,
+    /// 停止时写入 annotation 的期望副本数；存在则表示可由本工具恢复。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub saved_replicas: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub creation_time: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -54,6 +58,9 @@ pub struct StatefulSetItem {
     pub replicas: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ready: Option<i32>,
+    /// 停止时写入 annotation 的期望副本数；存在则表示可由本工具恢复。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub saved_replicas: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub creation_time: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -205,6 +212,7 @@ pub async fn list_deployments(
                 namespace: d.metadata.namespace.unwrap_or_else(|| ns.to_string()),
                 replicas: replicas.or(Some(0)),
                 ready: ready.or(Some(0)),
+                saved_replicas: saved_replicas_from_annotations(d.metadata.annotations.as_ref()),
                 creation_time: format_creation_time(d.metadata.creation_timestamp.as_ref()),
                 label_selector,
                 pod_rollup,
@@ -249,6 +257,7 @@ pub async fn list_stateful_sets(
                 namespace: s.metadata.namespace.unwrap_or_else(|| ns.to_string()),
                 replicas: replicas.or(Some(0)),
                 ready: ready.or(Some(0)),
+                saved_replicas: saved_replicas_from_annotations(s.metadata.annotations.as_ref()),
                 creation_time: format_creation_time(s.metadata.creation_timestamp.as_ref()),
                 label_selector,
                 pod_rollup,

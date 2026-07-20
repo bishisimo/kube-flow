@@ -266,6 +266,46 @@ export function kubePodExecStop(streamId: string): Promise<void> {
   return invoke("kube_pod_exec_stop", { streamId });
 }
 
+export function kubePodFileUpload(
+  envId: string,
+  namespace: string,
+  podName: string,
+  container: string | null,
+  localPath: string,
+  remotePath: string,
+  overwrite = false
+): Promise<string> {
+  return invoke("kube_pod_file_upload", {
+    envId,
+    namespace,
+    podName,
+    container: container ?? null,
+    localPath,
+    remotePath,
+    overwrite,
+  });
+}
+
+export function kubePodFileDownload(
+  envId: string,
+  namespace: string,
+  podName: string,
+  container: string | null,
+  remotePath: string,
+  localPath: string,
+  overwrite = false
+): Promise<string> {
+  return invoke("kube_pod_file_download", {
+    envId,
+    namespace,
+    podName,
+    container: container ?? null,
+    remotePath,
+    localPath,
+    overwrite,
+  });
+}
+
 export function kubePodLogs(
   envId: string,
   namespace: string,
@@ -336,6 +376,36 @@ export function kubePatchResourceStrategic(
   patch: Record<string, unknown>
 ): Promise<void> {
   return invoke("kube_patch_resource_strategic", { envId, kind, name, namespace, patch });
+}
+
+/** 停止 Deployment/StatefulSet：保存副本数到 annotation 并 scale 到 0。 */
+export function kubeStopWorkload(
+  envId: string,
+  kind: string,
+  name: string,
+  namespace: string | null
+): Promise<void> {
+  return invoke("kube_stop_workload", { envId, kind, name, namespace });
+}
+
+/** 恢复 Deployment/StatefulSet：从 annotation 还原副本数。 */
+export function kubeResumeWorkload(
+  envId: string,
+  kind: string,
+  name: string,
+  namespace: string | null
+): Promise<void> {
+  return invoke("kube_resume_workload", { envId, kind, name, namespace });
+}
+
+/** 滚动重启 Deployment/StatefulSet/DaemonSet（kubectl rollout restart）。 */
+export function kubeRestartWorkload(
+  envId: string,
+  kind: string,
+  name: string,
+  namespace: string | null
+): Promise<void> {
+  return invoke("kube_restart_workload", { envId, kind, name, namespace });
 }
 
 // ─── Tunnel ───────────────────────────────────────────────────────────────────

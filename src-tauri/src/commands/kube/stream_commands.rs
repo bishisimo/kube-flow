@@ -1,9 +1,10 @@
-//! Pod 日志流与交互式 exec 命令。
+//! Pod 日志流与交互式 exec 命令、Pod 文件传输。
 
 use super::super::kube_command_context::{self, CommandResult};
+use crate::kube::file_transfer::{emit_end, FileTransferStore};
 use crate::kube::{
-    get_pod_logs, run_pod_exec, run_pod_log_stream, KubeClientStore, PodExecStore,
-    PodLogStreamStore,
+    download_file_from_pod, get_pod_logs, run_pod_exec, run_pod_log_stream, upload_file_to_pod,
+    KubeClientStore, PodExecStore, PodLogStreamStore,
 };
 use std::sync::Arc;
 use tauri::{AppHandle, State};
@@ -138,5 +139,96 @@ pub async fn kube_pod_exec_stop(
     stream_id: String,
 ) -> CommandResult<()> {
     exec_store.stop(&stream_id).await;
+    Ok(())
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn kube_pod_file_upload(
+    app: AppHandle,
+    store: State<'_, KubeClientStore>,
+    transfer_store: State<'_, Arc<FileTransferStore>>,
+    env_id: String,
+    namespace: String,
+    pod_name: String,
+    container: Option<String>,
+    local_path: String,
+    remote_path: String,
+    overwrite: Option<bool>,
+) -> CommandResult<String> {
+    let (_env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
+    let transfer_id = Uuid::new_v4().to_string();
+    let mut cancel_rx = transfer_store.register(transfer_id.clone()).await;
+    let transfer_store = Arc::clone(&transfer_store);
+    let transfer_id_task = transfer_id.clone();
+    let overwrite = overwrite.unwrap_or(false);
+    tokio::spawn(async move {
+        let result = upload_file_to_pod(
+            &app,
+            &transfer_id_task,
+            &mut cancel_rx,
+            client,
+            &namespace,
+            &pod_name,
+            container.as_deref(),
+            &local_path,
+            &remote_path,
+            overwrite,
+        )
+        .await;
+        let error = result.err();
+        transfer_store.remove(&transfer_id_task).await;
+        emit_end(&app, &transfer_id_task, error);
+    });
+    Ok(transfer_id)
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn kube_pod_file_download(
+    app: AppHandle,
+    store: State<'_, KubeClientStore>,
+    transfer_store: State<'_, Arc<FileTransferStore>>,
+    env_id: String,
+    namespace: String,
+    pod_name: String,
+    container: Option<String>,
+    remote_path: String,
+    local_path: String,
+    overwrite: Option<bool>,
+) -> CommandResult<String> {
+    let (_env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
+    let transfer_id = Uuid::new_v4().to_string();
+    let mut cancel_rx = transfer_store.register(transfer_id.clone()).await;
+    let transfer_store = Arc::clone(&transfer_store);
+    let transfer_id_task = transfer_id.clone();
+    let overwrite = overwrite.unwrap_or(false);
+    tokio::spawn(async move {
+        let result = download_file_from_pod(
+            &app,
+            &transfer_id_task,
+            &mut cancel_rx,
+            client,
+            &namespace,
+            &pod_name,
+            container.as_deref(),
+            &remote_path,
+            &local_path,
+            overwrite,
+        )
+        .await;
+        let error = result.err();
+        transfer_store.remove(&transfer_id_task).await;
+        emit_end(&app, &transfer_id_task, error);
+    });
+    Ok(transfer_id)
+}
+
+#[tauri::command]
+pub async fn file_transfer_cancel(
+    transfer_store: State<'_, Arc<FileTransferStore>>,
+    transfer_id: String,
+) -> CommandResult<()> {
+    transfer_store.cancel(&transfer_id).await;
     Ok(())
 }

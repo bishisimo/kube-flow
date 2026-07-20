@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick, type Ref } from "vue";
-import { NLayout, NLayoutSider } from "naive-ui";
+import { NLayout, NLayoutSider, useDialog } from "naive-ui";
 
 defineOptions({ name: "Main" });
 import { extractErrorMessage } from "../utils/errorMessage";
@@ -53,12 +53,18 @@ import {
   kubeDeleteDynamicResource,
   kubeDeleteResource,
   kubeRemoveClient,
+  kubeRestartWorkload,
+  kubeResumeWorkload,
+  kubeStopWorkload,
 } from "../api/kube";
 import { useConnectionStore, isConnectionError } from "../stores/connection";
 import { useSshAuthStore } from "../stores/sshAuth";
 import { useStrongholdAuthStore } from "../stores/strongholdAuth";
 import { useShellStore } from "../stores/shell";
 import { useLogCenterStore } from "../stores/logCenter";
+import {
+  useDetailDrawerStore,
+} from "../stores/detailDrawer";
 import { pendingWorkbenchResource } from "../stores/snapshotCenter";
 import { useOrchestratorStore } from "../stores/orchestrator";
 import { useAppSettingsStore } from "../stores/appSettings";
@@ -87,7 +93,19 @@ const RESOURCE_KINDS = RESOURCE_KINDS_FLAT;
 const VALID_KINDS = buildValidResourceKindSet(RESOURCE_KINDS);
 const API_KIND_TO_ID = buildApiKindToIdMap(RESOURCE_KINDS);
 
-const { openedEnvs, currentEnv, currentId, setCurrent, touchEnv, loadEnvironments, setEnvViewState } = useEnvStore();
+const { openedEnvs, openedIds, currentEnv, currentId, setCurrent, touchEnv, loadEnvironments, setEnvViewState } = useEnvStore();
+const {
+  pages: detailPages,
+  activePageId: detailActivePageId,
+  visible: detailDrawerVisible,
+  hideDrawer,
+  preferEnvPage,
+  openOrFocusPage,
+  clearEnvPages,
+  setActivePage: setDetailActivePage,
+  closePage: closeDetailPage,
+} = useDetailDrawerStore();
+const detailDialog = useDialog();
 const {
   favoriteNamespaces,
   recentNamespaces,
@@ -500,9 +518,8 @@ function syncNodeAllocationPolling() {
 }
 
 function resetTransientWorkbenchState() {
+  // 详情抽屉由 detailDrawer store 跨环境保留，切环境时不清空 pages。
   selectedResource.value = null;
-  detailDrawerVisible.value = false;
-  detailDrawerInitialTab.value = null;
   changeImageModalVisible.value = false;
   closeActionMenu();
   deleteConfirmVisible.value = false;
@@ -513,6 +530,26 @@ function resetTransientWorkbenchState() {
   syncOrchestratorRelatedError.value = null;
   selectedRowKeys.value = new Set();
   batchDeleteMode.value = false;
+}
+
+function confirmDiscardDetailUnsaved(): Promise<boolean> {
+  return new Promise((resolve) => {
+    detailDialog.warning({
+      title: "未保存的修改",
+      content: "当前编辑内容尚未应用，离开后将丢失。确定继续吗？",
+      positiveText: "离开",
+      negativeText: "继续编辑",
+      onPositiveClick: () => {
+        resolve(true);
+        return true;
+      },
+      onNegativeClick: () => {
+        resolve(false);
+        return true;
+      },
+      onClose: () => resolve(false),
+    });
+  });
 }
 
 function beginEnvSwitch(nextEnvId: string | null) {
@@ -699,8 +736,6 @@ function openKindSelector() {
   });
 }
 
-const detailDrawerVisible = ref(false);
-const detailDrawerInitialTab = ref<string | null>(null);
 const changeImageModalVisible = ref(false);
 const deleteConfirmVisible = ref(false);
 const podDebugModalVisible = ref(false);
@@ -958,16 +993,31 @@ function resourceTableShellElement(): HTMLElement | null {
   return c?.tableShellRef ?? null;
 }
 
-function openDetailDrawerForResource(resource: SelectedResourceRef, initialTab: string | null = null) {
+async function openDetailDrawerForResource(resource: SelectedResourceRef, initialTab: string | null = null) {
+  const envId = currentId.value;
+  const env = currentEnv.value;
+  if (!envId || !env) return;
   selectedResource.value = resource;
-  detailDrawerInitialTab.value = initialTab;
-  detailDrawerVisible.value = true;
+  await openOrFocusPage(
+    {
+      envId,
+      envName: env.display_name,
+      resource: {
+        kind: resource.kind,
+        name: resource.name,
+        namespace: resource.namespace,
+        dynamic: resource.dynamic,
+      },
+      initialTabHint: initialTab,
+    },
+    confirmDiscardDetailUnsaved
+  );
 }
 
 function openNodeTaintsFromRow(row: Record<string, unknown>) {
   const resource = selectResourceFromRow(row);
   if (!resource || resource.kind !== "Node") return;
-  openDetailDrawerForResource(resource, "taints");
+  void openDetailDrawerForResource(resource, "taints");
 }
 
 function closeActionMenu() {
@@ -976,8 +1026,8 @@ function closeActionMenu() {
 }
 
 function openResourceDetail() {
-  detailDrawerInitialTab.value = null;
-  detailDrawerVisible.value = true;
+  if (!selectedResource.value) return;
+  void openDetailDrawerForResource(selectedResource.value, null);
   closeActionMenu();
 }
 
@@ -1192,20 +1242,77 @@ function openEnvironmentTerminal(envId?: string | null) {
 }
 
 function openEditConfig() {
-  detailDrawerInitialTab.value = "editConfig";
-  detailDrawerVisible.value = true;
+  if (!selectedResource.value) return;
+  void openDetailDrawerForResource(selectedResource.value, "editConfig");
   closeActionMenu();
 }
 
 function openTopology() {
-  detailDrawerInitialTab.value = "topology";
-  detailDrawerVisible.value = true;
+  if (!selectedResource.value) return;
+  void openDetailDrawerForResource(selectedResource.value, "topology");
   closeActionMenu();
 }
 
 function openChangeImageModal() {
   changeImageModalVisible.value = true;
   closeActionMenu();
+}
+
+/** 从列表行读取 Deploy/STS 的副本态，供停止/恢复菜单与命令面板使用。 */
+function workloadScaleForResource(r: {
+  kind: string;
+  name: string;
+  namespace: string | null;
+} | null): { replicasDesired: number | null; savedReplicas: number | null } {
+  if (!r || (r.kind !== "Deployment" && r.kind !== "StatefulSet")) {
+    return { replicasDesired: null, savedReplicas: null };
+  }
+  const row = tableRows.value.find((row) => {
+    if ((row.name as string | undefined) !== r.name) return false;
+    const ns = typeof row.ns === "string" && row.ns !== "—" ? row.ns : null;
+    return (ns ?? null) === (r.namespace ?? null);
+  });
+  if (!row) return { replicasDesired: null, savedReplicas: null };
+  return {
+    replicasDesired: typeof row.replicasDesired === "number" ? row.replicasDesired : null,
+    savedReplicas: typeof row.savedReplicas === "number" ? row.savedReplicas : null,
+  };
+}
+
+const actionMenuWorkloadScale = computed(() => workloadScaleForResource(selectedResource.value));
+
+async function runWorkloadLifecycle(
+  action: "stop" | "resume" | "restart"
+) {
+  const r = selectedResource.value;
+  const envId = currentId.value;
+  if (!r || !envId) return;
+  closeActionMenu();
+  listError.value = null;
+  try {
+    if (action === "stop") {
+      await kubeStopWorkload(envId, r.kind, r.name, r.namespace);
+    } else if (action === "resume") {
+      await kubeResumeWorkload(envId, r.kind, r.name, r.namespace);
+    } else {
+      await kubeRestartWorkload(envId, r.kind, r.name, r.namespace);
+    }
+    requestListReload();
+  } catch (e) {
+    listError.value = extractErrorMessage(e);
+  }
+}
+
+function stopWorkloadAction() {
+  void runWorkloadLifecycle("stop");
+}
+
+function resumeWorkloadAction() {
+  void runWorkloadLifecycle("resume");
+}
+
+function restartWorkloadAction() {
+  void runWorkloadLifecycle("restart");
 }
 
 function openDeleteConfirm() {
@@ -1374,9 +1481,13 @@ function setWorkbenchSort(key: string, order: "asc" | "desc") {
 }
 
 function closeDetailDrawer() {
-  detailDrawerVisible.value = false;
-  detailDrawerInitialTab.value = null;
-  selectedResource.value = null;
+  hideDrawer();
+}
+
+function onDetailFocusEnv(envId: string) {
+  if (envId && openedIds.value.includes(envId)) {
+    setCurrent(envId);
+  }
 }
 
 function onTopologyNavigate(payload: {
@@ -1438,6 +1549,8 @@ onMounted(async () => {
         nodeTerminalMenuLabel: paletteNodeTerminalMenuLabelFor(r),
         nodeTerminalDisabledReason: paletteNodeTerminalDisabledReasonFor(r),
         podDebugDisabledReason: r.kind === "Pod" ? paletteNodeTerminalDisabledReasonFor(r) : "",
+        workloadReplicasDesired: workloadScaleForResource(r).replicasDesired,
+        workloadSavedReplicas: workloadScaleForResource(r).savedReplicas,
       });
     },
     runAction: (id: string) => {
@@ -1469,6 +1582,15 @@ onMounted(async () => {
           break;
         case "openChangeImage":
           openChangeImageModal();
+          break;
+        case "stopWorkload":
+          stopWorkloadAction();
+          break;
+        case "resumeWorkload":
+          resumeWorkloadAction();
+          break;
+        case "restartWorkload":
+          restartWorkloadAction();
           break;
         case "openSyncOrchestrator":
           void openSyncToOrchestratorDialog();
@@ -1509,8 +1631,20 @@ watch(currentId, async (id, prevId) => {
   if (id) {
     restoreEnvViewState(id);
     applyEnvViewCache(id);
+    preferEnvPage(id);
   }
 });
+
+watch(
+  openedIds,
+  (ids, prevIds) => {
+    const prev = prevIds ?? [];
+    for (const id of prev) {
+      if (!ids.includes(id)) clearEnvPages(id);
+    }
+  },
+  { deep: true }
+);
 watch(nsDropdownOpen, (open) => {
   if (!open) return;
   nextTick(() => {
@@ -1941,6 +2075,8 @@ const {
       :node-terminal-disabled-reason="nodeTerminalDisabledReason"
       :pod-debug-disabled-reason="podDebugDisabledReason"
       :delete-action-armed="deleteActionArmed"
+      :workload-replicas-desired="actionMenuWorkloadScale.replicasDesired"
+      :workload-saved-replicas="actionMenuWorkloadScale.savedReplicas"
       @close="closeActionMenu"
       @open-detail="openResourceDetail"
       @open-topology="openTopology"
@@ -1950,6 +2086,9 @@ const {
       @open-pod-debug="openPodDebugModal"
       @open-edit-config="openEditConfig"
       @open-change-image="openChangeImageModal"
+      @stop-workload="stopWorkloadAction"
+      @resume-workload="resumeWorkloadAction"
+      @restart-workload="restartWorkloadAction"
       @open-sync-orchestrator="openSyncToOrchestratorDialog"
       @handle-delete="handleDeleteAction"
     />
@@ -1976,14 +2115,16 @@ const {
       @confirm="onPodDebugConfirm"
     />
 
-    <!-- 资源详情抽屉（YAML） -->
+    <!-- 资源详情抽屉（跨环境 LRU 多页） -->
     <ResourceDetailDrawer
       :visible="detailDrawerVisible"
-      :env-id="currentId"
-      :resource="selectedResource"
-      :initial-tab="detailDrawerInitialTab"
+      :pages="detailPages"
+      :active-page-id="detailActivePageId"
       @close="closeDetailDrawer"
       @navigate="onTopologyNavigate"
+      @focus-env="onDetailFocusEnv"
+      @select-page="setDetailActivePage"
+      @close-page="closeDetailPage"
     />
 
     <ChangeImageModal

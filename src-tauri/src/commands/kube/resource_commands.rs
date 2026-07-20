@@ -7,7 +7,8 @@ use crate::kube::{
     apply_resource_yaml, build_graph, delete_dynamic_resource, delete_resource,
     deploy_resource_yaml, describe_dynamic_resource, describe_resource, get_dynamic_resource_yaml,
     get_pod_container_names, get_resource_yaml, patch_container_images, patch_resource_strategic,
-    ContainerImagePatch, DescribeResult, KubeClientStore, ResourceGraph,
+    restart_workload, resume_workload, stop_workload, ContainerImagePatch, DescribeResult,
+    KubeClientStore, ResourceGraph,
 };
 use tauri::State;
 
@@ -129,6 +130,48 @@ pub async fn kube_patch_resource_strategic(
 ) -> CommandResult<()> {
     let (_env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
     patch_resource_strategic(&client, &kind, &name, namespace.as_deref(), patch)
+        .await
+        .map_err(err_str)
+}
+
+#[tauri::command]
+pub async fn kube_stop_workload(
+    store: State<'_, KubeClientStore>,
+    env_id: String,
+    kind: String,
+    name: String,
+    namespace: Option<String>,
+) -> CommandResult<()> {
+    let (_env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
+    stop_workload(&client, &kind, &name, namespace.as_deref())
+        .await
+        .map_err(err_str)
+}
+
+#[tauri::command]
+pub async fn kube_resume_workload(
+    store: State<'_, KubeClientStore>,
+    env_id: String,
+    kind: String,
+    name: String,
+    namespace: Option<String>,
+) -> CommandResult<()> {
+    let (_env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
+    resume_workload(&client, &kind, &name, namespace.as_deref())
+        .await
+        .map_err(err_str)
+}
+
+#[tauri::command]
+pub async fn kube_restart_workload(
+    store: State<'_, KubeClientStore>,
+    env_id: String,
+    kind: String,
+    name: String,
+    namespace: Option<String>,
+) -> CommandResult<()> {
+    let (_env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
+    restart_workload(&client, &kind, &name, namespace.as_deref())
         .await
         .map_err(err_str)
 }

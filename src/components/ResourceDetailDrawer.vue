@@ -35,6 +35,9 @@ import { strongholdAdjacentModalTrapFocusEnabled, useStrongholdAuthStore } from 
 import type { SelectedResource } from "../features/workbench/contracts";
 import type { EditIntent } from "../features/resourceEdit";
 import { createStorage } from "../utils/storage";
+import type { DetailPage, DetailTab } from "../stores/detailDrawer";
+import { useDetailDrawerStore } from "../stores/detailDrawer";
+import { useEnvStore } from "../stores/env";
 
 export type { SelectedResource };
 
@@ -51,9 +54,8 @@ interface NodeTaintDraft {
 
 const props = defineProps<{
   visible: boolean;
-  envId: string | null;
-  resource: SelectedResource | null;
-  initialTab?: string | null;
+  pages: DetailPage[];
+  activePageId: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -64,9 +66,14 @@ const emit = defineEmits<{
     labelSelector?: string | null;
     resourceName?: string | null;
   }): void;
+  (e: "focus-env", envId: string): void;
+  (e: "select-page", pageId: string): void;
+  (e: "close-page", pageId: string): void;
 }>();
 
-type DetailTab = "yaml" | "edit" | "describe" | "logs" | "topology" | "snapshots" | "taints";
+const { setPageDirty, setPageTab } = useDetailDrawerStore();
+const { currentId, currentEnv } = useEnvStore();
+
 const VALID_DETAIL_TABS: readonly DetailTab[] = [
   "yaml",
   "edit",
@@ -80,6 +87,19 @@ const activeTab = ref<DetailTab>("yaml");
 const message = useMessage();
 const dialog = useDialog();
 const { monacoTheme } = useYamlMonacoTheme();
+
+const activePage = computed(() =>
+  props.activePageId ? props.pages.find((p) => p.id === props.activePageId) ?? null : null
+);
+const envId = computed(() => activePage.value?.envId ?? null);
+const resource = computed(() => activePage.value?.resource ?? null);
+
+/** 详情页所属环境与工作台当前环境不一致时，应用前需二次确认。 */
+const isCrossEnvApply = computed(() => {
+  const pageEnv = envId.value;
+  const workbenchEnv = currentId.value;
+  return Boolean(pageEnv && workbenchEnv && pageEnv !== workbenchEnv);
+});
 
 const drawerShow = ref(props.visible);
 
@@ -116,6 +136,32 @@ function confirmDiscardUnsaved() {
   });
 }
 
+/** 应用目标环境不是当前工作区时弹出确认；同环境直接通过。 */
+function confirmCrossEnvApply(): Promise<boolean> {
+  if (!isCrossEnvApply.value) return Promise.resolve(true);
+  const targetName = activePage.value?.envName?.trim() || "其他环境";
+  const currentName = currentEnv.value?.display_name?.trim() || "当前工作区";
+  const res = resource.value;
+  const resLabel = res ? `${res.kind}/${res.name}` : "该资源";
+  return new Promise((resolve) => {
+    dialog.warning({
+      title: "应用到非当前环境",
+      content: `当前工作区是「${currentName}」，即将把 ${resLabel} 的变更应用到「${targetName}」。确定继续吗？`,
+      positiveText: "仍要应用",
+      negativeText: "取消",
+      onPositiveClick: () => {
+        resolve(true);
+        return true;
+      },
+      onNegativeClick: () => {
+        resolve(false);
+        return true;
+      },
+      onClose: () => resolve(false),
+    });
+  });
+}
+
 async function onTabChange(v: string | number) {
   if (typeof v !== "string") return;
   if (!(VALID_DETAIL_TABS as readonly string[]).includes(v)) return;
@@ -126,6 +172,49 @@ async function onTabChange(v: string | number) {
     if (!ok) return;
   }
   activeTab.value = next;
+  if (props.activePageId) setPageTab(props.activePageId, next);
+}
+
+async function onSelectPage(pageId: string) {
+  if (pageId === props.activePageId) return;
+  if (needsConfirmLeave(activeTab.value)) {
+    const ok = await confirmDiscardUnsaved();
+    if (!ok) return;
+    if (props.activePageId) setPageDirty(props.activePageId, false);
+  }
+  emit("select-page", pageId);
+}
+
+async function onClosePage(pageId: string, event: Event) {
+  event.stopPropagation();
+  event.preventDefault();
+  const target = props.pages.find((p) => p.id === pageId);
+  if (!target) return;
+  const leavingActive = pageId === props.activePageId;
+  if (leavingActive && needsConfirmLeave(activeTab.value)) {
+    const ok = await confirmDiscardUnsaved();
+    if (!ok) return;
+  } else if (target.dirty) {
+    const ok = await confirmDiscardUnsaved();
+    if (!ok) return;
+  }
+  emit("close-page", pageId);
+}
+
+function onFocusEnv(envIdValue: string, event: Event) {
+  event.stopPropagation();
+  emit("focus-env", envIdValue);
+}
+
+function pageTabTitle(page: DetailPage): string {
+  const ns = page.resource.namespace ? `${page.resource.namespace}/` : "";
+  return `${page.envName} · ${page.resource.kind} / ${ns}${page.resource.name}`;
+}
+
+function shortEnvName(name: string): string {
+  const t = name.trim();
+  if (t.length <= 10) return t;
+  return `${t.slice(0, 9)}…`;
 }
 
 const rawYaml = ref("");
@@ -178,19 +267,19 @@ const editUnsavedVisible = computed(() => {
 const structuredApplyDisabled = computed(() => Boolean(structuredPanelRef.value?.applyDisabled));
 
 const snapshotResourceRef = computed(() =>
-  props.envId && props.resource
+  envId.value && resource.value
     ? {
-        env_id: props.envId,
-        resource_kind: props.resource.kind,
-        resource_name: props.resource.name,
-        resource_namespace: props.resource.namespace ?? null,
+        env_id: envId.value,
+        resource_kind: resource.value.kind,
+        resource_name: resource.value.name,
+        resource_namespace: resource.value.namespace ?? null,
       }
     : null
 );
 
 const genericSnapshots = computed(() => listResourceSnapshotsByCategory(snapshotResourceRef.value, "all"));
 const currentSnapshotSummary = computed(() => summarizeResourceYaml(rawYaml.value));
-const isNodeResource = computed(() => props.resource?.kind === "Node");
+const isNodeResource = computed(() => resource.value?.kind === "Node");
 
 const taintsValidationError = computed(() => {
   const seen = new Set<string>();
@@ -206,41 +295,18 @@ const taintsValidationError = computed(() => {
   return null;
 });
 
-function resolveEditIntent(initialTab: string | null | undefined): EditIntent | null {
-  if (initialTab === "editConfig") return { mode: "kv" };
-  if (initialTab === "edit") return { mode: "structured" };
-  return null;
-}
-
-function resolveInitialTab(initialTab: string | null | undefined): DetailTab {
-  const kind = props.resource?.kind;
-  if (initialTab === "editConfig" || initialTab === "edit") return "edit";
-  if (initialTab === "yaml") return "yaml";
-  if (
-    initialTab === "logs" &&
-    kind &&
-    (kind === "Pod" ||
-      kind === "Deployment" ||
-      kind === "StatefulSet" ||
-      kind === "DaemonSet")
-  ) {
-    return "logs";
-  }
-  if (initialTab === "taints" && kind === "Node") return "taints";
-  if (initialTab === "topology" && !props.resource?.dynamic) return "topology";
-  if (initialTab === "snapshots") return "snapshots";
-  if (initialTab === "describe") return "describe";
-  return "yaml";
-}
-
 function resetYamlDraft() {
   yamlDraft.value = displayYaml.value;
   yamlError.value = null;
 }
 
-async function applyYaml() {
+async function applyYaml(options?: { skipCrossEnvConfirm?: boolean }) {
   const yaml = yamlDraft.value.trim();
-  if (!props.envId || !props.resource || !yaml) return;
+  if (!envId.value || !resource.value || !yaml) return;
+  if (!options?.skipCrossEnvConfirm) {
+    const ok = await confirmCrossEnvApply();
+    if (!ok) return;
+  }
   yamlSaving.value = true;
   yamlError.value = null;
   try {
@@ -254,14 +320,14 @@ async function applyYaml() {
         title: "应用前资源快照",
       });
     }
-    await kubeApplyResource(props.envId, yaml);
+    await kubeApplyResource(envId.value, yaml);
     await fetchYaml();
     resetYamlDraft();
     message.success("YAML 已应用");
   } catch (e) {
     const msg = extractErrorMessage(e);
     const isStrongholdRequired = await handleStrongholdLocked(msg, () => {
-      void applyYaml();
+      void applyYaml({ skipCrossEnvConfirm: true });
     });
     if (isStrongholdRequired) return;
     yamlError.value = msg;
@@ -386,24 +452,24 @@ async function onDrawerShowUpdate(value: boolean) {
 
 
 async function fetchYaml() {
-  if (!props.envId || !props.resource) return;
+  if (!envId.value || !resource.value) return;
   loading.value = true;
   error.value = null;
   rawYaml.value = "";
   try {
-    rawYaml.value = props.resource.dynamic
+    rawYaml.value = resource.value.dynamic
       ? await kubeGetDynamicResource(
-          props.envId,
-          props.resource.dynamic.api_version,
-          props.resource.kind,
-          props.resource.name,
-          props.resource.namespace
+          envId.value,
+          resource.value.dynamic.api_version,
+          resource.value.kind,
+          resource.value.name,
+          resource.value.namespace
         )
       : await kubeGetResource(
-          props.envId,
-          props.resource.kind,
-          props.resource.name,
-          props.resource.namespace
+          envId.value,
+          resource.value.kind,
+          resource.value.name,
+          resource.value.namespace
         );
   } catch (e) {
     const msg = extractErrorMessage(e);
@@ -417,8 +483,12 @@ async function fetchYaml() {
   }
 }
 
-async function applyTaintsYaml(yaml: string) {
-  if (!props.envId || !props.resource || !yaml.trim()) return;
+async function applyTaintsYaml(yaml: string, options?: { skipCrossEnvConfirm?: boolean }) {
+  if (!envId.value || !resource.value || !yaml.trim()) return;
+  if (!options?.skipCrossEnvConfirm) {
+    const ok = await confirmCrossEnvApply();
+    if (!ok) return;
+  }
   editSaving.value = true;
   editError.value = null;
   try {
@@ -432,13 +502,13 @@ async function applyTaintsYaml(yaml: string) {
         title: "应用前资源快照",
       });
     }
-    await kubeApplyResource(props.envId, yaml);
+    await kubeApplyResource(envId.value, yaml);
     await fetchYaml();
     message.success("污点已保存");
   } catch (e) {
     const msg = extractErrorMessage(e);
     const isStrongholdRequired = await handleStrongholdLocked(msg, () => {
-      void applyTaintsYaml(yaml);
+      void applyTaintsYaml(yaml, { skipCrossEnvConfirm: true });
     });
     if (isStrongholdRequired) return;
     editError.value = msg;
@@ -449,24 +519,24 @@ async function applyTaintsYaml(yaml: string) {
 }
 
 async function fetchDescribe() {
-  if (!props.envId || !props.resource) return;
+  if (!envId.value || !resource.value) return;
   describeLoading.value = true;
   describeError.value = null;
   describeMarkdown.value = "";
   try {
-    const res = props.resource.dynamic
+    const res = resource.value.dynamic
       ? await kubeDescribeDynamicResource(
-          props.envId,
-          props.resource.dynamic.api_version,
-          props.resource.kind,
-          props.resource.name,
-          props.resource.namespace
+          envId.value,
+          resource.value.dynamic.api_version,
+          resource.value.kind,
+          resource.value.name,
+          resource.value.namespace
         )
       : await kubeDescribeResource(
-          props.envId,
-          props.resource.kind,
-          props.resource.name,
-          props.resource.namespace
+          envId.value,
+          resource.value.kind,
+          resource.value.name,
+          resource.value.namespace
         );
     describeMarkdown.value = res.markdown;
   } catch (e) {
@@ -489,6 +559,12 @@ async function applyNodeTaints() {
   }
   await applyTaintsYaml(buildNodeTaintsYaml());
   resetNodeTaintsDraft();
+}
+
+async function onApplyStructured() {
+  const ok = await confirmCrossEnvApply();
+  if (!ok) return;
+  await structuredPanelRef.value?.apply();
 }
 
 function openSnapshotViewer(snapshot: ResourceSnapshotItem) {
@@ -520,7 +596,7 @@ function saveManualSnapshot() {
   if (!snapshotResourceRef.value) return;
   const snapshotYaml = formatResourceSnapshotYaml(rawYaml.value.trim());
   if (!snapshotYaml) return;
-  const kind = props.resource?.kind;
+  const kind = resource.value?.kind;
   const category = kind === "ConfigMap" || kind === "Secret" ? "config" : "resource";
   snapshotSaving.value = true;
   try {
@@ -538,12 +614,25 @@ function saveManualSnapshot() {
 }
 
 watch(
-  () => [props.visible, props.envId, props.resource?.kind, props.resource?.name, props.resource?.namespace, props.initialTab] as const,
-  ([visible, envId, kind, name, _namespace, initialTab]) => {
+  () =>
+    [
+      props.visible,
+      props.activePageId,
+      activePage.value?.envId,
+      activePage.value?.resource.kind,
+      activePage.value?.resource.name,
+      activePage.value?.resource.namespace,
+      activePage.value?.activeTab,
+      activePage.value?.editIntent?.mode,
+    ] as const,
+  ([visible, pageId, pageEnvId, kind, name]) => {
     editDirty.value = false;
-    if (visible && envId && kind && name) {
-      activeTab.value = resolveInitialTab(initialTab);
-      editIntent.value = resolveEditIntent(initialTab);
+    if (visible && pageId && pageEnvId && kind && name && activePage.value) {
+      activeTab.value = activePage.value.activeTab;
+      editIntent.value = activePage.value.editIntent as EditIntent | null;
+      describeMarkdown.value = "";
+      describeError.value = null;
+      viewingSnapshot.value = null;
       fetchYaml();
     } else {
       rawYaml.value = "";
@@ -562,6 +651,13 @@ watch(
 );
 
 watch(
+  editUnsavedVisible,
+  (dirty) => {
+    if (props.activePageId) setPageDirty(props.activePageId, dirty);
+  }
+);
+
+watch(
   () => displayYaml.value,
   () => {
     if (activeTab.value === "yaml" && rawYaml.value) resetYamlDraft();
@@ -571,7 +667,7 @@ watch(
 watch(
   () => [activeTab.value, rawYaml.value] as const,
   ([tab, yaml]) => {
-    if (tab === "describe" && props.resource && !describeMarkdown.value && !describeLoading.value) {
+    if (tab === "describe" && resource.value && !describeMarkdown.value && !describeLoading.value) {
       fetchDescribe();
     }
     if (tab === "yaml" && yaml) {
@@ -612,21 +708,58 @@ watch(
       body-content-style="display: flex; flex-direction: column; height: 100%; min-height: 0;"
     >
       <template #header>
-        <NSpace v-bind="kfSpace.drawerTitle" class="detail-drawer-header">
-          <span class="detail-drawer-title">
-            {{ resource ? `${resource.kind} / ${resource.name}` : "资源详情" }}
-          </span>
-          <NCheckbox
-            v-if="activeTab === 'yaml' && rawYaml"
-            v-model:checked="showManagedFields"
-            size="small"
-            class="detail-drawer-header-toggle"
-          >
-            managedFields
-          </NCheckbox>
-        </NSpace>
+        <div class="detail-drawer-header-stack">
+          <div v-if="pages.length" class="detail-page-tabs" role="tablist" aria-label="详情页">
+            <div
+              v-for="page in pages"
+              :key="page.id"
+              role="tab"
+              class="detail-page-tab"
+              :class="{ active: page.id === activePageId }"
+              :title="pageTabTitle(page)"
+              :aria-selected="page.id === activePageId"
+              tabindex="0"
+              @click="onSelectPage(page.id)"
+              @keydown.enter.prevent="onSelectPage(page.id)"
+            >
+              <div class="detail-page-tab-main">
+                <div class="detail-page-tab-meta">
+                  <button
+                    type="button"
+                    class="detail-page-env"
+                    :title="`定位到环境 ${page.envName}`"
+                    @click="onFocusEnv(page.envId, $event)"
+                  >
+                    {{ shortEnvName(page.envName) }}
+                  </button>
+                  <span class="detail-page-kind">{{ page.resource.kind }}</span>
+                </div>
+                <span class="detail-page-name">{{ page.resource.name }}</span>
+              </div>
+              <button
+                type="button"
+                class="detail-page-close"
+                title="关闭此页"
+                @click="onClosePage(page.id, $event)"
+              >×</button>
+            </div>
+          </div>
+          <NSpace v-bind="kfSpace.drawerTitle" class="detail-drawer-header">
+            <span class="detail-drawer-title">
+              {{ resource ? `${resource.kind} / ${resource.name}` : "资源详情" }}
+            </span>
+            <NCheckbox
+              v-if="activeTab === 'yaml' && rawYaml"
+              v-model:checked="showManagedFields"
+              size="small"
+              class="detail-drawer-header-toggle"
+            >
+              managedFields
+            </NCheckbox>
+          </NSpace>
+        </div>
       </template>
-      <div v-if="props.resource" class="drawer-shell">
+      <div v-if="resource" class="drawer-shell">
         <div class="drawer-toolbar">
           <NTabs
             :value="activeTab"
@@ -638,6 +771,13 @@ watch(
           >
             <template #suffix>
               <span v-if="editUnsavedVisible" class="edit-dirty-tag">未保存</span>
+              <span
+                v-if="isCrossEnvApply"
+                class="cross-env-apply-tag"
+                :title="`详情属于「${activePage?.envName ?? ''}」，与当前工作区不同`"
+              >
+                非当前环境
+              </span>
               <NButton
                 v-if="activeTab === 'yaml' && rawYaml"
                 type="primary"
@@ -653,7 +793,7 @@ watch(
                 size="small"
                 :loading="structuredEditSaving"
                 :disabled="structuredApplyDisabled"
-                @click="structuredPanelRef?.apply()"
+                @click="onApplyStructured()"
               >
                 {{ structuredEditSaving ? "保存中…" : "应用" }}
               </NButton>
@@ -745,7 +885,7 @@ watch(
           </div>
           <div v-else-if="activeTab === 'topology'" class="topology-panel-wrap">
             <ResourceTopologyPanel
-              :env-id="props.envId"
+              :env-id="envId"
               :resource="resource"
               @navigate="(p) => emit('navigate', p)"
             />
@@ -778,13 +918,13 @@ watch(
           >
             <PodLogPanel
               v-if="resource.kind === 'Pod'"
-              :env-id="props.envId"
+              :env-id="envId"
               :namespace="resource.namespace ?? 'default'"
               :pod-name="resource.name"
             />
             <WorkloadLogPanel
               v-else
-              :env-id="props.envId"
+              :env-id="envId"
               :namespace="resource.namespace ?? 'default'"
               :workload-kind="resource.kind"
               :workload-name="resource.name"
@@ -793,7 +933,7 @@ watch(
           <div v-else-if="activeTab === 'edit' && rawYaml" class="edit-panel">
             <ResourceStructuredPanel
               ref="structuredPanelRef"
-              :env-id="props.envId"
+              :env-id="envId"
               :resource="resource"
               :raw-yaml="rawYaml"
               :initial-intent="editIntent"
@@ -824,7 +964,7 @@ watch(
   <ResourceSnapshotViewer
     :visible="!!viewingSnapshot"
     :snapshot="viewingSnapshot"
-    :env-id="props.envId"
+    :env-id="envId"
     @close="viewingSnapshot = null"
   />
 </template>
@@ -859,6 +999,117 @@ watch(
   width: 100%;
   box-sizing: border-box;
   padding-right: 2.5rem;
+}
+.detail-drawer-header-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  min-width: 0;
+  width: 100%;
+}
+.detail-page-tabs {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0.35rem;
+  min-width: 0;
+  max-width: calc(100% - 2rem);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  padding-bottom: 0.1rem;
+}
+.detail-page-tab {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 0.25rem;
+  max-width: 12.5rem;
+  flex-shrink: 0;
+  padding: 0.28rem 0.3rem 0.32rem 0.45rem;
+  border: 1px solid var(--kf-border, #dbe3ee);
+  border-radius: 8px 8px 0 0;
+  background: color-mix(in srgb, var(--kf-surface-strong, #fff) 88%, transparent);
+  color: var(--kf-text-secondary, #64748b);
+  cursor: pointer;
+  border-bottom-color: transparent;
+}
+.detail-page-tab.active {
+  color: var(--kf-text-primary, #1e293b);
+  background: color-mix(in srgb, var(--kf-primary, #2563eb) 10%, var(--kf-surface-strong, #fff));
+  border-color: color-mix(in srgb, var(--kf-primary, #2563eb) 35%, var(--kf-border, #dbe3ee));
+  box-shadow: inset 0 -2px 0 var(--kf-primary, #2563eb);
+}
+.detail-page-tab-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.12rem;
+  min-width: 0;
+  flex: 1;
+}
+.detail-page-tab-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.28rem;
+  min-width: 0;
+}
+.detail-page-env {
+  flex-shrink: 0;
+  max-width: 4.5rem;
+  padding: 0.02rem 0.32rem;
+  border: none;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--kf-primary, #2563eb) 16%, transparent);
+  color: var(--kf-primary, #1d4ed8);
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.detail-page-env:hover {
+  background: color-mix(in srgb, var(--kf-primary, #2563eb) 28%, transparent);
+}
+.detail-page-kind {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.62rem;
+  font-weight: 600;
+  color: var(--kf-text-muted, #94a3b8);
+  letter-spacing: 0.01em;
+}
+.detail-page-tab.active .detail-page-kind {
+  color: color-mix(in srgb, var(--kf-text-secondary, #64748b) 85%, var(--kf-primary, #2563eb));
+}
+.detail-page-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.78rem;
+  font-weight: 650;
+  line-height: 1.25;
+  color: inherit;
+}
+.detail-page-close {
+  flex-shrink: 0;
+  width: 1.1rem;
+  height: 1.1rem;
+  margin-top: 0.05rem;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--kf-text-muted, #94a3b8);
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.detail-page-close:hover {
+  background: color-mix(in srgb, #ef4444 16%, transparent);
+  color: #dc2626;
 }
 .detail-drawer-header :deep(.n-space-item:first-child) {
   flex: 1;
@@ -1234,6 +1485,16 @@ watch(
   font-size: 0.72rem;
   font-weight: 600;
   color: #b45309;
+  white-space: nowrap;
+}
+.cross-env-apply-tag {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #b45309;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, #f59e0b 18%, transparent);
   white-space: nowrap;
 }
 .edit-panel,

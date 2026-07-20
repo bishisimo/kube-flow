@@ -7,12 +7,25 @@ use crate::env::TunnelMappingMode;
 use serde::Deserialize;
 use serde::Serialize;
 use std::io::{Read, Write};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+
+/// 可跨线程共享的 SSH 子进程槽：关闭隧道时先 kill，避免在 UI 线程上 join/wait。
+type SharedSshChild = Arc<Mutex<Option<Child>>>;
+
+fn take_and_kill_ssh_child(slot: &SharedSshChild) {
+    let mut child = match slot.lock() {
+        Ok(mut g) => g.take(),
+        Err(p) => p.into_inner().take(),
+    };
+    if let Some(ref mut c) = child {
+        let _ = c.kill();
+    }
+}
 
 #[cfg(windows)]
 fn apply_no_window(cmd: &mut Command) {
@@ -355,6 +368,7 @@ fn run_tunnel_blocking(
     password: Option<String>,
     idle_protection_enabled: bool,
     progress_tx: Option<mpsc::Sender<ConnectionProgressPayload>>,
+    ssh_child: SharedSshChild,
 ) -> Result<(), TunnelError> {
     match tunnel_mode {
         TunnelMappingMode::Ssh => run_tunnel_ssh(
@@ -369,6 +383,7 @@ fn run_tunnel_blocking(
             password,
             idle_protection_enabled,
             progress_tx,
+            ssh_child,
         ),
         TunnelMappingMode::Builtin => run_tunnel_builtin(
             tx,
@@ -401,6 +416,7 @@ fn run_tunnel_ssh(
     password: Option<String>,
     idle_protection_enabled: bool,
     progress_tx: Option<mpsc::Sender<ConnectionProgressPayload>>,
+    ssh_child: SharedSshChild,
 ) -> Result<(), TunnelError> {
     let _ = ssh_config_get_host_config(&ssh_host).ok_or_else(|| {
         let e = TunnelError::SshConfig(format!("~/.ssh/config 中未找到 Host: {}", ssh_host));
@@ -730,7 +746,7 @@ fn run_tunnel_ssh(
             .env("DISPLAY", ":0");
     }
 
-    let mut child = tunnel_cmd.spawn().map_err(|e| {
+    let child = tunnel_cmd.spawn().map_err(|e| {
         let msg = format!("启动 ssh -L 子进程失败: {}", e);
         emit_error_progress(
             &progress_tx,
@@ -741,27 +757,41 @@ fn run_tunnel_ssh(
         );
         TunnelError::Ssh(msg)
     })?;
+    {
+        let mut slot = ssh_child.lock().unwrap_or_else(|p| p.into_inner());
+        *slot = Some(child);
+    }
 
     // 等待 ssh -L 在本地端口就绪，检查子进程是否提前退出（认证失败等）。
-    // 最长等待 30 秒（密码认证 + 网络延迟），逐 200ms 轮询一次。
+    // 最长等待 30 秒（密码认证 + 网络延迟），逐 200ms 轮询一次；关闭请求可提前中断。
     let mut port_ready = false;
     for _ in 0..150 {
+        if shutdown.load(Ordering::SeqCst) {
+            take_and_kill_ssh_child(&ssh_child);
+            let _ = tx.send(Err("隧道已取消".into()));
+            return Ok(());
+        }
         // 子进程提前退出说明 ssh -L 连接失败
-        match child.try_wait() {
-            Ok(Some(exit_status)) => {
-                let msg = format!("ssh -L 子进程提前退出 (exit={}), 隧道建立失败", exit_status);
-                debug_log::log_tunnel_err(Some(&env_id), &msg, LogLevel::Error);
-                emit_error_progress(
-                    &progress_tx,
-                    &env_id,
-                    "create_tunnel",
-                    "创建 SSH 隧道",
-                    &msg,
-                );
-                let _ = tx.send(Err(msg.clone()));
-                return Ok(());
+        let early_exit = {
+            let mut slot = ssh_child.lock().unwrap_or_else(|p| p.into_inner());
+            match slot.as_mut().map(|c| c.try_wait()) {
+                Some(Ok(Some(exit_status))) => Some(exit_status),
+                _ => None,
             }
-            _ => {}
+        };
+        if let Some(exit_status) = early_exit {
+            let _ = ssh_child.lock().unwrap_or_else(|p| p.into_inner()).take();
+            let msg = format!("ssh -L 子进程提前退出 (exit={}), 隧道建立失败", exit_status);
+            debug_log::log_tunnel_err(Some(&env_id), &msg, LogLevel::Error);
+            emit_error_progress(
+                &progress_tx,
+                &env_id,
+                "create_tunnel",
+                "创建 SSH 隧道",
+                &msg,
+            );
+            let _ = tx.send(Err(msg.clone()));
+            return Ok(());
         }
         if std::net::TcpStream::connect_timeout(
             &std::net::SocketAddr::from(([127, 0, 0, 1], local_port)),
@@ -776,8 +806,7 @@ fn run_tunnel_ssh(
     }
 
     if !port_ready {
-        let _ = child.kill();
-        let _ = child.wait();
+        take_and_kill_ssh_child(&ssh_child);
         let msg = format!(
             "等待 SSH 端口转发超时（30 秒），127.0.0.1:{} 未就绪，请检查 SSH 连接与网络",
             local_port
@@ -815,8 +844,15 @@ fn run_tunnel_ssh(
         thread::sleep(Duration::from_millis(200));
     }
 
-    let _ = child.kill();
-    let _ = child.wait();
+    // 关闭方可能已 kill；此处再兜底一次并尽量 reap，避免僵尸进程。
+    let mut child = match ssh_child.lock() {
+        Ok(mut g) => g.take(),
+        Err(p) => p.into_inner().take(),
+    };
+    if let Some(ref mut c) = child {
+        let _ = c.kill();
+        let _ = c.wait();
+    }
     Ok(())
 }
 
@@ -1195,12 +1231,28 @@ fn tunnel_bidirectional_spawn(stream: std::net::TcpStream, channel: ssh2::Channe
     }
 }
 
-/// 每个隧道的状态：后台线程 handle、shutdown 标志、本地端口、虚拟 kubeconfig YAML。
+/// 每个隧道的状态：后台线程 handle、shutdown 标志、可选 SSH 子进程、本地端口、虚拟 kubeconfig YAML。
 struct TunnelState {
-    _handle: thread::JoinHandle<()>,
+    handle: Option<thread::JoinHandle<()>>,
     shutdown: Arc<AtomicBool>,
+    ssh_child: SharedSshChild,
     local_port: u16,
     virtual_kubeconfig_yaml: String,
+}
+
+/// 发出关闭信号并立即 kill SSH 子进程；不在调用线程上 join，避免卡住 UI/事件循环。
+fn signal_tunnel_stop(state: &TunnelState) {
+    state.shutdown.store(true, Ordering::SeqCst);
+    take_and_kill_ssh_child(&state.ssh_child);
+}
+
+/// 在后台线程 reap 隧道工作线程，避免阻塞调用方。
+fn reap_tunnel_handle(handle: Option<thread::JoinHandle<()>>) {
+    if let Some(handle) = handle {
+        thread::spawn(move || {
+            let _ = handle.join();
+        });
+    }
 }
 
 /// SSH 隧道管理器：按 env_id 维护隧道，支持 ensure 与 close。
@@ -1244,6 +1296,8 @@ impl SshTunnelRunner {
         let (tx, rx) = mpsc::channel::<Result<(u16, String), String>>();
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_clone = shutdown.clone();
+        let ssh_child: SharedSshChild = Arc::new(Mutex::new(None));
+        let ssh_child_for_thread = Arc::clone(&ssh_child);
         let ssh_host_c = ssh_host.clone();
         let path_c = remote_kubeconfig_path.clone();
         let local_port_c = local_port;
@@ -1264,6 +1318,7 @@ impl SshTunnelRunner {
                 password,
                 idle_protection_enabled,
                 progress_tx,
+                ssh_child_for_thread,
             ) {
                 debug_log::log_tunnel_err(Some(&env_id_c), &e.to_string(), LogLevel::Error);
                 // AuthRequired 需要保留结构化错误码，不能 to_string() 丢失信息
@@ -1274,6 +1329,9 @@ impl SshTunnelRunner {
         let (local_port, virtual_yaml) = match rx.recv_timeout(Duration::from_secs(90)) {
             Ok(Ok(t)) => t,
             Ok(Err(s)) => {
+                shutdown.store(true, Ordering::SeqCst);
+                take_and_kill_ssh_child(&ssh_child);
+                reap_tunnel_handle(Some(handle));
                 // 还原结构化错误：AuthRequired 经 to_string() 传递后需在此重建
                 if let Some(tid) = s.strip_prefix("SSH_AUTH_REQUIRED:") {
                     return Err(TunnelError::AuthRequired(tid.to_string()));
@@ -1281,19 +1339,26 @@ impl SshTunnelRunner {
                 return Err(TunnelError::Ssh(s));
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                shutdown.store(true, Ordering::SeqCst);
+                take_and_kill_ssh_child(&ssh_child);
+                reap_tunnel_handle(Some(handle));
                 return Err(TunnelError::Ssh(
                     "SSH 隧道建立超时（90 秒），请检查网络与 SSH 配置".into(),
                 ));
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
+                shutdown.store(true, Ordering::SeqCst);
+                take_and_kill_ssh_child(&ssh_child);
+                reap_tunnel_handle(Some(handle));
                 return Err(TunnelError::Ssh(
                     "tunnel thread exited without sending".into(),
                 ));
             }
         };
         let state = TunnelState {
-            _handle: handle,
+            handle: Some(handle),
             shutdown,
+            ssh_child,
             local_port,
             virtual_kubeconfig_yaml: virtual_yaml.clone(),
         };
@@ -1310,22 +1375,25 @@ impl SshTunnelRunner {
     }
 
     pub fn close_tunnel(&self, env_id: &str) {
-        let mut g = self.tunnels.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(s) = g.remove(env_id) {
-            s.shutdown.store(true, Ordering::SeqCst);
-            let _ = s._handle.join();
+        let state = {
+            let mut g = self.tunnels.lock().unwrap_or_else(|p| p.into_inner());
+            g.remove(env_id)
+        };
+        if let Some(mut s) = state {
+            signal_tunnel_stop(&s);
+            reap_tunnel_handle(s.handle.take());
         }
     }
 
-    /// 关闭所有隧道并 kill 对应 SSH 子进程；应用退出前调用，避免孤儿进程。
+    /// 关闭所有隧道并 kill 对应 SSH 子进程；不阻塞调用线程（供窗口关闭/退出路径使用）。
     pub fn close_all_tunnels(&self) {
         let to_close: Vec<_> = {
             let mut g = self.tunnels.lock().unwrap_or_else(|p| p.into_inner());
             g.drain().collect()
         };
-        for (_, s) in to_close {
-            s.shutdown.store(true, Ordering::SeqCst);
-            let _ = s._handle.join();
+        for (_, mut s) in to_close {
+            signal_tunnel_stop(&s);
+            reap_tunnel_handle(s.handle.take());
         }
     }
 }

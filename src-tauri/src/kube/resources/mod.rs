@@ -48,6 +48,19 @@ pub(crate) fn ns_or_default(ns: Option<&str>) -> &str {
 
 // ── 时间格式化 ─────────────────────────────────────────────────────────────
 
+/// 停止 workload 时写入的 annotation，保存恢复用的期望副本数。
+pub const DESIRED_REPLICAS_ANNOTATION: &str = "kube-flow.io/desired-replicas";
+
+/// 从 metadata.annotations 解析已保存的期望副本数。
+pub fn saved_replicas_from_annotations(
+    annotations: Option<&std::collections::BTreeMap<String, String>>,
+) -> Option<i32> {
+    annotations?
+        .get(DESIRED_REPLICAS_ANNOTATION)
+        .and_then(|s| s.parse::<i32>().ok())
+        .filter(|&n| n > 0)
+}
+
 /// 将时间差格式化为 kubectl 风格的中文相对时间（几秒前、几分钟前等）
 pub(crate) fn format_age_zh(ts: &DateTime<Utc>) -> String {
     let now = Utc::now();

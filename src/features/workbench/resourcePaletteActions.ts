@@ -5,7 +5,9 @@ import type { TokenValueCandidate } from "../commandPalette/types";
 import {
   WORKBENCH_IMAGE_PATCH_KINDS,
   WORKBENCH_NODE_TERMINAL_RESOURCE_KINDS,
+  WORKBENCH_RESTART_KINDS,
   WORKBENCH_SHELL_WORKLOAD_KINDS,
+  WORKBENCH_STOP_RESUME_KINDS,
 } from "./constants";
 
 const LOG_WORKLOAD_KINDS = new Set(["Pod", "Deployment", "StatefulSet", "DaemonSet"]);
@@ -14,6 +16,10 @@ export type ResourcePaletteActionCaps = {
   nodeTerminalMenuLabel: string;
   nodeTerminalDisabledReason: string;
   podDebugDisabledReason: string;
+  /** Deploy/STS 当前期望副本数 */
+  workloadReplicasDesired?: number | null;
+  /** Deploy/STS 停止时保存的副本数 */
+  workloadSavedReplicas?: number | null;
 };
 
 export function buildResourcePaletteValueCandidates(
@@ -102,6 +108,36 @@ export function buildResourcePaletteValueCandidates(
       title: "修改镜像",
       subtitle: "Image",
       icon: "📦",
+    });
+  }
+  if (WORKBENCH_STOP_RESUME_KINDS.has(r.kind)) {
+    const saved = caps.workloadSavedReplicas;
+    const desired = caps.workloadReplicasDesired ?? 0;
+    if (saved != null && saved > 0) {
+      out.push({
+        value: "resumeWorkload",
+        title: "恢复",
+        subtitle: `副本 → ${saved}`,
+        icon: "▶️",
+        keywords: ["resume", "恢复", "start"],
+      });
+    } else if (desired > 0) {
+      out.push({
+        value: "stopWorkload",
+        title: "停止",
+        subtitle: "Scale 0",
+        icon: "⏹️",
+        keywords: ["stop", "停止", "scale"],
+      });
+    }
+  }
+  if (WORKBENCH_RESTART_KINDS.has(r.kind)) {
+    out.push({
+      value: "restartWorkload",
+      title: "重启",
+      subtitle: "Rollout",
+      icon: "🔄",
+      keywords: ["restart", "重启", "rollout"],
     });
   }
   out.push({

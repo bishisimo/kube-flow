@@ -19,6 +19,12 @@ export const WORKBENCH_ACTION_MENU_OFFSET = 6;
 /** 支持修改镜像的 API Kind 名 */
 export const WORKBENCH_IMAGE_PATCH_KINDS = new Set(["Deployment", "StatefulSet", "DaemonSet"]);
 
+/** 支持停止/恢复（annotation + scale）的 API Kind 名 */
+export const WORKBENCH_STOP_RESUME_KINDS = new Set(["Deployment", "StatefulSet"]);
+
+/** 支持滚动重启的 API Kind 名 */
+export const WORKBENCH_RESTART_KINDS = new Set(["Deployment", "StatefulSet", "DaemonSet"]);
+
 /** 可打开 Shell 的工作负载 Kind */
 export const WORKBENCH_SHELL_WORKLOAD_KINDS = new Set(["Pod", "Deployment", "StatefulSet", "DaemonSet"]);
 

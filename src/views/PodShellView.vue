@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { NAlert, NButton, NEmpty, NScrollbar, NSelect, NSpace, NTag, NTooltip } from "naive-ui";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { kfSpace } from "../kf";
 
 defineOptions({ name: "PodShellView" });
@@ -11,15 +12,25 @@ import {
   kubeListPodsForWorkload,
   kubePodExecStart,
   kubePodExecStop,
+  kubePodFileDownload,
+  kubePodFileUpload,
   kubeRemoveClient,
   type PodItem,
 } from "../api/kube";
-import { hostShellStart, hostShellStdin, hostShellStop } from "../api/terminal";
+import { hostFileDownload, hostFileUpload, hostShellStart, hostShellStdin, hostShellStop } from "../api/terminal";
+import {
+  fileTransferCancel,
+  runFileTransfer,
+  type FileTransferProgress,
+} from "../api/fileTransfer";
 import { extractErrorMessage } from "../utils/errorMessage";
 import { isConnectionError, useConnectionStore } from "../stores/connection";
 import { useStrongholdAuthStore } from "../stores/strongholdAuth";
 import { useAppSettingsStore } from "../stores/appSettings";
 import PodShellTerminal from "../components/PodShellTerminal.vue";
+import FileTransferDialog, {
+  type FileTransferDirection,
+} from "../components/FileTransferDialog.vue";
 import { buildCompactRailItems } from "../utils/compactRail";
 
 const {
@@ -46,6 +57,16 @@ const hostEntryEnvId = ref<string | null>(null);
 const reconnectingSessionIds = new Set<string>();
 const suppressEndStreamIds = new Set<string>();
 const terminalActivationOrder = ref<string[]>([]);
+const fileTransferBusy = ref(false);
+const fileTransferStatus = ref<{ type: "success" | "error"; text: string } | null>(null);
+const fileTransferDialogVisible = ref(false);
+const fileTransferDirection = ref<FileTransferDirection>("upload");
+const fileTransferInitialLocalPath = ref<string | null>(null);
+const fileTransferProgress = ref<FileTransferProgress | null>(null);
+const fileTransferError = ref<string | null>(null);
+const activeTransferId = ref<string | null>(null);
+const dropArmed = ref(false);
+let unlistenDragDrop: (() => void) | null = null;
 
 const groupedSessions = computed(() => {
   const groups = new Map<string, { envId: string; envName: string; items: typeof sessions.value }>();
@@ -237,6 +258,142 @@ function touchTerminalSession(sessionId: string | null) {
 
 function markStreamSuppressEnd(streamId: string | null) {
   if (streamId) suppressEndStreamIds.add(streamId);
+}
+
+const fileTransferTargetLabel = computed(() => {
+  const session = currentSession.value;
+  if (!session) return "";
+  if (session.kind === "host") {
+    return `${session.envName} · ${session.hostLabel || "主机"}`;
+  }
+  const container = session.container ? ` / ${session.container}` : "";
+  return `${session.envName} · ${session.namespace}/${session.podName}${container}`;
+});
+
+const fileTransferDefaultRemotePath = computed(() => {
+  const session = currentSession.value;
+  if (!session) return "";
+  if (fileTransferDirection.value === "upload") {
+    const name = fileTransferInitialLocalPath.value?.split(/[\\/]/).pop();
+    if (session.kind === "pod") return name ? `/tmp/${name}` : "/tmp/";
+    return name || "";
+  }
+  return "";
+});
+
+function openFileTransferDialog(direction: FileTransferDirection, initialLocalPath?: string | null) {
+  const session = currentSession.value;
+  if (!session?.streamId || fileTransferBusy.value) return;
+  fileTransferDirection.value = direction;
+  fileTransferInitialLocalPath.value = initialLocalPath ?? null;
+  fileTransferProgress.value = null;
+  fileTransferError.value = null;
+  fileTransferDialogVisible.value = true;
+}
+
+function closeFileTransferDialog() {
+  if (fileTransferBusy.value) return;
+  fileTransferDialogVisible.value = false;
+  fileTransferInitialLocalPath.value = null;
+  fileTransferProgress.value = null;
+  fileTransferError.value = null;
+}
+
+async function startFileTransfer(payload: {
+  localPath: string;
+  remotePath: string;
+  overwrite: boolean;
+}) {
+  const session = currentSession.value;
+  if (!session || fileTransferBusy.value) return;
+  fileTransferBusy.value = true;
+  fileTransferStatus.value = null;
+  fileTransferError.value = null;
+  fileTransferProgress.value = {
+    transferId: "",
+    transferredBytes: 0,
+    totalBytes: null,
+  };
+  activeTransferId.value = null;
+  try {
+    const transferId = await runFileTransfer(
+      async () => {
+        if (session.kind === "host") {
+          if (fileTransferDirection.value === "upload") {
+            return hostFileUpload(session.envId, payload.localPath, payload.remotePath, payload.overwrite);
+          }
+          return hostFileDownload(session.envId, payload.remotePath, payload.localPath, payload.overwrite);
+        }
+        if (fileTransferDirection.value === "upload") {
+          return kubePodFileUpload(
+            session.envId,
+            session.namespace || "default",
+            session.podName || "",
+            session.container || null,
+            payload.localPath,
+            payload.remotePath,
+            payload.overwrite
+          );
+        }
+        return kubePodFileDownload(
+          session.envId,
+          session.namespace || "default",
+          session.podName || "",
+          session.container || null,
+          payload.remotePath,
+          payload.localPath,
+          payload.overwrite
+        );
+      },
+      {
+        onStarted: (id) => {
+          activeTransferId.value = id;
+          // 立刻展示进度条，避免等首个事件到来前空白
+          if (!fileTransferProgress.value) {
+            fileTransferProgress.value = {
+              transferId: id,
+              transferredBytes: 0,
+              totalBytes: null,
+            };
+          }
+        },
+        onProgress: (progress) => {
+          fileTransferProgress.value = progress;
+        },
+      }
+    );
+    activeTransferId.value = transferId;
+    const doneText = fileTransferDirection.value === "upload" ? "上传完成" : "下载完成";
+    fileTransferStatus.value = { type: "success", text: doneText };
+    fileTransferDialogVisible.value = false;
+    fileTransferInitialLocalPath.value = null;
+  } catch (e) {
+    const msg = extractErrorMessage(e);
+    fileTransferError.value = msg;
+    fileTransferStatus.value = { type: "error", text: msg };
+  } finally {
+    fileTransferBusy.value = false;
+    activeTransferId.value = null;
+    fileTransferProgress.value = null;
+  }
+}
+
+async function cancelActiveFileTransfer() {
+  const id = activeTransferId.value;
+  if (!id) return;
+  try {
+    await fileTransferCancel(id);
+  } catch {
+    // 结束事件会带回取消结果
+  }
+}
+
+function uploadFileForCurrentSession() {
+  openFileTransferDialog("upload");
+}
+
+function downloadFileForCurrentSession() {
+  openFileTransferDialog("download");
 }
 
 async function startHostSessionStream(sessionId: string): Promise<boolean> {
@@ -751,11 +908,35 @@ watch(
 onMounted(() => {
   void ensureAppSettingsLoaded();
   if (pendingOpen.value) void handlePendingOpen();
+  void getCurrentWebview()
+    .onDragDropEvent((event) => {
+      if (event.payload.type === "enter" || event.payload.type === "over") {
+        dropArmed.value = Boolean(currentSession.value?.streamId) && !fileTransferBusy.value;
+        return;
+      }
+      if (event.payload.type === "leave") {
+        dropArmed.value = false;
+        return;
+      }
+      if (event.payload.type !== "drop") return;
+      dropArmed.value = false;
+      const path = event.payload.paths?.[0];
+      if (!path || !currentSession.value?.streamId || fileTransferBusy.value) return;
+      openFileTransferDialog("upload", path);
+    })
+    .then((unlisten) => {
+      unlistenDragDrop = unlisten;
+    })
+    .catch(() => {
+      unlistenDragDrop = null;
+    });
 });
 
 onUnmounted(() => {
   reconnectingSessionIds.clear();
   suppressEndStreamIds.clear();
+  unlistenDragDrop?.();
+  unlistenDragDrop = null;
 });
 </script>
 
@@ -871,7 +1052,9 @@ onUnmounted(() => {
       <section
         v-if="currentSession && (currentSession.streamId || currentSession.status === 'connecting' || currentSession.status === 'reconnecting')"
         class="terminal-stage"
+        :class="{ 'is-drop-target': dropArmed }"
       >
+        <div v-if="dropArmed" class="terminal-drop-hint">松开以上传文件到当前会话</div>
         <div class="terminal-context-bar">
           <NSpace v-bind="kfSpace.contextBar" class="terminal-context-row">
             <NSpace v-bind="kfSpace.terminalContextMain" class="terminal-context-main">
@@ -912,7 +1095,29 @@ onUnmounted(() => {
                 />
               </div>
             </NSpace>
-            <NButton size="small" @click="reconnectSessionNow(currentSession.id)">重新连接</NButton>
+            <NSpace v-bind="kfSpace.buttonGroup" class="terminal-file-actions">
+              <NTag
+                v-if="fileTransferStatus"
+                size="small"
+                round
+                :bordered="false"
+                :type="fileTransferStatus.type"
+                class="file-transfer-status"
+              >{{ fileTransferStatus.text }}</NTag>
+              <NButton
+                size="small"
+                :loading="fileTransferBusy"
+                :disabled="!currentSession.streamId || fileTransferBusy"
+                @click="uploadFileForCurrentSession"
+              >上传</NButton>
+              <NButton
+                size="small"
+                :loading="fileTransferBusy"
+                :disabled="!currentSession.streamId || fileTransferBusy"
+                @click="downloadFileForCurrentSession"
+              >下载</NButton>
+              <NButton size="small" @click="reconnectSessionNow(currentSession.id)">重新连接</NButton>
+            </NSpace>
           </NSpace>
         </div>
 
@@ -978,6 +1183,20 @@ onUnmounted(() => {
         </div>
       </section>
     </main>
+
+    <FileTransferDialog
+      :visible="fileTransferDialogVisible"
+      :direction="fileTransferDirection"
+      :target-label="fileTransferTargetLabel"
+      :default-remote-path="fileTransferDefaultRemotePath"
+      :initial-local-path="fileTransferInitialLocalPath"
+      :transferring="fileTransferBusy"
+      :progress="fileTransferProgress"
+      :error="fileTransferError"
+      @close="closeFileTransferDialog"
+      @start="startFileTransfer"
+      @cancel-transfer="cancelActiveFileTransfer"
+    />
   </div>
 </template>
 
@@ -1028,6 +1247,14 @@ onUnmounted(() => {
   flex-direction: column;
   overflow: hidden;
   padding: 1rem;
+}
+.terminal-file-actions {
+  flex-shrink: 0;
+}
+.file-transfer-status {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .session-rail-compact {
   flex: 1;
@@ -1383,6 +1610,27 @@ onUnmounted(() => {
   min-height: 0;
   overflow: hidden;
   padding: 1rem 1.1rem 1.1rem;
+  position: relative;
+}
+
+.terminal-stage.is-drop-target {
+  outline: 2px dashed color-mix(in srgb, var(--kf-primary) 55%, transparent);
+  outline-offset: -6px;
+  background: color-mix(in srgb, var(--kf-primary) 8%, transparent);
+}
+
+.terminal-drop-hint {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--kf-primary);
+  background: color-mix(in srgb, var(--kf-bg-elevated) 72%, transparent);
 }
 
 .terminal-context-bar {

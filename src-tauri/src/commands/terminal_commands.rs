@@ -4,17 +4,19 @@ use crate::config::LogLevel;
 use crate::credentials::{AuthMethod, CredentialKey, CredentialManager};
 use crate::debug_log::{self, DebugEntry};
 use crate::env::{EnvService, EnvironmentSource};
+use crate::kube::file_transfer::{emit_end, emit_progress, FileTransferStore, ProgressEmitter};
 use crate::kube::session_store::{SessionHandle, SessionStore};
 use crate::kube::{resource_get, KubeClientStore};
 use serde::Deserialize;
 #[cfg(unix)]
 use std::os::fd::FromRawFd;
+use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 const HOST_SHELL_CHUNK_EVENT: &str = "host-shell-chunk";
@@ -581,6 +583,88 @@ if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi";
     Ok((cmd, None))
 }
 
+fn ensure_local_write_allowed(path: &Path, overwrite: bool) -> Result<(), String> {
+    if path.exists() && !overwrite {
+        return Err(format!("本地文件已存在: {}", path.display()));
+    }
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn resolve_tunnel_password(
+    tunnel: &crate::env::SshTunnel,
+    manager: &CredentialManager,
+) -> Result<Option<String>, String> {
+    if !tunnel.has_saved_credential {
+        return Ok(None);
+    }
+    let settings = load_app_settings()?;
+    manager
+        .get(&CredentialKey::new(&tunnel.id), &settings.security)
+        .map_err(err_str)
+}
+
+const LOCAL_COPY_CHUNK: usize = 64 * 1024;
+
+async fn copy_local_file_with_progress(
+    app: &AppHandle,
+    transfer_id: &str,
+    cancel_rx: &mut oneshot::Receiver<()>,
+    source: &Path,
+    target: &Path,
+) -> Result<(), String> {
+    let meta = tokio::fs::metadata(source)
+        .await
+        .map_err(|e| format!("读取来源文件失败: {}", e))?;
+    let total_bytes = Some(meta.len());
+    let mut reader = tokio::fs::File::open(source)
+        .await
+        .map_err(|e| format!("打开来源文件失败: {}", e))?;
+    let mut writer = tokio::fs::File::create(target)
+        .await
+        .map_err(|e| format!("创建目标文件失败: {}", e))?;
+    emit_progress(app, transfer_id, 0, total_bytes);
+    let mut buf = vec![0u8; LOCAL_COPY_CHUNK];
+    let mut transferred = 0u64;
+    let mut ticker = ProgressEmitter::new();
+    loop {
+        let n = tokio::select! {
+            biased;
+            _ = &mut *cancel_rx => {
+                return Err("已取消".to_string());
+            }
+            result = reader.read(&mut buf) => {
+                result.map_err(|e| format!("读取来源文件失败: {}", e))?
+            }
+        };
+        if n == 0 {
+            break;
+        }
+        writer
+            .write_all(&buf[..n])
+            .await
+            .map_err(|e| format!("写入目标文件失败: {}", e))?;
+        transferred += n as u64;
+        ticker.emit(app, transfer_id, transferred, total_bytes);
+    }
+    emit_progress(app, transfer_id, transferred, total_bytes);
+    writer
+        .flush()
+        .await
+        .map_err(|e| format!("刷新目标文件失败: {}", e))?;
+    Ok(())
+}
+
+async fn resolve_env_for_file_transfer(env_id: &str) -> Result<crate::env::Environment, String> {
+    EnvService::list()
+        .map_err(err_str)?
+        .into_iter()
+        .find(|e| e.id == env_id)
+        .ok_or_else(|| "environment not found".to_string())
+}
+
 async fn resolve_host_shell_automation(
     bootstrap: Option<HostShellBootstrapRequest>,
     manager: &CredentialManager,
@@ -1083,4 +1167,240 @@ pub async fn host_shell_stop(
 ) -> CommandResult<()> {
     store.stop(&stream_id).await;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn host_file_upload(
+    app: AppHandle,
+    manager: State<'_, CredentialManager>,
+    transfer_store: State<'_, Arc<FileTransferStore>>,
+    env_id: String,
+    local_path: String,
+    remote_path: String,
+    overwrite: Option<bool>,
+) -> CommandResult<String> {
+    let overwrite = overwrite.unwrap_or(false);
+    let local = Path::new(&local_path);
+    if !local.is_file() {
+        return Err(format!("本地文件不存在或不是文件: {}", local.display()));
+    }
+    if remote_path.trim().is_empty() {
+        return Err("目标路径不能为空".to_string());
+    }
+
+    let env = resolve_env_for_file_transfer(&env_id).await?;
+    let transfer_id = Uuid::new_v4().to_string();
+    let mut cancel_rx = transfer_store.register(transfer_id.clone()).await;
+    let transfer_store = Arc::clone(&transfer_store);
+    let transfer_id_task = transfer_id.clone();
+
+    enum HostUploadPlan {
+        Local {
+            target: String,
+        },
+        Ssh {
+            ssh_host: String,
+            auth_method: AuthMethod,
+            password: Option<String>,
+        },
+    }
+
+    let plan = match env.source {
+        EnvironmentSource::LocalKubeconfig => {
+            let target = Path::new(&remote_path);
+            ensure_local_write_allowed(target, overwrite)?;
+            HostUploadPlan::Local {
+                target: remote_path.clone(),
+            }
+        }
+        EnvironmentSource::SshTunnel => {
+            let tunnel_id = env
+                .ssh_tunnel_id
+                .clone()
+                .ok_or_else(|| "环境缺少 ssh_tunnel_id".to_string())?;
+            let tunnel = EnvService::get_ssh_tunnel(&tunnel_id)
+                .map_err(err_str)?
+                .ok_or_else(|| format!("未找到隧道配置: {}", tunnel_id))?;
+            let password = resolve_tunnel_password(&tunnel, manager.inner())?;
+            HostUploadPlan::Ssh {
+                ssh_host: tunnel.ssh_host.clone(),
+                auth_method: tunnel.auth_method,
+                password,
+            }
+        }
+    };
+
+    tokio::spawn(async move {
+        let result = async {
+            match plan {
+                HostUploadPlan::Local { target } => {
+                    copy_local_file_with_progress(
+                        &app,
+                        &transfer_id_task,
+                        &mut cancel_rx,
+                        Path::new(&local_path),
+                        Path::new(&target),
+                    )
+                    .await
+                }
+                HostUploadPlan::Ssh {
+                    ssh_host,
+                    auth_method,
+                    password,
+                } => {
+                    let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let cancel_flag_watch = cancel_flag.clone();
+                    let cancel_watch = tokio::spawn(async move {
+                        let _ = cancel_rx.await;
+                        cancel_flag_watch.store(true, std::sync::atomic::Ordering::SeqCst);
+                    });
+                    let app2 = app.clone();
+                    let tid = transfer_id_task.clone();
+                    let local_path2 = local_path.clone();
+                    let remote_path2 = remote_path.clone();
+                    let join = tokio::task::spawn_blocking(move || {
+                        crate::ssh_sftp::sftp_upload(
+                            &app2,
+                            &tid,
+                            &cancel_flag,
+                            &ssh_host,
+                            auth_method,
+                            password.as_deref(),
+                            Path::new(&local_path2),
+                            &remote_path2,
+                            overwrite,
+                        )
+                    });
+                    let outcome = join
+                        .await
+                        .map_err(|e| format!("SFTP 任务失败: {}", e))?;
+                    cancel_watch.abort();
+                    outcome
+                }
+            }
+        }
+        .await;
+        let error = result.err();
+        transfer_store.remove(&transfer_id_task).await;
+        emit_end(&app, &transfer_id_task, error);
+    });
+    Ok(transfer_id)
+}
+
+#[tauri::command]
+pub async fn host_file_download(
+    app: AppHandle,
+    manager: State<'_, CredentialManager>,
+    transfer_store: State<'_, Arc<FileTransferStore>>,
+    env_id: String,
+    remote_path: String,
+    local_path: String,
+    overwrite: Option<bool>,
+) -> CommandResult<String> {
+    let overwrite = overwrite.unwrap_or(false);
+    if remote_path.trim().is_empty() {
+        return Err("来源路径不能为空".to_string());
+    }
+    let local = Path::new(&local_path);
+    ensure_local_write_allowed(local, overwrite)?;
+
+    let env = resolve_env_for_file_transfer(&env_id).await?;
+    let transfer_id = Uuid::new_v4().to_string();
+    let mut cancel_rx = transfer_store.register(transfer_id.clone()).await;
+    let transfer_store = Arc::clone(&transfer_store);
+    let transfer_id_task = transfer_id.clone();
+
+    enum HostDownloadPlan {
+        Local {
+            source: String,
+        },
+        Ssh {
+            ssh_host: String,
+            auth_method: AuthMethod,
+            password: Option<String>,
+        },
+    }
+
+    let plan = match env.source {
+        EnvironmentSource::LocalKubeconfig => {
+            let source = Path::new(&remote_path);
+            if !source.is_file() {
+                return Err(format!("来源文件不存在或不是文件: {}", source.display()));
+            }
+            HostDownloadPlan::Local {
+                source: remote_path.clone(),
+            }
+        }
+        EnvironmentSource::SshTunnel => {
+            let tunnel_id = env
+                .ssh_tunnel_id
+                .clone()
+                .ok_or_else(|| "环境缺少 ssh_tunnel_id".to_string())?;
+            let tunnel = EnvService::get_ssh_tunnel(&tunnel_id)
+                .map_err(err_str)?
+                .ok_or_else(|| format!("未找到隧道配置: {}", tunnel_id))?;
+            let password = resolve_tunnel_password(&tunnel, manager.inner())?;
+            HostDownloadPlan::Ssh {
+                ssh_host: tunnel.ssh_host.clone(),
+                auth_method: tunnel.auth_method,
+                password,
+            }
+        }
+    };
+
+    tokio::spawn(async move {
+        let result = async {
+            match plan {
+                HostDownloadPlan::Local { source } => {
+                    copy_local_file_with_progress(
+                        &app,
+                        &transfer_id_task,
+                        &mut cancel_rx,
+                        Path::new(&source),
+                        Path::new(&local_path),
+                    )
+                    .await
+                }
+                HostDownloadPlan::Ssh {
+                    ssh_host,
+                    auth_method,
+                    password,
+                } => {
+                    let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let cancel_flag_watch = cancel_flag.clone();
+                    let cancel_watch = tokio::spawn(async move {
+                        let _ = cancel_rx.await;
+                        cancel_flag_watch.store(true, std::sync::atomic::Ordering::SeqCst);
+                    });
+                    let app2 = app.clone();
+                    let tid = transfer_id_task.clone();
+                    let local_path2 = local_path.clone();
+                    let remote_path2 = remote_path.clone();
+                    let join = tokio::task::spawn_blocking(move || {
+                        crate::ssh_sftp::sftp_download(
+                            &app2,
+                            &tid,
+                            &cancel_flag,
+                            &ssh_host,
+                            auth_method,
+                            password.as_deref(),
+                            &remote_path2,
+                            Path::new(&local_path2),
+                            overwrite,
+                        )
+                    });
+                    let outcome = join
+                        .await
+                        .map_err(|e| format!("SFTP 任务失败: {}", e))?;
+                    cancel_watch.abort();
+                    outcome
+                }
+            }
+        }
+        .await;
+        let error = result.err();
+        transfer_store.remove(&transfer_id_task).await;
+        emit_end(&app, &transfer_id_task, error);
+    });
+    Ok(transfer_id)
 }

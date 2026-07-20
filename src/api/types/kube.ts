@@ -45,6 +45,8 @@ export interface DeploymentItem {
   namespace: string;
   replicas?: number | null;
   ready?: number | null;
+  /** 停止时写入 annotation 的期望副本数 */
+  saved_replicas?: number | null;
   creation_time?: string | null;
   label_selector?: string | null;
   pod_rollup?: WorkloadPodRollup | null;
@@ -65,6 +67,8 @@ export interface StatefulSetItem {
   namespace: string;
   replicas?: number | null;
   ready?: number | null;
+  /** 停止时写入 annotation 的期望副本数 */
+  saved_replicas?: number | null;
   creation_time?: string | null;
   label_selector?: string | null;
   pod_rollup?: WorkloadPodRollup | null;

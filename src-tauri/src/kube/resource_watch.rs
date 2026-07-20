@@ -5,15 +5,16 @@ use crate::commands::kube_command_context::load_app_settings;
 use crate::config::LogLevel;
 use crate::debug_log;
 use crate::env::EnvService;
-use crate::kube::resources::cluster::is_gpu_resource_name;
 use crate::kube::resources::{
     compute_workload_pod_rollup, format_cpu_total, format_creation_time, format_gpu, format_mem,
     label_selector_to_string, quantity_cpu_millis, quantity_mem_bytes, quantity_scalar_units,
-    ClusterRoleBindingItem, ClusterRoleItem, ConfigMapItem, DaemonSetItem, DeploymentItem,
-    EndpointSliceItem, EndpointsItem, NamespaceItem, NodeItem, PersistentVolumeClaimItem,
-    PersistentVolumeItem, PodItem, RoleBindingItem, RoleItem, SecretItem, ServiceAccountItem,
-    ServiceItem, StatefulSetItem, StorageClassItem, SubjectRef, WorkloadPodRollup,
+    saved_replicas_from_annotations, ClusterRoleBindingItem, ClusterRoleItem, ConfigMapItem,
+    DaemonSetItem, DeploymentItem, EndpointSliceItem, EndpointsItem, NamespaceItem, NodeItem,
+    PersistentVolumeClaimItem, PersistentVolumeItem, PodItem, RoleBindingItem, RoleItem, SecretItem,
+    ServiceAccountItem, ServiceItem, StatefulSetItem, StorageClassItem, SubjectRef,
+    WorkloadPodRollup,
 };
+use crate::kube::resources::cluster::is_gpu_resource_name;
 use crate::kube::KubeClientStore;
 use futures::stream::{self, StreamExt};
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, StatefulSet};
@@ -104,6 +105,7 @@ fn deployment_to_item(d: Deployment, ns: &str, pod_rollup: WorkloadPodRollup) ->
         namespace: d.metadata.namespace.unwrap_or_else(|| ns.to_string()),
         replicas: replicas.or(Some(0)),
         ready: ready.or(Some(0)),
+        saved_replicas: saved_replicas_from_annotations(d.metadata.annotations.as_ref()),
         creation_time: format_creation_time(d.metadata.creation_timestamp.as_ref()),
         label_selector,
         pod_rollup,
@@ -230,6 +232,7 @@ fn statefulset_to_item(s: StatefulSet, ns: &str, pod_rollup: WorkloadPodRollup) 
         namespace: s.metadata.namespace.unwrap_or_else(|| ns.to_string()),
         replicas: replicas.or(Some(0)),
         ready: ready.or(Some(0)),
+        saved_replicas: saved_replicas_from_annotations(s.metadata.annotations.as_ref()),
         creation_time: format_creation_time(s.metadata.creation_timestamp.as_ref()),
         label_selector,
         pod_rollup,

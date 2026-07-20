@@ -6,6 +6,8 @@ import {
   WORKBENCH_SHELL_WORKLOAD_KINDS,
   WORKBENCH_NODE_TERMINAL_RESOURCE_KINDS,
   WORKBENCH_IMAGE_PATCH_KINDS,
+  WORKBENCH_STOP_RESUME_KINDS,
+  WORKBENCH_RESTART_KINDS,
 } from "../../features/workbench";
 
 type SelectedResourceRef = {
@@ -26,6 +28,10 @@ const props = defineProps<{
   nodeTerminalDisabledReason: string;
   podDebugDisabledReason: string;
   deleteActionArmed: boolean;
+  /** 当前期望副本数（Deploy/STS）；用于切换停止/恢复 */
+  workloadReplicasDesired?: number | null;
+  /** 停止时保存的副本数；有值则显示恢复 */
+  workloadSavedReplicas?: number | null;
 }>();
 
 const emit = defineEmits<{
@@ -38,6 +44,9 @@ const emit = defineEmits<{
   openPodDebug: [];
   openEditConfig: [];
   openChangeImage: [];
+  stopWorkload: [];
+  resumeWorkload: [];
+  restartWorkload: [];
   openSyncOrchestrator: [];
   handleDelete: [];
 }>();
@@ -51,6 +60,9 @@ type ActionEmitKey =
   | "openPodDebug"
   | "openEditConfig"
   | "openChangeImage"
+  | "stopWorkload"
+  | "resumeWorkload"
+  | "restartWorkload"
   | "openSyncOrchestrator"
   | "handleDelete";
 
@@ -63,6 +75,9 @@ const emitMap: Record<ActionEmitKey, () => void> = {
   openPodDebug: () => emit("openPodDebug"),
   openEditConfig: () => emit("openEditConfig"),
   openChangeImage: () => emit("openChangeImage"),
+  stopWorkload: () => emit("stopWorkload"),
+  resumeWorkload: () => emit("resumeWorkload"),
+  restartWorkload: () => emit("restartWorkload"),
   openSyncOrchestrator: () => emit("openSyncOrchestrator"),
   handleDelete: () => emit("handleDelete"),
 };
@@ -143,6 +158,36 @@ const menuOptions = computed<WBOption[]>(() => {
   }
   if (r && WORKBENCH_IMAGE_PATCH_KINDS.has(r.kind)) {
     flowItems.push({ key: "openChangeImage", label: "修改镜像", tail: "Image", tone: "flow", emit: "openChangeImage" });
+  }
+  if (r && WORKBENCH_STOP_RESUME_KINDS.has(r.kind)) {
+    const saved = props.workloadSavedReplicas;
+    const desired = props.workloadReplicasDesired ?? 0;
+    if (saved != null && saved > 0) {
+      flowItems.push({
+        key: "resumeWorkload",
+        label: "恢复",
+        tail: `→ ${saved}`,
+        tone: "flow",
+        emit: "resumeWorkload",
+      });
+    } else if (desired > 0) {
+      flowItems.push({
+        key: "stopWorkload",
+        label: "停止",
+        tail: "Scale 0",
+        tone: "flow",
+        emit: "stopWorkload",
+      });
+    }
+  }
+  if (r && WORKBENCH_RESTART_KINDS.has(r.kind)) {
+    flowItems.push({
+      key: "restartWorkload",
+      label: "重启",
+      tail: "Rollout",
+      tone: "flow",
+      emit: "restartWorkload",
+    });
   }
   flowItems.push({ key: "openSyncOrchestrator", label: "编排中心", tail: "Flow", tone: "flow", emit: "openSyncOrchestrator" });
   opts.push({ type: "divider", key: "__d2" });

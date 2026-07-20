@@ -121,16 +121,16 @@ onMounted(async () => {
 
   try {
     const { getCurrentWindow } = await import("@tauri-apps/api/window");
-    void getCurrentWindow().onCloseRequested(async (event) => {
+    /**
+     * 关闭前尽量落盘视图状态。不 preventDefault：
+     * Tauri 下 preventDefault 后再 destroy/close 容易导致窗口无法真正退出。
+     * 日常变更已有异步 persist，此处仅为尽力而为。
+     */
+    void getCurrentWindow().onCloseRequested(() => {
       const id = currentId.value;
       if (!id) return;
-      event.preventDefault();
-      try {
-        await flushEnvViewState(id);
-        await flushOrchestratorData();
-      } finally {
-        await getCurrentWindow().destroy();
-      }
+      void flushEnvViewState(id);
+      void flushOrchestratorData();
     });
   } catch {
     // 非 Tauri 环境（如纯 Web 预览）跳过
