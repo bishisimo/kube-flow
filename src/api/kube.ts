@@ -244,18 +244,26 @@ export function kubePodExecStart(
   envId: string,
   namespace: string,
   podName: string,
-  container?: string | null
+  container?: string | null,
+  cols?: number | null,
+  rows?: number | null
 ): Promise<string> {
   return invoke("kube_pod_exec_start", {
     envId,
     namespace,
     podName,
     container: container ?? null,
+    cols: cols ?? null,
+    rows: rows ?? null,
   });
 }
 
-export function kubePodExecStdin(streamId: string, data: number[]): Promise<void> {
-  return invoke("kube_pod_exec_stdin", { streamId, data });
+export function kubePodExecStdin(streamId: string, dataB64: string): Promise<void> {
+  return invoke("kube_pod_exec_stdin", { streamId, dataB64 });
+}
+
+export function kubePodExecAck(streamId: string, bytes: number): Promise<void> {
+  return invoke("kube_pod_exec_ack", { streamId, bytes });
 }
 
 export function kubePodExecResize(streamId: string, cols: number, rows: number): Promise<void> {

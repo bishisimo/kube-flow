@@ -3,8 +3,9 @@ import { ref, watch, onMounted, onUnmounted } from "vue";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { listen } from "@tauri-apps/api/event";
-import { kubePodExecStdin, kubePodExecResize } from "../api/kube";
-import { hostShellResize, hostShellStdin } from "../api/terminal";
+import { kubePodExecAck, kubePodExecStdin, kubePodExecResize } from "../api/kube";
+import { hostShellAck, hostShellResize, hostShellStdin } from "../api/terminal";
+import { base64ToBytes, bytesToBase64 } from "../utils/terminalBytes";
 import "@xterm/xterm/css/xterm.css";
 
 const props = defineProps<{
@@ -25,19 +26,41 @@ let unlistenEnd: (() => void) | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let stdinWriteQueue: Promise<void> = Promise.resolve();
 let inputFlushTimer: number | null = null;
-let pendingInputBytes: number[] = [];
+let pendingInput: Uint8Array[] = [];
+let pendingInputBytes = 0;
 const inputEncoder = new TextEncoder();
 let lastResizeCols = 0;
 let lastResizeRows = 0;
 let listenerSetupSeq = 0;
 const INPUT_FLUSH_MS = 8;
 
+/** 输出写队列：watermark 背压，避免大刷屏卡住输入。 */
+const WRITE_HIGH = 256 * 1024;
+const ACK_BATCH = 64 * 1024;
+let pendingChunks: Uint8Array[] = [];
+let writeWatermark = 0;
+let writeBusy = false;
+let ackPending = 0;
+let ackFlushTimer: number | null = null;
+
 function clearInputBuffer() {
   if (inputFlushTimer !== null) {
     window.clearTimeout(inputFlushTimer);
     inputFlushTimer = null;
   }
-  pendingInputBytes = [];
+  pendingInput = [];
+  pendingInputBytes = 0;
+}
+
+function clearOutputQueue() {
+  pendingChunks = [];
+  writeWatermark = 0;
+  writeBusy = false;
+  ackPending = 0;
+  if (ackFlushTimer !== null) {
+    window.clearTimeout(ackFlushTimer);
+    ackFlushTimer = null;
+  }
 }
 
 function scheduleInputFlush() {
@@ -48,30 +71,108 @@ function scheduleInputFlush() {
   }, INPUT_FLUSH_MS);
 }
 
-function enqueueInputBytes(bytes: Uint8Array | number[]) {
+function containsControlByte(bytes: Uint8Array): boolean {
+  for (let i = 0; i < bytes.length; i += 1) {
+    const b = bytes[i];
+    // ESC / 常见控制字符：立刻 flush，避免 vim ESC 超时与按键粘连
+    if (b < 0x20 || b === 0x7f) return true;
+  }
+  return false;
+}
+
+function enqueueInputBytes(bytes: Uint8Array) {
   if (!bytes.length) return;
-  if (bytes instanceof Uint8Array) {
-    pendingInputBytes.push(...Array.from(bytes));
-  } else {
-    pendingInputBytes.push(...bytes);
+  pendingInput.push(bytes);
+  pendingInputBytes += bytes.length;
+  if (containsControlByte(bytes) || pendingInputBytes >= 256) {
+    if (inputFlushTimer !== null) {
+      window.clearTimeout(inputFlushTimer);
+      inputFlushTimer = null;
+    }
+    flushInputBuffer();
+    return;
   }
   scheduleInputFlush();
 }
 
+function takePendingInput(): Uint8Array {
+  if (pendingInput.length === 1) {
+    const only = pendingInput[0];
+    pendingInput = [];
+    pendingInputBytes = 0;
+    return only;
+  }
+  const merged = new Uint8Array(pendingInputBytes);
+  let offset = 0;
+  for (const chunk of pendingInput) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+  pendingInput = [];
+  pendingInputBytes = 0;
+  return merged;
+}
+
 function flushInputBuffer() {
-  if (!pendingInputBytes.length) return;
+  if (!pendingInputBytes) return;
   const streamId = props.streamId;
   if (!streamId) {
-    pendingInputBytes = [];
+    clearInputBuffer();
     return;
   }
-  const batch = pendingInputBytes;
-  pendingInputBytes = [];
+  const batch = takePendingInput();
+  const dataB64 = bytesToBase64(batch);
   const writeStdin = props.mode === "host" ? hostShellStdin : kubePodExecStdin;
   stdinWriteQueue = stdinWriteQueue
     .catch(() => {})
-    .then(() => writeStdin(streamId, batch))
+    .then(() => writeStdin(streamId, dataB64))
     .catch(() => {});
+}
+
+function flushAck() {
+  if (ackFlushTimer !== null) {
+    window.clearTimeout(ackFlushTimer);
+    ackFlushTimer = null;
+  }
+  const streamId = props.streamId;
+  const bytes = ackPending;
+  ackPending = 0;
+  if (!streamId || bytes <= 0) return;
+  const sendAck = props.mode === "host" ? hostShellAck : kubePodExecAck;
+  sendAck(streamId, bytes).catch(() => {});
+}
+
+function scheduleAck(bytes: number) {
+  ackPending += bytes;
+  if (ackPending >= ACK_BATCH) {
+    flushAck();
+    return;
+  }
+  if (ackFlushTimer !== null) return;
+  ackFlushTimer = window.setTimeout(() => {
+    ackFlushTimer = null;
+    flushAck();
+  }, 32);
+}
+
+function pumpWrite() {
+  if (writeBusy || !terminal || !pendingChunks.length) return;
+  if (writeWatermark > WRITE_HIGH) return;
+  writeBusy = true;
+  const chunk = pendingChunks.shift()!;
+  writeWatermark += chunk.length;
+  terminal.write(chunk, () => {
+    writeWatermark = Math.max(0, writeWatermark - chunk.length);
+    writeBusy = false;
+    scheduleAck(chunk.length);
+    pumpWrite();
+  });
+}
+
+function enqueueOutputBytes(bytes: Uint8Array) {
+  if (!bytes.length) return;
+  pendingChunks.push(bytes);
+  pumpWrite();
 }
 
 function sanitizeTerminalInput(text: string): string {
@@ -83,7 +184,18 @@ function sanitizeTerminalInput(text: string): string {
 }
 
 function resetTerminalView() {
+  clearOutputQueue();
   terminal?.reset();
+}
+
+async function tryLoadWebgl(term: Terminal) {
+  try {
+    const mod = await import("@xterm/addon-webgl");
+    const addon = new mod.WebglAddon();
+    term.loadAddon(addon);
+  } catch {
+    // WebGL 不可用时保持 canvas/dom 渲染
+  }
 }
 
 function initTerminal() {
@@ -92,6 +204,7 @@ function initTerminal() {
     cursorBlink: true,
     fontSize: 14,
     fontFamily: "ui-monospace, monospace",
+    scrollback: 5000,
     theme: {
       background: "#1e293b",
       foreground: "#e2e8f0",
@@ -100,6 +213,7 @@ function initTerminal() {
   fitAddon = new FitAddon();
   terminal.loadAddon(fitAddon);
   terminal.open(terminalRef.value);
+  void tryLoadWebgl(terminal);
 
   // 立即 fit 一次：open() 后 xterm 已同步测量字符尺寸，容器此时也已布局完成
   fitAddon.fit();
@@ -111,7 +225,10 @@ function initTerminal() {
   });
 
   terminal.onBinary((data) => {
-    const bytes = Array.from(data).map((ch) => ch.charCodeAt(0));
+    const bytes = new Uint8Array(data.length);
+    for (let i = 0; i < data.length; i += 1) {
+      bytes[i] = data.charCodeAt(i) & 0xff;
+    }
     enqueueInputBytes(bytes);
   });
 
@@ -125,13 +242,15 @@ function initTerminal() {
 
 function trySendResize() {
   if (!props.streamId || !terminal) return;
-  const dims = fitAddon?.proposeDimensions();
-  if (!dims || dims.cols <= 0 || dims.rows <= 0) return;
-  if (dims.cols === lastResizeCols && dims.rows === lastResizeRows) return;
-  lastResizeCols = dims.cols;
-  lastResizeRows = dims.rows;
+  fitAddon?.fit();
+  const cols = terminal.cols;
+  const rows = terminal.rows;
+  if (cols <= 0 || rows <= 0) return;
+  if (cols === lastResizeCols && rows === lastResizeRows) return;
+  lastResizeCols = cols;
+  lastResizeRows = rows;
   const resizeTerminal = props.mode === "host" ? hostShellResize : kubePodExecResize;
-  resizeTerminal(props.streamId, dims.cols, dims.rows).catch(() => {});
+  resizeTerminal(props.streamId, cols, rows).catch(() => {});
 }
 
 async function setupListeners() {
@@ -147,14 +266,19 @@ async function setupListeners() {
 
   const nextUnlistenChunk = await listen<{
     stream_id: string;
-    chunk_bytes: number[];
-  }>(
-    chunkEvent,
-    (ev) => {
-      if (ev.payload?.stream_id !== props.streamId || !terminal) return;
-      terminal.write(new Uint8Array(ev.payload.chunk_bytes));
+    chunk_b64?: string;
+    chunk_bytes?: number[];
+  }>(chunkEvent, (ev) => {
+    if (ev.payload?.stream_id !== props.streamId || !terminal) return;
+    if (ev.payload.chunk_b64) {
+      enqueueOutputBytes(base64ToBytes(ev.payload.chunk_b64));
+      return;
     }
-  );
+    // 兼容旧事件（热替换期间）
+    if (ev.payload.chunk_bytes?.length) {
+      enqueueOutputBytes(new Uint8Array(ev.payload.chunk_bytes));
+    }
+  });
 
   if (seq !== listenerSetupSeq) {
     nextUnlistenChunk();
@@ -165,6 +289,7 @@ async function setupListeners() {
     endEvent,
     (ev) => {
       if (ev.payload?.stream_id === props.streamId) {
+        flushAck();
         emit("end", {
           streamId: ev.payload.stream_id,
           error: ev.payload?.error,
@@ -193,17 +318,16 @@ watch(
   () => props.streamId,
   async (id) => {
     clearInputBuffer();
+    clearOutputQueue();
     lastResizeCols = 0;
     lastResizeRows = 0;
     resetTerminalView();
-    // 先 fit + resize，再设置监听：确保远端 shell 启动时 PTY 尺寸正确，
-    // 避免 readline/bash/mysql 因宽度不匹配导致光标错位
+    // 先 fit + resize，再设置监听：确保远端 shell 启动时 PTY 尺寸正确
     if (id) {
       fitAddon?.fit();
       trySendResize();
     }
     await setupListeners();
-    // 二次 RAF 兜底：layout 可能在 setupListeners 期间发生变化
     if (id) {
       requestAnimationFrame(fitAndResize);
     }
@@ -221,7 +345,6 @@ watch(
 onMounted(async () => {
   initTerminal();
   resetTerminalView();
-  // 先 fit + resize 再 setupListeners：保证远端 PTY 在 shell 输出前获得正确尺寸
   if (props.streamId) {
     fitAddon?.fit();
     trySendResize();
@@ -231,7 +354,9 @@ onMounted(async () => {
 
 onUnmounted(() => {
   listenerSetupSeq += 1;
+  flushAck();
   clearInputBuffer();
+  clearOutputQueue();
   unlistenChunk?.();
   unlistenEnd?.();
   resizeObserver?.disconnect();

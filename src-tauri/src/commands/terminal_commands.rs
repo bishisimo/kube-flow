@@ -6,6 +6,9 @@ use crate::debug_log::{self, DebugEntry};
 use crate::env::{EnvService, EnvironmentSource};
 use crate::kube::file_transfer::{emit_end, emit_progress, FileTransferStore, ProgressEmitter};
 use crate::kube::session_store::{SessionHandle, SessionStore};
+use crate::kube::terminal_codec::{
+    decode_stdin_b64, encode_chunk_b64, normalize_tty_size, OUTPUT_FLOW_HIGH, SHELL_ENV_EXPORTS,
+};
 use crate::kube::{resource_get, KubeClientStore};
 use serde::Deserialize;
 #[cfg(unix)]
@@ -179,10 +182,10 @@ fn build_pod_nsenter_command(
     pid: Option<u32>,
     namespaces: &[PodDebugNamespace],
 ) -> String {
-    let interactive_shell = "export TERM=\"xterm-256color\"; \
-export LANG=\"${LANG:-C.UTF-8}\"; \
-export LC_CTYPE=\"${LC_CTYPE:-$LANG}\"; \
-if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi";
+    let interactive_shell = format!(
+        "{env} if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi",
+        env = SHELL_ENV_EXPORTS
+    );
     let mut flags = Vec::new();
     for ns in namespaces {
         let flag = match ns {
@@ -206,7 +209,7 @@ if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi";
             "exec nsenter -t {} {} /bin/sh -lc {}",
             target_pid,
             ns_flags,
-            shell_single_quote(interactive_shell)
+            shell_single_quote(&interactive_shell)
         );
     }
     let container_id = container_id.unwrap_or_default();
@@ -229,7 +232,7 @@ fi; \
 exec nsenter -t \"$PID\" {flags} /bin/sh -lc {shell_cmd}",
         cid = shell_single_quote(container_id),
         flags = ns_flags,
-        shell_cmd = shell_single_quote(interactive_shell),
+        shell_cmd = shell_single_quote(&interactive_shell),
     )
 }
 
@@ -313,10 +316,10 @@ fn compile_node_terminal_steps(
     if steps.is_empty() {
         return Err("节点终端策略至少需要一个步骤".to_string());
     }
-    let interactive_shell = "export TERM=\"xterm-256color\"; \
-export LANG=\"${LANG:-C.UTF-8}\"; \
-export LC_CTYPE=\"${LC_CTYPE:-$LANG}\"; \
-if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi";
+    let interactive_shell = format!(
+        "{env} if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi",
+        env = SHELL_ENV_EXPORTS
+    );
 
     let compiled =
         steps
@@ -354,7 +357,7 @@ if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi";
                         if let Some(next_cmd) = next {
                             format!("{} sh -lc {}", base, shell_single_quote(&next_cmd))
                         } else {
-                            format!("{} sh -lc {}", base, shell_single_quote(interactive_shell))
+                            format!("{} sh -lc {}", base, shell_single_quote(&interactive_shell))
                         }
                     }
                 };
@@ -373,6 +376,7 @@ if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi";
 pub struct HostShellSession {
     pub stdin_tx: mpsc::Sender<Vec<u8>>,
     pub resize_tx: Option<mpsc::Sender<(u16, u16)>>,
+    pub ack_tx: mpsc::Sender<usize>,
     pub abort_handle: tokio::task::AbortHandle,
 }
 
@@ -385,6 +389,9 @@ impl SessionHandle for HostShellSession {
     }
     fn resize_tx(&self) -> Option<&mpsc::Sender<(u16, u16)>> {
         self.resize_tx.as_ref()
+    }
+    fn ack_tx(&self) -> Option<&mpsc::Sender<usize>> {
+        Some(&self.ack_tx)
     }
 }
 
@@ -405,6 +412,7 @@ fn build_local_shell_command() -> Command {
         let mut cmd = Command::new(shell);
         cmd.args(["-il"]);
         cmd.env("TERM", "xterm-256color")
+            .env("COLORTERM", "truecolor")
             .env("LANG", "C.UTF-8")
             .env("LC_CTYPE", "C.UTF-8");
         apply_no_window(&mut cmd);
@@ -426,6 +434,7 @@ fn build_local_command(command: &str) -> Command {
         let mut cmd = Command::new("/bin/sh");
         cmd.args(["-lc", command]);
         cmd.env("TERM", "xterm-256color")
+            .env("COLORTERM", "truecolor")
             .env("LANG", "C.UTF-8")
             .env("LC_CTYPE", "C.UTF-8");
         apply_no_window(&mut cmd);
@@ -535,14 +544,15 @@ fn build_remote_shell_command(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     cmd.env("TERM", "xterm-256color")
+        .env("COLORTERM", "truecolor")
         .env("LANG", "C.UTF-8")
         .env("LC_CTYPE", "C.UTF-8");
 
-    let default_remote_cmd = "export TERM=\"xterm-256color\"; \
-export LANG=\"${LANG:-C.UTF-8}\"; \
-export LC_CTYPE=\"${LC_CTYPE:-$LANG}\"; \
-if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi";
-    let remote_cmd = remote_cmd_override.unwrap_or(default_remote_cmd);
+    let default_remote_cmd = format!(
+        "{env} if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi",
+        env = SHELL_ENV_EXPORTS
+    );
+    let remote_cmd = remote_cmd_override.unwrap_or(default_remote_cmd.as_str());
 
     #[cfg(unix)]
     {
@@ -724,11 +734,14 @@ async fn run_host_shell_process(
     automation: Option<HostShellAutomation>,
     store: Arc<HostShellStore>,
     log_meta: HostShellLogMeta,
+    cols: Option<u16>,
+    rows: Option<u16>,
 ) {
+    let (init_cols, init_rows) = normalize_tty_size(cols, rows);
     cmd.kill_on_drop(true);
 
     #[cfg(unix)]
-    let pty = match create_pty(80, 24) {
+    let pty = match create_pty(init_cols, init_rows) {
         Ok(pair) => Some(pair),
         Err(e) => {
             let _ = app.emit(
@@ -766,6 +779,7 @@ async fn run_host_shell_process(
         Ok(mut child) => {
             let (stdin_tx, mut stdin_rx) = mpsc::channel::<Vec<u8>>(64);
             let (resize_tx, mut resize_rx) = mpsc::channel::<(u16, u16)>(8);
+            let (ack_tx, mut ack_rx) = mpsc::channel::<usize>(64);
             let stream_id_clone = stream_id.clone();
             let app_clone = app.clone();
 
@@ -785,7 +799,7 @@ async fn run_host_shell_process(
             };
 
             #[cfg(unix)]
-            let mut writer = match master_file.try_clone() {
+            let writer_file = match master_file.try_clone() {
                 Ok(file) => tokio::fs::File::from_std(file),
                 Err(e) => {
                     let _ = app.emit(
@@ -800,7 +814,7 @@ async fn run_host_shell_process(
             };
 
             #[cfg(unix)]
-            let mut reader = tokio::fs::File::from_std(master_file);
+            let reader_file = tokio::fs::File::from_std(master_file);
 
             #[cfg(not(unix))]
             let mut stdin = match child.stdin.take() {
@@ -823,59 +837,120 @@ async fn run_host_shell_process(
 
             #[cfg(unix)]
             let task: tokio::task::JoinHandle<Option<String>> = tokio::spawn(async move {
-                let mut read_buf = [0u8; 4096];
-                let mut automation = automation.map(HostShellAutomationState::new);
+                let (auto_tx, mut auto_rx) = mpsc::channel::<Vec<u8>>(8);
+                let mut writer = writer_file;
+                let mut reader = reader_file;
 
-                loop {
-                    tokio::select! {
-                        Some(data) = stdin_rx.recv() => {
-                            if let Err(e) = writer.write_all(&data).await {
-                                break Some(format!("stdin write failed: {}", e));
-                            }
-                            let _ = writer.flush().await;
-                        }
-                        Some((cols, rows)) = resize_rx.recv() => {
-                            if let Err(e) = resize_pty(&resize_file, cols, rows) {
-                                break Some(e);
-                            }
-                        }
-                        result = reader.read(&mut read_buf) => {
-                            match result {
-                                Ok(0) => {
-                                    match child.wait().await {
-                                        Ok(exit) if exit.success() => break None,
-                                        Ok(exit) => break Some(format!("shell exited with status {}", exit)),
-                                        Err(e) => break Some(format!("shell wait failed: {}", e)),
-                                    }
+                let writer_task = tokio::spawn(async move {
+                    loop {
+                        tokio::select! {
+                            Some(data) = stdin_rx.recv() => {
+                                let mut merged = data;
+                                while let Ok(extra) = stdin_rx.try_recv() {
+                                    merged.extend_from_slice(&extra);
                                 }
-                                Ok(n) => {
-                                    let (output_chunk, password_input) = if let Some(state) = automation.as_mut() {
-                                        state.process_output(&read_buf[..n])
-                                    } else {
-                                        (read_buf[..n].to_vec(), None)
-                                    };
-                                    if !output_chunk.is_empty() && app_clone.emit(HOST_SHELL_CHUNK_EVENT, serde_json::json!({
-                                        "stream_id": stream_id_clone,
-                                        "chunk_bytes": output_chunk
-                                    })).is_err() {
-                                        break Some("emit pty chunk failed".to_string());
-                                    }
-                                    if let Some(password_input) = password_input {
-                                        if let Err(e) = writer.write_all(&password_input).await {
-                                            break Some(format!("automation password write failed: {}", e));
+                                if let Err(e) = writer.write_all(&merged).await {
+                                    return Some(format!("stdin write failed: {}", e));
+                                }
+                                let _ = writer.flush().await;
+                            }
+                            Some(data) = auto_rx.recv() => {
+                                if let Err(e) = writer.write_all(&data).await {
+                                    return Some(format!("automation password write failed: {}", e));
+                                }
+                                let _ = writer.flush().await;
+                            }
+                            Some((cols, rows)) = resize_rx.recv() => {
+                                if let Err(e) = resize_pty(&resize_file, cols, rows) {
+                                    return Some(e);
+                                }
+                            }
+                            else => return None,
+                        }
+                    }
+                });
+                let writer_abort = writer_task.abort_handle();
+
+                let reader_task = tokio::spawn(async move {
+                    let mut read_buf = [0u8; 32768];
+                    let mut automation = automation.map(HostShellAutomationState::new);
+                    let mut in_flight: usize = 0;
+                    loop {
+                        tokio::select! {
+                            biased;
+
+                            Some(acked) = ack_rx.recv() => {
+                                in_flight = in_flight.saturating_sub(acked);
+                                while let Ok(extra) = ack_rx.try_recv() {
+                                    in_flight = in_flight.saturating_sub(extra);
+                                }
+                            }
+
+                            result = reader.read(&mut read_buf), if in_flight <= OUTPUT_FLOW_HIGH => {
+                                match result {
+                                    Ok(0) => return None,
+                                    Ok(n) => {
+                                        let (output_chunk, password_input) = if let Some(state) = automation.as_mut() {
+                                            state.process_output(&read_buf[..n])
+                                        } else {
+                                            (read_buf[..n].to_vec(), None)
+                                        };
+                                        if !output_chunk.is_empty() {
+                                            let chunk_b64 = encode_chunk_b64(&output_chunk);
+                                            if app_clone.emit(HOST_SHELL_CHUNK_EVENT, serde_json::json!({
+                                                "stream_id": stream_id_clone,
+                                                "chunk_b64": chunk_b64
+                                            })).is_err() {
+                                                return Some("emit pty chunk failed".to_string());
+                                            }
+                                            in_flight = in_flight.saturating_add(output_chunk.len());
                                         }
-                                        let _ = writer.flush().await;
+                                        if let Some(password_input) = password_input {
+                                            if auto_tx.send(password_input).await.is_err() {
+                                                return Some("automation password channel closed".to_string());
+                                            }
+                                        }
                                     }
+                                    Err(e) => return Some(format!("pty read failed: {}", e)),
                                 }
-                                Err(e) => break Some(format!("pty read failed: {}", e)),
+                            }
+
+                            _ = tokio::time::sleep(std::time::Duration::from_millis(250)), if in_flight > OUTPUT_FLOW_HIGH => {
+                                in_flight = OUTPUT_FLOW_HIGH / 2;
                             }
                         }
-                        status = child.wait() => {
-                            match status {
-                                Ok(exit) if exit.success() => break None,
-                                Ok(exit) => break Some(format!("shell exited with status {}", exit)),
-                                Err(e) => break Some(format!("shell wait failed: {}", e)),
-                            }
+                    }
+                });
+
+                let reader_abort = reader_task.abort_handle();
+                tokio::select! {
+                    status = child.wait() => {
+                        writer_abort.abort();
+                        reader_abort.abort();
+                        match status {
+                            Ok(exit) if exit.success() => None,
+                            Ok(exit) => Some(format!("shell exited with status {}", exit)),
+                            Err(e) => Some(format!("shell wait failed: {}", e)),
+                        }
+                    }
+                    res = reader_task => {
+                        writer_abort.abort();
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
+                        match res {
+                            Ok(err) => err,
+                            Err(e) if e.is_cancelled() => None,
+                            Err(e) => Some(format!("pty reader join failed: {}", e)),
+                        }
+                    }
+                    res = writer_task => {
+                        reader_abort.abort();
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
+                        match res {
+                            Ok(err) => err,
+                            Err(e) if e.is_cancelled() => None,
+                            Err(e) => Some(format!("pty writer join failed: {}", e)),
                         }
                     }
                 }
@@ -883,14 +958,28 @@ async fn run_host_shell_process(
 
             #[cfg(not(unix))]
             let task: tokio::task::JoinHandle<Option<String>> = tokio::spawn(async move {
-                let mut stdout_buf = [0u8; 4096];
-                let mut stderr_buf = [0u8; 4096];
+                let mut stdout_buf = [0u8; 32768];
+                let mut stderr_buf = [0u8; 32768];
                 let mut automation = automation.map(HostShellAutomationState::new);
+                let mut in_flight: usize = 0;
 
                 loop {
                     tokio::select! {
+                        biased;
+
+                        Some(acked) = ack_rx.recv() => {
+                            in_flight = in_flight.saturating_sub(acked);
+                            while let Ok(extra) = ack_rx.try_recv() {
+                                in_flight = in_flight.saturating_sub(extra);
+                            }
+                        }
+
                         Some(data) = stdin_rx.recv() => {
-                            if let Err(e) = stdin.write_all(&data).await {
+                            let mut merged = data;
+                            while let Ok(extra) = stdin_rx.try_recv() {
+                                merged.extend_from_slice(&extra);
+                            }
+                            if let Err(e) = stdin.write_all(&merged).await {
                                 break Some(format!("stdin write failed: {}", e));
                             }
                             let _ = stdin.flush().await;
@@ -904,7 +993,7 @@ async fn run_host_shell_process(
                             } else {
                                 Ok(0)
                             }
-                        } => {
+                        }, if in_flight <= OUTPUT_FLOW_HIGH => {
                             match result {
                                 Ok(0) => {
                                     stdout = None;
@@ -922,11 +1011,15 @@ async fn run_host_shell_process(
                                     } else {
                                         (stdout_buf[..n].to_vec(), None)
                                     };
-                                    if !output_chunk.is_empty() && app_clone.emit(HOST_SHELL_CHUNK_EVENT, serde_json::json!({
-                                        "stream_id": stream_id_clone,
-                                        "chunk_bytes": output_chunk
-                                    })).is_err() {
-                                        break Some("emit stdout chunk failed".to_string());
+                                    if !output_chunk.is_empty() {
+                                        let chunk_b64 = encode_chunk_b64(&output_chunk);
+                                        if app_clone.emit(HOST_SHELL_CHUNK_EVENT, serde_json::json!({
+                                            "stream_id": stream_id_clone,
+                                            "chunk_b64": chunk_b64
+                                        })).is_err() {
+                                            break Some("emit stdout chunk failed".to_string());
+                                        }
+                                        in_flight = in_flight.saturating_add(output_chunk.len());
                                     }
                                     if let Some(password_input) = password_input {
                                         if let Err(e) = stdin.write_all(&password_input).await {
@@ -944,7 +1037,7 @@ async fn run_host_shell_process(
                             } else {
                                 Ok(0)
                             }
-                        } => {
+                        }, if in_flight <= OUTPUT_FLOW_HIGH => {
                             match result {
                                 Ok(0) => {
                                     stderr = None;
@@ -962,11 +1055,15 @@ async fn run_host_shell_process(
                                     } else {
                                         (stderr_buf[..n].to_vec(), None)
                                     };
-                                    if !output_chunk.is_empty() && app_clone.emit(HOST_SHELL_CHUNK_EVENT, serde_json::json!({
-                                        "stream_id": stream_id_clone,
-                                        "chunk_bytes": output_chunk
-                                    })).is_err() {
-                                        break Some("emit stderr chunk failed".to_string());
+                                    if !output_chunk.is_empty() {
+                                        let chunk_b64 = encode_chunk_b64(&output_chunk);
+                                        if app_clone.emit(HOST_SHELL_CHUNK_EVENT, serde_json::json!({
+                                            "stream_id": stream_id_clone,
+                                            "chunk_b64": chunk_b64
+                                        })).is_err() {
+                                            break Some("emit stderr chunk failed".to_string());
+                                        }
+                                        in_flight = in_flight.saturating_add(output_chunk.len());
                                     }
                                     if let Some(password_input) = password_input {
                                         if let Err(e) = stdin.write_all(&password_input).await {
@@ -999,6 +1096,7 @@ async fn run_host_shell_process(
                         resize_tx: Some(resize_tx),
                         #[cfg(not(unix))]
                         resize_tx: None,
+                        ack_tx,
                         abort_handle,
                     },
                 )
@@ -1035,6 +1133,8 @@ pub async fn host_shell_start(
     kube_store: State<'_, KubeClientStore>,
     env_id: String,
     bootstrap: Option<HostShellBootstrapRequest>,
+    cols: Option<u16>,
+    rows: Option<u16>,
 ) -> CommandResult<String> {
     let env = EnvService::list()
         .map_err(err_str)?
@@ -1097,6 +1197,8 @@ pub async fn host_shell_start(
                     automation_plan,
                     store_clone,
                     log_meta,
+                    cols,
+                    rows,
                 )
                 .await;
             });
@@ -1132,6 +1234,8 @@ pub async fn host_shell_start(
                     automation,
                     store_clone,
                     log_meta,
+                    cols,
+                    rows,
                 )
                 .await;
             });
@@ -1145,9 +1249,19 @@ pub async fn host_shell_start(
 pub async fn host_shell_stdin(
     store: State<'_, Arc<HostShellStore>>,
     stream_id: String,
-    data: Vec<u8>,
+    data_b64: String,
 ) -> CommandResult<()> {
+    let data = decode_stdin_b64(&data_b64)?;
     store.send_stdin(&stream_id, data).await
+}
+
+#[tauri::command]
+pub async fn host_shell_ack(
+    store: State<'_, Arc<HostShellStore>>,
+    stream_id: String,
+    bytes: u32,
+) -> CommandResult<()> {
+    store.send_ack(&stream_id, bytes as usize).await
 }
 
 #[tauri::command]

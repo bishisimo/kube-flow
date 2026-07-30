@@ -94,6 +94,8 @@ pub async fn kube_pod_exec_start(
     namespace: String,
     pod_name: String,
     container: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
 ) -> CommandResult<String> {
     let (_env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
     let stream_id = Uuid::new_v4().to_string();
@@ -107,6 +109,8 @@ pub async fn kube_pod_exec_start(
             namespace,
             pod_name,
             container,
+            cols,
+            rows,
             exec_store_clone,
         )
         .await
@@ -118,9 +122,19 @@ pub async fn kube_pod_exec_start(
 pub async fn kube_pod_exec_stdin(
     exec_store: State<'_, Arc<PodExecStore>>,
     stream_id: String,
-    data: Vec<u8>,
+    data_b64: String,
 ) -> CommandResult<()> {
+    let data = crate::kube::terminal_codec::decode_stdin_b64(&data_b64)?;
     exec_store.send_stdin(&stream_id, data).await
+}
+
+#[tauri::command]
+pub async fn kube_pod_exec_ack(
+    exec_store: State<'_, Arc<PodExecStore>>,
+    stream_id: String,
+    bytes: u32,
+) -> CommandResult<()> {
+    exec_store.send_ack(&stream_id, bytes as usize).await
 }
 
 #[tauri::command]

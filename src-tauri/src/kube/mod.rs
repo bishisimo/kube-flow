@@ -17,6 +17,7 @@ pub mod resource_replicas;
 pub mod resource_watch;
 pub mod resources;
 pub mod session_store;
+pub mod terminal_codec;
 mod tunnel;
 
 pub use client::KubeClientStore;

@@ -24,12 +24,26 @@ export interface HostShellBootstrap {
   podDebug?: PodDebugTarget | null;
 }
 
-export function hostShellStart(envId: string, bootstrap?: HostShellBootstrap | null): Promise<string> {
-  return invoke("host_shell_start", { envId, bootstrap: bootstrap ?? null });
+export function hostShellStart(
+  envId: string,
+  bootstrap?: HostShellBootstrap | null,
+  cols?: number | null,
+  rows?: number | null
+): Promise<string> {
+  return invoke("host_shell_start", {
+    envId,
+    bootstrap: bootstrap ?? null,
+    cols: cols ?? null,
+    rows: rows ?? null,
+  });
 }
 
-export function hostShellStdin(streamId: string, data: number[]): Promise<void> {
-  return invoke("host_shell_stdin", { streamId, data });
+export function hostShellStdin(streamId: string, dataB64: string): Promise<void> {
+  return invoke("host_shell_stdin", { streamId, dataB64 });
+}
+
+export function hostShellAck(streamId: string, bytes: number): Promise<void> {
+  return invoke("host_shell_ack", { streamId, bytes });
 }
 
 export function hostShellResize(streamId: string, cols: number, rows: number): Promise<void> {

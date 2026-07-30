@@ -4,6 +4,9 @@
 use crate::config::LogLevel;
 use crate::debug_log::{self, DebugEntry};
 use crate::kube::session_store::{SessionHandle, SessionStore};
+use crate::kube::terminal_codec::{
+    encode_chunk_b64, normalize_tty_size, OUTPUT_FLOW_HIGH, SHELL_ENV_EXPORTS,
+};
 use futures::SinkExt;
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, AttachParams};
@@ -57,10 +60,11 @@ fn normalize_pod_exec_start_error(raw: String) -> String {
     raw
 }
 
-/// 单个 exec 会话的可写端：stdin 与 resize 的发送通道。
+/// 单个 exec 会话的可写端：stdin、resize 与输出 ACK。
 pub struct PodExecSession {
     pub stdin_tx: mpsc::Sender<Vec<u8>>,
     pub resize_tx: Option<mpsc::Sender<(u16, u16)>>,
+    pub ack_tx: mpsc::Sender<usize>,
     pub abort_handle: tokio::task::AbortHandle,
 }
 
@@ -73,6 +77,9 @@ impl SessionHandle for PodExecSession {
     }
     fn resize_tx(&self) -> Option<&mpsc::Sender<(u16, u16)>> {
         self.resize_tx.as_ref()
+    }
+    fn ack_tx(&self) -> Option<&mpsc::Sender<usize>> {
+        Some(&self.ack_tx)
     }
 }
 
@@ -89,8 +96,11 @@ pub async fn run_pod_exec(
     namespace: String,
     pod_name: String,
     container: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
     store: Arc<PodExecStore>,
 ) {
+    let (init_cols, init_rows) = normalize_tty_size(cols, rows);
     log_pod_shell(
         LogLevel::Info,
         "start",
@@ -113,11 +123,10 @@ pub async fn run_pod_exec(
     let command: Vec<String> = vec![
         "/bin/sh".into(),
         "-c".into(),
-        "export TERM=\"xterm-256color\"; \
-export LANG=\"${LANG:-C.UTF-8}\"; \
-export LC_CTYPE=\"${LC_CTYPE:-$LANG}\"; \
-if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi"
-            .into(),
+        format!(
+            "{env} if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi",
+            env = SHELL_ENV_EXPORTS
+        ),
     ];
 
     let stream_id_final = stream_id.clone();
@@ -125,19 +134,38 @@ if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi"
         Ok(mut attached) => {
             let (stdin_tx, mut stdin_rx) = mpsc::channel::<Vec<u8>>(64);
             let (resize_tx, mut resize_rx) = mpsc::channel::<(u16, u16)>(8);
+            let (ack_tx, mut ack_rx) = mpsc::channel::<usize>(64);
 
             let mut stdout = attached.stdout();
             let mut stdin_opt = attached.stdin();
             let mut terminal_size_opt = attached.terminal_size();
             let has_resize = terminal_size_opt.is_some();
 
+            if let Some(ref mut ts) = terminal_size_opt {
+                let size = kube::api::TerminalSize {
+                    width: init_cols,
+                    height: init_rows,
+                };
+                let _ = ts.send(size).await;
+            }
+
             let stream_id_clone = stream_id.clone();
             let app_clone = app.clone();
 
             let task: tokio::task::JoinHandle<Option<String>> = tokio::spawn(async move {
-                let mut read_buf = [0u8; 4096];
+                let mut read_buf = [0u8; 32768];
+                let mut in_flight: usize = 0;
                 let end_reason = loop {
                     tokio::select! {
+                        biased;
+
+                        Some(acked) = ack_rx.recv() => {
+                            in_flight = in_flight.saturating_sub(acked);
+                            while let Ok(extra) = ack_rx.try_recv() {
+                                in_flight = in_flight.saturating_sub(extra);
+                            }
+                        }
+
                         Some(data) = stdin_rx.recv() => {
                             if let Some(ref mut stdin) = stdin_opt {
                                 let mut merged = data;
@@ -169,19 +197,26 @@ if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi"
                                 tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
                                 Ok(0)
                             }
-                        } => {
+                        }, if in_flight <= OUTPUT_FLOW_HIGH => {
                             match result {
                                 Ok(0) => break None,
                                 Ok(n) => {
+                                    let chunk_b64 = encode_chunk_b64(&read_buf[..n]);
                                     if app_clone.emit(POD_EXEC_CHUNK_EVENT, serde_json::json!({
                                         "stream_id": stream_id_clone,
-                                        "chunk_bytes": &read_buf[..n]
+                                        "chunk_b64": chunk_b64
                                     })).is_err() {
                                         break Some("emit chunk failed".to_string());
                                     }
+                                    in_flight = in_flight.saturating_add(n);
                                 }
                                 Err(e) => break Some(format!("stdout read failed: {}", e)),
                             }
+                        }
+
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(250)), if in_flight > OUTPUT_FLOW_HIGH => {
+                            // 前端 ACK 丢失时避免永久停读
+                            in_flight = OUTPUT_FLOW_HIGH / 2;
                         }
                     }
                 };
@@ -195,6 +230,7 @@ if command -v bash >/dev/null 2>&1; then exec bash -il; else exec sh -i; fi"
                     PodExecSession {
                         stdin_tx,
                         resize_tx: if has_resize { Some(resize_tx) } else { None },
+                        ack_tx,
                         abort_handle,
                     },
                 )

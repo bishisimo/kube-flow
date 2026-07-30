@@ -24,6 +24,7 @@ import {
   type FileTransferProgress,
 } from "../api/fileTransfer";
 import { extractErrorMessage } from "../utils/errorMessage";
+import { bytesToBase64, estimateTerminalSize } from "../utils/terminalBytes";
 import { isConnectionError, useConnectionStore } from "../stores/connection";
 import { useStrongholdAuthStore } from "../stores/strongholdAuth";
 import { useAppSettingsStore } from "../stores/appSettings";
@@ -396,11 +397,23 @@ function downloadFileForCurrentSession() {
   openFileTransferDialog("download");
 }
 
+/** 启动 shell 前按当前终端舞台估算 PTY 尺寸。 */
+function shellLaunchSize(): { cols: number; rows: number } {
+  const el = document.querySelector(".terminal-stage") as HTMLElement | null;
+  return estimateTerminalSize(el);
+}
+
 async function startHostSessionStream(sessionId: string): Promise<boolean> {
   const session = sessions.value.find((item) => item.id === sessionId);
   if (!session) return false;
   try {
-    const streamId = await hostShellStart(session.envId, session.nodeTerminalLaunch ?? null);
+    const { cols, rows } = shellLaunchSize();
+    const streamId = await hostShellStart(
+      session.envId,
+      session.nodeTerminalLaunch ?? null,
+      cols,
+      rows
+    );
     updateSession(sessionId, {
       streamId,
       status: "connected",
@@ -446,11 +459,14 @@ async function tryReconnectSession(sessionId: string, resetClient: boolean): Pro
     if (resetClient) {
       await kubeRemoveClient(session.envId).catch(() => {});
     }
+    const { cols, rows } = shellLaunchSize();
     const streamId = await kubePodExecStart(
       session.envId,
       session.namespace || "default",
       session.podName || "",
-      session.container || null
+      session.container || null,
+      cols,
+      rows
     );
     updateSession(sessionId, {
       streamId,
@@ -515,7 +531,8 @@ async function openPodConnection(
     });
   }
   try {
-    const streamId = await kubePodExecStart(envId, namespace, podName, container || null);
+    const { cols, rows } = shellLaunchSize();
+    const streamId = await kubePodExecStart(envId, namespace, podName, container || null, cols, rows);
     updateSession(id, { streamId, status: "connected", error: undefined });
     clearReconnectState(id);
   } catch (e) {
@@ -548,8 +565,8 @@ function scheduleHostBootstrap(streamId: string, commands?: string[]) {
   if (!normalized.length) return;
   window.setTimeout(() => {
     const text = `${normalized.join("\n")}\n`;
-    const bytes = Array.from(new TextEncoder().encode(text));
-    hostShellStdin(streamId, bytes).catch(() => {});
+    const dataB64 = bytesToBase64(new TextEncoder().encode(text));
+    hostShellStdin(streamId, dataB64).catch(() => {});
   }, 320);
 }
 
@@ -581,7 +598,8 @@ async function openHostConnectionWithBootstrap(
     });
   }
   try {
-    const streamId = await hostShellStart(envId, nodeTerminalLaunch ?? null);
+    const { cols, rows } = shellLaunchSize();
+    const streamId = await hostShellStart(envId, nodeTerminalLaunch ?? null, cols, rows);
     updateSession(id, { streamId, status: "connected", error: undefined });
     if (!nodeTerminalLaunch) {
       scheduleHostBootstrap(streamId, bootstrapCommands);
@@ -728,11 +746,14 @@ async function switchPod(newPodName: string) {
     const containers = await kubeGetPodContainers(session.envId, session.namespace, newPodName);
     const container = containers[0] ?? "";
     updateSession(session.id, { container });
+    const { cols, rows } = shellLaunchSize();
     const streamId = await kubePodExecStart(
       session.envId,
       session.namespace,
       newPodName,
-      container || null
+      container || null,
+      cols,
+      rows
     );
     updateSession(session.id, { streamId, status: "connected", error: undefined });
     containerOptions.value = containers;
@@ -762,11 +783,14 @@ async function switchContainer(newContainer: string) {
   clearReconnectState(session.id);
   updateSession(session.id, { streamId: null, status: "connecting", container: newContainer });
   try {
+    const { cols, rows } = shellLaunchSize();
     const streamId = await kubePodExecStart(
       session.envId,
       session.namespace,
       session.podName,
-      newContainer || null
+      newContainer || null,
+      cols,
+      rows
     );
     updateSession(session.id, { streamId, status: "connected", error: undefined });
   } catch (e) {

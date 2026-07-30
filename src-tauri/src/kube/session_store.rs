@@ -4,11 +4,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
-/// 会话必须提供的能力：abort 句柄、stdin 发送通道、可选的 resize 发送通道。
+/// 会话必须提供的能力：abort 句柄、stdin / resize / 输出 ACK 通道。
 pub trait SessionHandle: Send + Sync + 'static {
     fn abort_handle(&self) -> &tokio::task::AbortHandle;
     fn stdin_tx(&self) -> &mpsc::Sender<Vec<u8>>;
     fn resize_tx(&self) -> Option<&mpsc::Sender<(u16, u16)>>;
+    /// 前端在 xterm 消化输出后回传已消费字节数，用于后端读侧背压。
+    fn ack_tx(&self) -> Option<&mpsc::Sender<usize>>;
 }
 
 /// 泛型会话存储，供 PodExecStore 和 HostShellStore 复用。
@@ -38,29 +40,51 @@ impl<S: SessionHandle> SessionStore<S> {
     }
 
     /// 向指定会话发送 stdin 数据。
+    ///
+    /// 先 clone Sender 再 await，避免在 channel 背压时持有 sessions 读锁。
     pub async fn send_stdin(&self, stream_id: &str, data: Vec<u8>) -> Result<(), String> {
-        let guard = self.sessions.read().await;
-        let session = guard
-            .get(stream_id)
-            .ok_or_else(|| "session not found".to_string())?;
-        session
-            .stdin_tx()
-            .send(data)
-            .await
-            .map_err(|e| e.to_string())
+        let tx = {
+            let guard = self.sessions.read().await;
+            let session = guard
+                .get(stream_id)
+                .ok_or_else(|| "session not found".to_string())?;
+            session.stdin_tx().clone()
+        };
+        tx.send(data).await.map_err(|e| e.to_string())
     }
 
     /// 向指定会话发送终端 resize 事件；会话无 TTY 时返回 Err。
     pub async fn send_resize(&self, stream_id: &str, cols: u16, rows: u16) -> Result<(), String> {
-        let guard = self.sessions.read().await;
-        let session = guard
-            .get(stream_id)
-            .ok_or_else(|| "session not found".to_string())?;
-        if let Some(tx) = session.resize_tx() {
-            tx.send((cols, rows)).await.map_err(|e| e.to_string())
-        } else {
-            Err("session has no tty".to_string())
+        let tx = {
+            let guard = self.sessions.read().await;
+            let session = guard
+                .get(stream_id)
+                .ok_or_else(|| "session not found".to_string())?;
+            session
+                .resize_tx()
+                .cloned()
+                .ok_or_else(|| "session has no tty".to_string())?
+        };
+        tx.send((cols, rows)).await.map_err(|e| e.to_string())
+    }
+
+    /// 回传前端已消费的输出字节数，解除读侧高水位暂停。
+    pub async fn send_ack(&self, stream_id: &str, bytes: usize) -> Result<(), String> {
+        if bytes == 0 {
+            return Ok(());
         }
+        let tx = {
+            let guard = self.sessions.read().await;
+            let session = guard
+                .get(stream_id)
+                .ok_or_else(|| "session not found".to_string())?;
+            session
+                .ack_tx()
+                .cloned()
+                .ok_or_else(|| "session has no ack channel".to_string())?
+        };
+        let _ = tx.try_send(bytes);
+        Ok(())
     }
 
     /// 停止指定会话（移除并 abort）。
