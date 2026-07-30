@@ -44,13 +44,33 @@ impl KubeClientStore {
     }
 
     /// 为环境构建或获取已缓存的 Client。支持 local_kubeconfig 与 ssh_tunnel。
+    /// SSH 隧道若已断开，会丢弃旧 Client 与失效隧道并重建。
     pub async fn get_or_build(&self, env: &Environment) -> Result<kube::Client, KubeClientError> {
-        {
+        let cached_stale = {
             let guard = self.cache.read().await;
             if let Some(client) = guard.get(&env.id) {
-                return Ok(client.clone());
+                let tunnel_ok = match env.source {
+                    EnvironmentSource::LocalKubeconfig => true,
+                    EnvironmentSource::SshTunnel => self.tunnel_runner.is_tunnel_alive(&env.id),
+                };
+                if tunnel_ok {
+                    return Ok(client.clone());
+                }
+                true
+            } else {
+                false
             }
+        };
+        if cached_stale {
+            debug_log::log_tunnel(
+                Some(&env.id),
+                "client_cache_invalidate",
+                Some("隧道已断开，重建 Client"),
+                LogLevel::Warn,
+            );
+            self.remove(&env.id).await;
         }
+
         let client = match env.source {
             EnvironmentSource::LocalKubeconfig => self.build_local(env).await?,
             EnvironmentSource::SshTunnel => self.build_ssh_tunnel(env).await?,

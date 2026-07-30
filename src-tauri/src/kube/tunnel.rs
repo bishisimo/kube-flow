@@ -282,6 +282,25 @@ fn append_idle_protection_ssh_args(cmd: &mut Command, enabled: bool) {
     ]);
 }
 
+/// 槽位中是否仍有未退出的 SSH 子进程；`None` 表示当前无子进程（如 builtin 模式）。
+fn ssh_child_still_running(slot: &SharedSshChild) -> Option<bool> {
+    let mut guard = slot.lock().unwrap_or_else(|p| p.into_inner());
+    match guard.as_mut() {
+        None => None,
+        Some(child) => match child.try_wait() {
+            Ok(None) => Some(true),
+            Ok(Some(_)) => {
+                let _ = guard.take();
+                Some(false)
+            }
+            Err(_) => {
+                let _ = guard.take();
+                Some(false)
+            }
+        },
+    }
+}
+
 /// 通过 ProxyCommand 建立连接；仅 Unix。返回 UnixStream 供 libssh2 使用。
 #[cfg(unix)]
 fn connect_via_proxy(
@@ -358,6 +377,7 @@ fn connect_via_proxy(
 fn run_tunnel_blocking(
     tx: mpsc::Sender<Result<(u16, String), String>>,
     shutdown: Arc<AtomicBool>,
+    alive: Arc<AtomicBool>,
     env_id: String,
     tunnel_id: String,
     ssh_host: String,
@@ -374,6 +394,7 @@ fn run_tunnel_blocking(
         TunnelMappingMode::Ssh => run_tunnel_ssh(
             tx,
             shutdown,
+            alive,
             env_id,
             tunnel_id,
             ssh_host,
@@ -388,11 +409,13 @@ fn run_tunnel_blocking(
         TunnelMappingMode::Builtin => run_tunnel_builtin(
             tx,
             shutdown,
+            alive,
             env_id,
             ssh_host,
             remote_kubeconfig_path,
             local_port,
             preferred_context,
+            idle_protection_enabled,
             progress_tx,
         ),
     }
@@ -407,6 +430,7 @@ fn run_tunnel_blocking(
 fn run_tunnel_ssh(
     tx: mpsc::Sender<Result<(u16, String), String>>,
     shutdown: Arc<AtomicBool>,
+    alive: Arc<AtomicBool>,
     env_id: String,
     tunnel_id: String,
     ssh_host: String,
@@ -768,30 +792,27 @@ fn run_tunnel_ssh(
     for _ in 0..150 {
         if shutdown.load(Ordering::SeqCst) {
             take_and_kill_ssh_child(&ssh_child);
+            alive.store(false, Ordering::SeqCst);
             let _ = tx.send(Err("隧道已取消".into()));
             return Ok(());
         }
         // 子进程提前退出说明 ssh -L 连接失败
-        let early_exit = {
-            let mut slot = ssh_child.lock().unwrap_or_else(|p| p.into_inner());
-            match slot.as_mut().map(|c| c.try_wait()) {
-                Some(Ok(Some(exit_status))) => Some(exit_status),
-                _ => None,
+        match ssh_child_still_running(&ssh_child) {
+            Some(true) => {}
+            Some(false) | None => {
+                let msg = "ssh -L 子进程提前退出，隧道建立失败".to_string();
+                debug_log::log_tunnel_err(Some(&env_id), &msg, LogLevel::Error);
+                emit_error_progress(
+                    &progress_tx,
+                    &env_id,
+                    "create_tunnel",
+                    "创建 SSH 隧道",
+                    &msg,
+                );
+                let _ = tx.send(Err(msg));
+                alive.store(false, Ordering::SeqCst);
+                return Ok(());
             }
-        };
-        if let Some(exit_status) = early_exit {
-            let _ = ssh_child.lock().unwrap_or_else(|p| p.into_inner()).take();
-            let msg = format!("ssh -L 子进程提前退出 (exit={}), 隧道建立失败", exit_status);
-            debug_log::log_tunnel_err(Some(&env_id), &msg, LogLevel::Error);
-            emit_error_progress(
-                &progress_tx,
-                &env_id,
-                "create_tunnel",
-                "创建 SSH 隧道",
-                &msg,
-            );
-            let _ = tx.send(Err(msg.clone()));
-            return Ok(());
         }
         if std::net::TcpStream::connect_timeout(
             &std::net::SocketAddr::from(([127, 0, 0, 1], local_port)),
@@ -807,6 +828,7 @@ fn run_tunnel_ssh(
 
     if !port_ready {
         take_and_kill_ssh_child(&ssh_child);
+        alive.store(false, Ordering::SeqCst);
         let msg = format!(
             "等待 SSH 端口转发超时（30 秒），127.0.0.1:{} 未就绪，请检查 SSH 连接与网络",
             local_port
@@ -840,9 +862,24 @@ fn run_tunnel_ssh(
         ))
     })?;
 
+    // 保活：监视 ssh -L 子进程；退出后标记隧道不可用，供 ensure_tunnel / Client 缓存重建。
     while !shutdown.load(Ordering::SeqCst) {
+        match ssh_child_still_running(&ssh_child) {
+            Some(true) => {}
+            Some(false) => {
+                let msg = "ssh -L 子进程已退出，隧道断开".to_string();
+                debug_log::log_tunnel_err(Some(&env_id), &msg, LogLevel::Error);
+                break;
+            }
+            None => {
+                let msg = "ssh -L 子进程丢失，隧道断开".to_string();
+                debug_log::log_tunnel_err(Some(&env_id), &msg, LogLevel::Error);
+                break;
+            }
+        }
         thread::sleep(Duration::from_millis(200));
     }
+    alive.store(false, Ordering::SeqCst);
 
     // 关闭方可能已 kill；此处再兜底一次并尽量 reap，避免僵尸进程。
     let mut child = match ssh_child.lock() {
@@ -860,11 +897,13 @@ fn run_tunnel_ssh(
 fn run_tunnel_builtin(
     tx: mpsc::Sender<Result<(u16, String), String>>,
     shutdown: Arc<AtomicBool>,
+    alive: Arc<AtomicBool>,
     env_id: String,
     ssh_host: String,
     remote_kubeconfig_path: String,
     local_port: Option<u16>,
     preferred_context: Option<String>,
+    idle_protection_enabled: bool,
     progress_tx: Option<mpsc::Sender<ConnectionProgressPayload>>,
 ) -> Result<(), TunnelError> {
     let host_config = ssh_config_get_host_config(&ssh_host).ok_or_else(|| {
@@ -1152,6 +1191,11 @@ fn run_tunnel_builtin(
         ))
     })?;
 
+    if idle_protection_enabled {
+        // want_reply=true：对端无响应时 keepalive_send 会失败，便于发现死连接。
+        sess.set_keepalive(true, 30);
+    }
+
     while !shutdown.load(Ordering::SeqCst) {
         match listener.accept() {
             Ok((stream, addr)) => {
@@ -1172,15 +1216,27 @@ fn run_tunnel_builtin(
                         );
                         debug_log::log_tunnel_err(Some(&env_id), &err_msg, LogLevel::Error);
                         drop(stream);
+                        // 会话级失败时结束转发循环，触发上层重建隧道。
+                        if !sess.authenticated() {
+                            break;
+                        }
                     }
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if idle_protection_enabled {
+                    if let Err(e) = sess.keepalive_send() {
+                        let err_msg = format!("SSH keepalive 失败，隧道断开: {}", e);
+                        debug_log::log_tunnel_err(Some(&env_id), &err_msg, LogLevel::Error);
+                        break;
+                    }
+                }
                 thread::sleep(Duration::from_millis(100));
             }
             Err(_) => break,
         }
     }
+    alive.store(false, Ordering::SeqCst);
     Ok(())
 }
 
@@ -1231,17 +1287,36 @@ fn tunnel_bidirectional_spawn(stream: std::net::TcpStream, channel: ssh2::Channe
     }
 }
 
-/// 每个隧道的状态：后台线程 handle、shutdown 标志、可选 SSH 子进程、本地端口、虚拟 kubeconfig YAML。
+/// 每个隧道的状态：后台线程 handle、shutdown 标志、存活标志、可选 SSH 子进程、本地端口、虚拟 kubeconfig YAML。
 struct TunnelState {
     handle: Option<thread::JoinHandle<()>>,
     shutdown: Arc<AtomicBool>,
+    /// 转发仍可用；ssh 子进程退出或 builtin accept 循环结束时置 false。
+    alive: Arc<AtomicBool>,
     ssh_child: SharedSshChild,
     local_port: u16,
     virtual_kubeconfig_yaml: String,
 }
 
+/// 隧道是否仍可用于 API：alive 为真，且若存在 ssh 子进程则其仍在运行。
+fn tunnel_is_healthy(state: &TunnelState) -> bool {
+    if !state.alive.load(Ordering::SeqCst) {
+        return false;
+    }
+    match ssh_child_still_running(&state.ssh_child) {
+        Some(true) => true,
+        Some(false) => {
+            state.alive.store(false, Ordering::SeqCst);
+            false
+        }
+        // builtin：无子进程，依赖 alive。
+        None => true,
+    }
+}
+
 /// 发出关闭信号并立即 kill SSH 子进程；不在调用线程上 join，避免卡住 UI/事件循环。
 fn signal_tunnel_stop(state: &TunnelState) {
+    state.alive.store(false, Ordering::SeqCst);
     state.shutdown.store(true, Ordering::SeqCst);
     take_and_kill_ssh_child(&state.ssh_child);
 }
@@ -1267,7 +1342,8 @@ impl SshTunnelRunner {
         }
     }
 
-    /// 确保该 env 的隧道已启动，返回 (local_port, virtual_kubeconfig_yaml)。若已存在则直接返回缓存。
+    /// 确保该 env 的隧道已启动，返回 (local_port, virtual_kubeconfig_yaml)。
+    /// 缓存命中时会验活；若 ssh 子进程已退出或存活标志为假则拆掉并重建。
     pub fn ensure_tunnel(
         &self,
         env_id: String,
@@ -1281,21 +1357,41 @@ impl SshTunnelRunner {
         idle_protection_enabled: bool,
         progress_tx: Option<mpsc::Sender<ConnectionProgressPayload>>,
     ) -> Result<(u16, String), TunnelError> {
-        {
-            let g = self.tunnels.lock().unwrap_or_else(|p| p.into_inner());
-            if let Some(s) = g.get(&env_id) {
-                debug_log::log_tunnel(
-                    Some(&env_id),
-                    "cached",
-                    Some(&format!("127.0.0.1:{}", s.local_port)),
-                    LogLevel::Info,
-                );
-                return Ok((s.local_port, s.virtual_kubeconfig_yaml.clone()));
+        let stale = {
+            let mut g = self.tunnels.lock().unwrap_or_else(|p| p.into_inner());
+            match g.get(&env_id) {
+                Some(s) if tunnel_is_healthy(s) => {
+                    debug_log::log_tunnel(
+                        Some(&env_id),
+                        "cached",
+                        Some(&format!("127.0.0.1:{}", s.local_port)),
+                        LogLevel::Info,
+                    );
+                    return Ok((s.local_port, s.virtual_kubeconfig_yaml.clone()));
+                }
+                Some(_) => g.remove(&env_id),
+                None => None,
             }
+        };
+        if let Some(mut s) = stale {
+            debug_log::log_tunnel(
+                Some(&env_id),
+                "stale",
+                Some(&format!(
+                    "127.0.0.1:{} 已失效，重建隧道",
+                    s.local_port
+                )),
+                LogLevel::Warn,
+            );
+            signal_tunnel_stop(&s);
+            reap_tunnel_handle(s.handle.take());
         }
+
         let (tx, rx) = mpsc::channel::<Result<(u16, String), String>>();
         let shutdown = Arc::new(AtomicBool::new(false));
+        let alive = Arc::new(AtomicBool::new(true));
         let shutdown_clone = shutdown.clone();
+        let alive_clone = alive.clone();
         let ssh_child: SharedSshChild = Arc::new(Mutex::new(None));
         let ssh_child_for_thread = Arc::clone(&ssh_child);
         let ssh_host_c = ssh_host.clone();
@@ -1308,6 +1404,7 @@ impl SshTunnelRunner {
             if let Err(e) = run_tunnel_blocking(
                 tx.clone(),
                 shutdown_clone,
+                alive_clone,
                 env_id_c.clone(),
                 tunnel_id_c,
                 ssh_host_c,
@@ -1329,6 +1426,7 @@ impl SshTunnelRunner {
         let (local_port, virtual_yaml) = match rx.recv_timeout(Duration::from_secs(90)) {
             Ok(Ok(t)) => t,
             Ok(Err(s)) => {
+                alive.store(false, Ordering::SeqCst);
                 shutdown.store(true, Ordering::SeqCst);
                 take_and_kill_ssh_child(&ssh_child);
                 reap_tunnel_handle(Some(handle));
@@ -1339,6 +1437,7 @@ impl SshTunnelRunner {
                 return Err(TunnelError::Ssh(s));
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                alive.store(false, Ordering::SeqCst);
                 shutdown.store(true, Ordering::SeqCst);
                 take_and_kill_ssh_child(&ssh_child);
                 reap_tunnel_handle(Some(handle));
@@ -1347,6 +1446,7 @@ impl SshTunnelRunner {
                 ));
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
+                alive.store(false, Ordering::SeqCst);
                 shutdown.store(true, Ordering::SeqCst);
                 take_and_kill_ssh_child(&ssh_child);
                 reap_tunnel_handle(Some(handle));
@@ -1358,6 +1458,7 @@ impl SshTunnelRunner {
         let state = TunnelState {
             handle: Some(handle),
             shutdown,
+            alive,
             ssh_child,
             local_port,
             virtual_kubeconfig_yaml: virtual_yaml.clone(),
@@ -1369,9 +1470,17 @@ impl SshTunnelRunner {
         Ok((local_port, virtual_yaml))
     }
 
+    /// 隧道是否仍存活（供 Client 缓存决定是否复用）。
+    pub fn is_tunnel_alive(&self, env_id: &str) -> bool {
+        let g = self.tunnels.lock().unwrap_or_else(|p| p.into_inner());
+        g.get(env_id).is_some_and(tunnel_is_healthy)
+    }
+
     pub fn get_local_port(&self, env_id: &str) -> Option<u16> {
         let g = self.tunnels.lock().unwrap_or_else(|p| p.into_inner());
-        g.get(env_id).map(|s| s.local_port)
+        g.get(env_id)
+            .filter(|s| tunnel_is_healthy(s))
+            .map(|s| s.local_port)
     }
 
     pub fn close_tunnel(&self, env_id: &str) {

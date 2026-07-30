@@ -17,6 +17,7 @@ import {
   type OrchestratorPackageResourceSnapshot,
 } from "../../stores/orchestratorPackages";
 import { useOrchestratorStore } from "../../stores/orchestrator";
+import { isClusterScopedKind, rewriteYamlNamespace } from "../../stores/orchestratorUtils";
 
 const props = defineProps<{
   selectedEnvId: string;
@@ -47,7 +48,7 @@ const {
   syncPackageVersionToEnv,
   recordPackageDeployment,
 } = useOrchestratorPackagesStore();
-const { manifests, saveManifestYaml } = useOrchestratorStore();
+const { manifests, saveManifestYaml, getComponentNamespace } = useOrchestratorStore();
 
 const selectedPackageId = ref("");
 const selectedPackageVersionId = ref("");
@@ -285,8 +286,7 @@ function findManifestIdForPackageResource(
       m.env_id === targetEnvId &&
       m.component === resource.component &&
       m.resource_kind === resource.resource_kind &&
-      m.resource_name === resource.resource_name &&
-      (m.resource_namespace ?? null) === (resource.resource_namespace ?? null)
+      m.resource_name === resource.resource_name
   );
   return found?.id ?? null;
 }
@@ -472,12 +472,21 @@ async function onApplyPackageToEnv() {
     const autoSnapshotEnabled = await ensureAutoSnapshotSettingLoaded();
     for (const r of resources) {
       try {
+        const mid = findManifestIdForPackageResource(target.id, r);
+        const synced = mid ? manifests.value.find((m) => m.id === mid) : null;
+        const targetNs = isClusterScopedKind(r.resource_kind)
+          ? null
+          : getComponentNamespace(target.id, r.component);
+        const deployYaml =
+          synced?.yaml ??
+          rewriteYamlNamespace(r.yaml, targetNs ?? "default", r.resource_kind);
+        const deployNs = synced?.resource_namespace ?? targetNs;
         if (autoSnapshotEnabled) {
           try {
-            const liveYaml = await kubeGetResource(target.id, r.resource_kind, r.resource_name, r.resource_namespace);
+            const liveYaml = await kubeGetResource(target.id, r.resource_kind, r.resource_name, deployNs);
             if (liveYaml) {
               createResourceSnapshot(
-                { env_id: target.id, resource_kind: r.resource_kind, resource_name: r.resource_name, resource_namespace: r.resource_namespace },
+                { env_id: target.id, resource_kind: r.resource_kind, resource_name: r.resource_name, resource_namespace: deployNs },
                 { yaml: liveYaml, category: "resource", source: "before-apply", title: "应用前资源快照", summary: summarizeResourceYaml(liveYaml) }
               );
             }
@@ -485,9 +494,8 @@ async function onApplyPackageToEnv() {
             // 资源不存在或获取失败，无需快照
           }
         }
-        await deployYamlToEnv(target.id, r.yaml);
-        const mid = findManifestIdForPackageResource(target.id, r);
-        if (mid) saveManifestYaml(mid, r.yaml, "apply");
+        await deployYamlToEnv(target.id, deployYaml);
+        if (mid) saveManifestYaml(mid, deployYaml, "apply");
         success += 1;
       } catch (e) {
         errors.push(`${r.component}/${r.resource_kind}/${r.resource_name}: ${extractErrorMessage(e)}`);
@@ -812,6 +820,7 @@ async function onConfirmPackageAction() {
   </BaseModal>
 </template>
 
+<style src="./orchestrator-package-view.css" scoped></style>
 <style scoped>
 .pkg-input-naive {
   width: 100%;
@@ -840,10 +849,10 @@ async function onConfirmPackageAction() {
 }
 .pkg-check-name {
   font-weight: 500;
-  color: #0f172a;
+  color: var(--kf-text-primary, #0f172a);
 }
 .pkg-check-count {
-  color: #64748b;
+  color: var(--kf-text-muted, #64748b);
   font-size: 0.75rem;
 }
 .version-tag-edit-btn-naive {
@@ -878,7 +887,7 @@ async function onConfirmPackageAction() {
   flex-direction: column;
   gap: 0.35rem;
   font-size: 0.8rem;
-  color: #334155;
+  color: var(--kf-text-secondary, #334155);
 }
 .env-select-naive {
   width: 100%;
@@ -886,11 +895,6 @@ async function onConfirmPackageAction() {
 }
 .package-overwrite-naive {
   font-size: 0.8rem;
-  color: #334155;
-}
-.copy-tip {
-  font-size: 0.75rem;
-  color: #64748b;
-  line-height: 1.45;
+  color: var(--kf-text-secondary, #334155);
 }
 </style>

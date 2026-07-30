@@ -111,6 +111,7 @@ const customGpuResourceRules = ref<GpuResourceRule[]>([]);
 const sshConfigPath = ref("");
 const sshConfigEntries = ref<SshConfigEntry[]>([]);
 const selectedSshHost = ref("");
+const sshHostFilter = ref("");
 const sshConfigLoading = ref(false);
 const sshConfigSaving = ref(false);
 const sshConfigError = ref("");
@@ -126,6 +127,21 @@ const sshHostFeedback = computed(() => {
   const msg = sshConfigMessage.value.trim();
   if (msg) return { type: "success" as const, text: msg };
   return null;
+});
+/** 按 Host 别名、别名列表、HostName、User 做不区分大小写的子串筛选。 */
+const filteredSshConfigEntries = computed(() => {
+  const q = sshHostFilter.value.trim().toLowerCase();
+  if (!q) return sshConfigEntries.value;
+  return sshConfigEntries.value.filter((entry) => {
+    const haystacks = [
+      entry.host,
+      ...(entry.aliases ?? []),
+      entry.hostname ?? "",
+      entry.user ?? "",
+      formatSshEntryLabel(entry),
+    ];
+    return haystacks.some((text) => text.toLowerCase().includes(q));
+  });
 });
 const { saving, message, runSave } = useSaveable();
 const yamlThemePreview = `apiVersion: apps/v1
@@ -843,9 +859,18 @@ const menuOptions = computed<MenuOption[]>(() =>
                 <NButton size="small" :disabled="sshConfigLoading || sshConfigSaving" @click="() => startNewSshEntry()"
                   >新增</NButton>
               </div>
+              <div class="ssh-host-list-filter">
+                <NInput
+                  v-model:value="sshHostFilter"
+                  clearable
+                  size="small"
+                  placeholder="筛选 Host / HostName / User…"
+                  :disabled="sshConfigLoading"
+                />
+              </div>
               <div class="ssh-host-list-body">
                 <button
-                  v-for="entry in sshConfigEntries"
+                  v-for="entry in filteredSshConfigEntries"
                   :key="entry.host"
                   type="button"
                   class="ssh-host-item"
@@ -855,8 +880,16 @@ const menuOptions = computed<MenuOption[]>(() =>
                   <span class="ssh-host-name">{{ entry.host }}</span>
                   <span class="ssh-host-target">{{ formatSshEntryLabel(entry) }}</span>
                 </button>
-                <div v-if="!sshConfigEntries.length && !sshConfigLoading" class="ssh-host-empty">
-                  还没有 Host，新增一个即可用于 SSH 隧道环境。
+                <div
+                  v-if="!filteredSshConfigEntries.length && !sshConfigLoading"
+                  class="ssh-host-empty"
+                >
+                  <template v-if="sshHostFilter.trim() && sshConfigEntries.length">
+                    没有匹配「{{ sshHostFilter.trim() }}」的 Host。
+                  </template>
+                  <template v-else>
+                    还没有 Host，新增一个即可用于 SSH 隧道环境。
+                  </template>
                 </div>
               </div>
             </aside>
@@ -1223,6 +1256,11 @@ const menuOptions = computed<MenuOption[]>(() =>
   font-size: 0.8125rem;
   font-weight: 600;
   color: var(--kf-text-secondary, #64748b);
+}
+.ssh-host-list-filter {
+  flex-shrink: 0;
+  padding: 0.5rem 0.7rem;
+  border-bottom: 1px solid var(--kf-border, #e2e8f0);
 }
 .ssh-host-item {
   width: 100%;

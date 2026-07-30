@@ -17,6 +17,19 @@ fn sanitize_apply_value(mut obj: serde_json::Value) -> serde_json::Value {
             meta.remove("generation");
         }
         root.remove("status");
+        // Service 的 clusterIP / clusterIPs 由集群分配，下发时剥离；Headless（None）保留。
+        if root.get("kind").and_then(|v| v.as_str()) == Some("Service") {
+            if let Some(spec) = root.get_mut("spec").and_then(|v| v.as_object_mut()) {
+                let is_headless = spec
+                    .get("clusterIP")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|ip| ip == "None");
+                if !is_headless {
+                    spec.remove("clusterIP");
+                    spec.remove("clusterIPs");
+                }
+            }
+        }
     }
     obj
 }

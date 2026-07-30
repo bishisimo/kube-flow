@@ -13,6 +13,8 @@ import {
   buildVersionLabelFromDate,
   normalizeComponent,
   pushHistory,
+  isClusterScopedKind,
+  rewriteYamlNamespace,
 } from "./orchestratorUtils";
 import type {
   OrchestratorManifest,
@@ -20,6 +22,15 @@ import type {
   OrchestratorPackageVersion,
   OrchestratorPackageDeploymentRecord,
 } from "./orchestratorTypes";
+import {
+  copyComponentMetaToEnv,
+  ensureComponentMeta,
+  getComponentNamespace,
+  manifestIndex,
+  manifestKey,
+  manifests,
+  rebuildManifestIndex,
+} from "./orchestrator";
 
 export type {
   OrchestratorPackage,
@@ -27,14 +38,6 @@ export type {
   OrchestratorPackageDeploymentRecord,
   OrchestratorPackageResourceSnapshot,
 } from "./orchestratorTypes";
-
-// ── 导入 manifests 状态（只在此文件读写，不触发循环依赖） ──────────────────────
-import {
-  manifests,
-  manifestIndex,
-  rebuildManifestIndex,
-  manifestKey,
-} from "./orchestrator";
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -172,15 +175,45 @@ function syncPackageVersionToEnv(
   let skipped = 0;
   const manifestIds: string[] = [];
   const now = nowIso();
+
+  const componentHints = new Map<string, string | null>();
   for (const res of version.resources) {
-    const key = manifestKey(targetEnvId, res.resource_kind, res.resource_name, res.resource_namespace ?? null);
-    const existing = manifestIndex.get(key);
+    const component = normalizeComponent(res.component);
+    if (!componentHints.has(component)) {
+      componentHints.set(component, res.resource_namespace);
+    }
+  }
+  for (const [component, hint] of componentHints) {
+    ensureComponentMeta(targetEnvId, component, hint);
+  }
+
+  for (const res of version.resources) {
+    const component = normalizeComponent(res.component);
+    const targetNs = isClusterScopedKind(res.resource_kind)
+      ? null
+      : getComponentNamespace(targetEnvId, component);
+    const yaml = rewriteYamlNamespace(res.yaml, targetNs ?? "default", res.resource_kind);
+    const key = manifestKey(targetEnvId, res.resource_kind, res.resource_name, targetNs);
+    const existing =
+      manifestIndex.get(key) ??
+      manifests.value.find(
+        (m) =>
+          m.env_id === targetEnvId &&
+          m.resource_kind === res.resource_kind &&
+          m.resource_name === res.resource_name &&
+          m.component === component
+      );
     if (existing) {
-      if (!overwrite) { skipped += 1; continue; }
+      if (!overwrite) {
+        skipped += 1;
+        continue;
+      }
       existing.env_name = targetEnvName;
-      existing.yaml = res.yaml;
+      existing.component = component;
+      existing.resource_namespace = targetNs;
+      existing.yaml = yaml;
       existing.updated_at = now;
-      existing.history = pushHistory(existing.history, "save", res.yaml);
+      existing.history = pushHistory(existing.history, "save", yaml);
       manifestIds.push(existing.id);
       updated += 1;
       continue;
@@ -189,14 +222,14 @@ function syncPackageVersionToEnv(
       id: uid("manifest"),
       env_id: targetEnvId,
       env_name: targetEnvName,
-      component: res.component,
+      component,
       resource_kind: res.resource_kind,
       resource_name: res.resource_name,
-      resource_namespace: res.resource_namespace,
-      yaml: res.yaml,
+      resource_namespace: targetNs,
+      yaml,
       created_at: now,
       updated_at: now,
-      history: pushHistory([], "save", res.yaml),
+      history: pushHistory([], "save", yaml),
       source_type: "package_sync",
       source_batch_id: null,
       source_file_name: null,
@@ -258,20 +291,43 @@ function copyComponentToEnv(
   );
   if (!sourceList.length) return { copied: 0, updated: 0, skipped: 0 };
 
+  copyComponentMetaToEnv(sourceEnvId, normalizedComponent, targetEnvId, overwrite);
+  ensureComponentMeta(
+    targetEnvId,
+    normalizedComponent,
+    getComponentNamespace(sourceEnvId, normalizedComponent)
+  );
+  const targetNs = getComponentNamespace(targetEnvId, normalizedComponent);
+
   let copied = 0;
   let updated = 0;
   let skipped = 0;
   const now = nowIso();
 
   for (const source of sourceList) {
-    const key = manifestKey(targetEnvId, source.resource_kind, source.resource_name, source.resource_namespace ?? null);
-    const existing = manifestIndex.get(key);
+    const ns = isClusterScopedKind(source.resource_kind) ? null : targetNs;
+    const yaml = rewriteYamlNamespace(source.yaml, targetNs, source.resource_kind);
+    const key = manifestKey(targetEnvId, source.resource_kind, source.resource_name, ns);
+    const existing =
+      manifestIndex.get(key) ??
+      manifests.value.find(
+        (m) =>
+          m.env_id === targetEnvId &&
+          m.resource_kind === source.resource_kind &&
+          m.resource_name === source.resource_name &&
+          m.component === normalizedComponent
+      );
     if (existing) {
-      if (!overwrite) { skipped += 1; continue; }
+      if (!overwrite) {
+        skipped += 1;
+        continue;
+      }
       existing.env_name = targetEnvName;
-      existing.yaml = source.yaml;
+      existing.component = normalizedComponent;
+      existing.resource_namespace = ns;
+      existing.yaml = yaml;
       existing.updated_at = now;
-      existing.history = pushHistory(existing.history, "save", source.yaml);
+      existing.history = pushHistory(existing.history, "save", yaml);
       updated += 1;
       continue;
     }
@@ -284,11 +340,11 @@ function copyComponentToEnv(
         component: normalizedComponent,
         resource_kind: source.resource_kind,
         resource_name: source.resource_name,
-        resource_namespace: source.resource_namespace,
-        yaml: source.yaml,
+        resource_namespace: ns,
+        yaml,
         created_at: now,
         updated_at: now,
-        history: pushHistory([], "save", source.yaml),
+        history: pushHistory([], "save", yaml),
         source_type: source.source_type,
         source_batch_id: source.source_batch_id ?? null,
         source_file_name: source.source_file_name ?? null,

@@ -81,11 +81,8 @@ watch(
     const parsed = parseWorkloadDraft(obj, kind);
     draft.value = parsed;
     regions.value = extractWorkloadYamlRegions(obj, kind);
-    metaExpanded.value =
-      parsed.metadata.labels.length > 0 || parsed.metadata.annotations.length > 0;
-    specExpanded.value = regionsForGroup(regions.value, "resource").some(
-      (r) => r.yaml.trim() && r.yaml.trim() !== "{}\n",
-    );
+    metaExpanded.value = false;
+    specExpanded.value = false;
     moduleResetKey.value += 1;
     emit("update:draft", draft.value);
     emit("update:regions", regions.value);

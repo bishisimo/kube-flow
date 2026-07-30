@@ -2,6 +2,14 @@
  * 编排中心共享类型定义。
  */
 
+/** 环境内应用组件的元数据（含统一安装命名空间）。 */
+export interface OrchestratorComponentMeta {
+  env_id: string;
+  name: string;
+  /** 组件内 namespaced 资源的统一安装命名空间 */
+  namespace: string;
+}
+
 export interface OrchestratorResourceRef {
   kind: string;
   name: string;

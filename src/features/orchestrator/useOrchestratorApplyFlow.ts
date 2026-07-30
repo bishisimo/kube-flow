@@ -1,5 +1,7 @@
 import { computed, ref, type ComputedRef, type Ref } from "vue";
 import { extractErrorMessage } from "../../utils/errorMessage";
+import { getComponentNamespace } from "../../stores/orchestrator";
+import { isClusterScopedKind, rewriteYamlNamespace } from "../../stores/orchestratorUtils";
 
 export interface ComponentApplyItem {
   manifestId: string;
@@ -19,6 +21,19 @@ interface ComponentApplyPlanItem {
   resource_namespace: string | null;
   yaml: string;
   source_file_name?: string | null;
+}
+
+function prepareApplyYaml(
+  envId: string,
+  component: string,
+  kind: string,
+  yaml: string
+): { yaml: string; namespace: string | null } {
+  const targetNs = getComponentNamespace(envId, component);
+  if (isClusterScopedKind(kind)) {
+    return { yaml: rewriteYamlNamespace(yaml, targetNs, kind), namespace: null };
+  }
+  return { yaml: rewriteYamlNamespace(yaml, targetNs, kind), namespace: targetNs };
 }
 
 export function useOrchestratorApplyFlow(params: {
@@ -75,16 +90,21 @@ export function useOrchestratorApplyFlow(params: {
   });
 
   function buildComponentApplyItems(): ComponentApplyItem[] {
-    return params.componentApplyPlan.value.map((item) => ({
-      manifestId: item.id,
-      kind: item.resource_kind,
-      name: item.resource_name,
-      namespace: item.resource_namespace,
-      yaml: item.yaml,
-      fileName: item.source_file_name ?? null,
-      status: "pending",
-      error: null,
-    }));
+    const envId = params.selectedEnvId.value;
+    const component = params.selectedComponent.value;
+    return params.componentApplyPlan.value.map((item) => {
+      const prepared = prepareApplyYaml(envId, component, item.resource_kind, item.yaml);
+      return {
+        manifestId: item.id,
+        kind: item.resource_kind,
+        name: item.resource_name,
+        namespace: prepared.namespace,
+        yaml: prepared.yaml,
+        fileName: item.source_file_name ?? null,
+        status: "pending" as const,
+        error: null,
+      };
+    });
   }
 
   async function snapshotBeforeApply(envId: string, kind: string, name: string, namespace: string | null) {
@@ -109,13 +129,30 @@ export function useOrchestratorApplyFlow(params: {
     try {
       const identity = params.parseIdentity(params.editYaml.value);
       if (!identity) throw new Error("无法解析资源身份信息。");
-      await snapshotBeforeApply(params.selectedEnvId.value, identity.kind, identity.name, identity.namespace);
-      await params.deployYamlToEnv(params.selectedEnvId.value, params.editYaml.value);
+      const prepared = prepareApplyYaml(
+        params.selectedEnvId.value,
+        params.selectedComponent.value,
+        identity.kind,
+        params.editYaml.value
+      );
+      const applyIdentity = {
+        kind: identity.kind,
+        name: identity.name,
+        namespace: prepared.namespace,
+      };
+      await snapshotBeforeApply(
+        params.selectedEnvId.value,
+        applyIdentity.kind,
+        applyIdentity.name,
+        applyIdentity.namespace
+      );
+      await params.deployYamlToEnv(params.selectedEnvId.value, prepared.yaml);
       params.setManifestComponent(params.selectedManifest.value.id, params.selectedComponent.value);
-      params.setManifestIdentity(params.selectedManifest.value.id, identity);
-      params.saveManifestYaml(params.selectedManifest.value.id, params.editYaml.value, "apply");
+      params.setManifestIdentity(params.selectedManifest.value.id, applyIdentity);
+      params.saveManifestYaml(params.selectedManifest.value.id, prepared.yaml, "apply");
       params.clearManifestDraft(params.selectedManifest.value.id);
-      params.setOpMessage(`应用成功：${identity.kind}/${identity.name}`);
+      params.editYaml.value = prepared.yaml;
+      params.setOpMessage(`应用成功：${applyIdentity.kind}/${applyIdentity.name}`);
     } catch (e) {
       params.setOpError(extractErrorMessage(e));
     } finally {

@@ -1,4 +1,4 @@
-//! 编排中心数据（Manifest、导入批次、应用包），持久化到 app data 目录 JSON 文件。
+//! 编排中心数据（Manifest、导入批次、应用包、组件元数据），持久化到 app data 目录 JSON 文件。
 
 use crate::config::{ensure_app_data_dir, paths::app_data_dir, ConfigError};
 use serde::{Deserialize, Serialize};
@@ -13,6 +13,8 @@ pub struct OrchestratorDataPayload {
     pub import_batches: Value,
     #[serde(default = "empty_array")]
     pub packages: Value,
+    #[serde(default = "empty_array")]
+    pub components: Value,
 }
 
 fn empty_array() -> Value {

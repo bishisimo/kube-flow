@@ -1,15 +1,19 @@
-//! 主机文件传输：基于 libssh2 SFTP 的流式上传/下载，支持进度与取消。
+//! 主机文件传输：基于 russh + russh-sftp 的异步流式上传/下载，支持进度与取消。
 
 use crate::config::{ssh_config_get_host_config, ssh_config_resolve_proxy_command, SshHostConfig};
 use crate::credentials::AuthMethod;
 use crate::kube::file_transfer::{emit_progress, ProgressEmitter};
-use ssh2::Session;
-use std::io::{Read, Write};
-use std::net::TcpStream;
-use std::path::Path;
+use russh::client::{self, AuthResult, Handle};
+use russh::keys::{self, load_secret_key, PrivateKeyWithHashAlg, PublicKey};
+use russh_sftp::client::SftpSession;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::Arc;
+use std::task::{Context, Poll};
 use tauri::AppHandle;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 const CHUNK_SIZE: usize = 64 * 1024;
 
@@ -17,103 +21,97 @@ fn err_ssh(e: impl std::fmt::Display) -> String {
     format!("SFTP: {}", e)
 }
 
-/// 通过 ProxyCommand 建立连接；仅 Unix。
+struct ClientHandler;
+
+impl client::Handler for ClientHandler {
+    type Error = russh::Error;
+
+    async fn check_server_key(
+        &mut self,
+        _server_public_key: &PublicKey,
+    ) -> Result<bool, Self::Error> {
+        // 与原先 libssh2 文件传输一致：不校验 known_hosts。
+        Ok(true)
+    }
+}
+
+/// 将 ProxyCommand 子进程的 stdin/stdout 合成 russh 可用的双工流。
+struct ProxyStream {
+    stdout: ChildStdout,
+    stdin: ChildStdin,
+    _child: Child,
+}
+
+impl AsyncRead for ProxyStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stdout).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for ProxyStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.stdin).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stdin).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stdin).poll_shutdown(cx)
+    }
+}
+
 #[cfg(unix)]
-fn connect_via_proxy(
-    proxy_args: Vec<String>,
-) -> Result<std::os::unix::net::UnixStream, String> {
-    use std::io::{Read as _, Write as _};
-    use std::os::unix::net::UnixStream;
-    use std::process::{Command, Stdio};
-    use std::thread;
-
-    let (mut proxy_end, libssh2_end) =
-        UnixStream::pair().map_err(|e| format!("创建 ProxyCommand 通道失败: {}", e))?;
-
+async fn connect_via_proxy(proxy_args: Vec<String>) -> Result<ProxyStream, String> {
     let (exe, args) = proxy_args
         .split_first()
         .ok_or_else(|| "ProxyCommand 为空".to_string())?;
 
     let mut child = Command::new(exe)
         .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
         .spawn()
         .map_err(|e| format!("启动 ProxyCommand 失败: {}", e))?;
 
-    let mut child_stdin = child
+    let stdin = child
         .stdin
         .take()
         .ok_or_else(|| "无法获取 ProxyCommand stdin".to_string())?;
-    let mut child_stdout = child
+    let stdout = child
         .stdout
         .take()
         .ok_or_else(|| "无法获取 ProxyCommand stdout".to_string())?;
 
-    let mut proxy_end_clone = proxy_end
-        .try_clone()
-        .map_err(|e| format!("克隆 ProxyCommand 通道失败: {}", e))?;
-
-    thread::spawn(move || {
-        let mut buf = [0u8; 8192];
-        loop {
-            match child_stdout.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    if proxy_end.write_all(&buf[..n]).is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    });
-
-    thread::spawn(move || {
-        let mut buf = [0u8; 8192];
-        loop {
-            match proxy_end_clone.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    if child_stdin.write_all(&buf[..n]).is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    });
-
-    libssh2_end
-        .set_read_timeout(Some(Duration::from_secs(30)))
-        .ok();
-    libssh2_end
-        .set_write_timeout(Some(Duration::from_secs(30)))
-        .ok();
-    Ok(libssh2_end)
+    Ok(ProxyStream {
+        stdout,
+        stdin,
+        _child: child,
+    })
 }
 
-fn connect_session(host_config: &SshHostConfig) -> Result<Session, String> {
-    let mut sess = Session::new().map_err(err_ssh)?;
-    sess.set_timeout(30_000);
+async fn connect_session(host_config: &SshHostConfig) -> Result<Handle<ClientHandler>, String> {
+    let config = Arc::new(client::Config::default());
+    let handler = ClientHandler;
 
     #[cfg(unix)]
     {
         if let Some(proxy_args) = ssh_config_resolve_proxy_command(host_config) {
-            let stream = connect_via_proxy(proxy_args)?;
-            sess.set_tcp_stream(stream);
-        } else {
-            let tcp = TcpStream::connect((host_config.hostname.as_str(), host_config.port))
-                .map_err(|e| {
-                    format!(
-                        "TCP 连接 {}:{} 失败: {}",
-                        host_config.hostname, host_config.port, e
-                    )
-                })?;
-            tcp.set_read_timeout(Some(Duration::from_secs(30))).ok();
-            tcp.set_write_timeout(Some(Duration::from_secs(30))).ok();
-            sess.set_tcp_stream(tcp);
+            let stream = connect_via_proxy(proxy_args).await?;
+            return client::connect_stream(config, stream, handler)
+                .await
+                .map_err(err_ssh);
         }
     }
 
@@ -122,83 +120,136 @@ fn connect_session(host_config: &SshHostConfig) -> Result<Session, String> {
         if ssh_config_resolve_proxy_command(host_config).is_some() {
             return Err("ProxyCommand/ProxyJump 仅支持 Unix 平台".to_string());
         }
-        let tcp = TcpStream::connect((host_config.hostname.as_str(), host_config.port)).map_err(
-            |e| {
-                format!(
-                    "TCP 连接 {}:{} 失败: {}",
-                    host_config.hostname, host_config.port, e
-                )
-            },
-        )?;
-        tcp.set_read_timeout(Some(Duration::from_secs(30))).ok();
-        tcp.set_write_timeout(Some(Duration::from_secs(30))).ok();
-        sess.set_tcp_stream(tcp);
     }
 
-    sess.handshake().map_err(err_ssh)?;
-    Ok(sess)
+    client::connect(
+        config,
+        (host_config.hostname.as_str(), host_config.port),
+        handler,
+    )
+    .await
+    .map_err(|e| {
+        format!(
+            "TCP 连接 {}:{} 失败: {}",
+            host_config.hostname, host_config.port, e
+        )
+    })
 }
 
-fn authenticate_session(
-    sess: &Session,
+fn identity_candidates(host_config: &SshHostConfig) -> Vec<PathBuf> {
+    let mut keys = Vec::new();
+    if let Some(ref key_path) = host_config.identity_file {
+        if key_path.exists() {
+            keys.push(key_path.clone());
+        }
+    }
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    for name in ["id_ed25519", "id_rsa", "id_ecdsa"] {
+        let key = home.join(".ssh").join(name);
+        if key.exists() && !keys.iter().any(|k| k == &key) {
+            keys.push(key);
+        }
+    }
+    keys
+}
+
+async fn try_pubkey(
+    session: &mut Handle<ClientHandler>,
+    user: &str,
+    host_config: &SshHostConfig,
+) -> bool {
+    let hash_alg = session
+        .best_supported_rsa_hash()
+        .await
+        .ok()
+        .and_then(|v| v.flatten());
+
+    for path in identity_candidates(host_config) {
+        let Ok(key) = load_secret_key(&path, None) else {
+            continue;
+        };
+        let key = PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg);
+        match session.authenticate_publickey(user, key).await {
+            Ok(AuthResult::Success) => return true,
+            _ => continue,
+        }
+    }
+    false
+}
+
+async fn try_agent(session: &mut Handle<ClientHandler>, user: &str) -> bool {
+    #[cfg(unix)]
+    {
+        let Ok(mut agent) = keys::agent::client::AgentClient::connect_env().await else {
+            return false;
+        };
+        let Ok(identities) = agent.request_identities().await else {
+            return false;
+        };
+        let hash_alg = session
+            .best_supported_rsa_hash()
+            .await
+            .ok()
+            .and_then(|v| v.flatten());
+        for identity in identities {
+            match session
+                .authenticate_publickey_with(user, identity, hash_alg, &mut agent)
+                .await
+            {
+                Ok(AuthResult::Success) => return true,
+                _ => continue,
+            }
+        }
+        false
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (session, user);
+        false
+    }
+}
+
+async fn try_password(
+    session: &mut Handle<ClientHandler>,
+    user: &str,
+    password: Option<&str>,
+) -> bool {
+    let Some(pwd) = password.filter(|p| !p.is_empty()) else {
+        return false;
+    };
+    matches!(
+        session.authenticate_password(user, pwd).await,
+        Ok(AuthResult::Success)
+    )
+}
+
+async fn authenticate_session(
+    session: &mut Handle<ClientHandler>,
     host_config: &SshHostConfig,
     auth_method: AuthMethod,
     password: Option<&str>,
 ) -> Result<(), String> {
-    let user = &host_config.user;
-
-    let try_pubkey = || -> bool {
-        if let Some(ref key_path) = host_config.identity_file {
-            if key_path.exists()
-                && sess
-                    .userauth_pubkey_file(user, None, key_path, None)
-                    .is_ok()
-                && sess.authenticated()
-            {
-                return true;
-            }
-        }
-        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-        for name in ["id_ed25519", "id_rsa", "id_ecdsa"] {
-            let key = home.join(".ssh").join(name);
-            if key.exists()
-                && sess.userauth_pubkey_file(user, None, &key, None).is_ok()
-                && sess.authenticated()
-            {
-                return true;
-            }
-        }
-        false
-    };
-
-    let try_agent = || -> bool {
-        sess.userauth_agent(user).is_ok() && sess.authenticated()
-    };
-
-    let try_password = || -> bool {
-        let Some(pwd) = password.filter(|p| !p.is_empty()) else {
-            return false;
-        };
-        sess.userauth_password(user, pwd).is_ok() && sess.authenticated()
-    };
+    let user = host_config.user.as_str();
 
     match auth_method {
         AuthMethod::PublicKey => {
-            if try_pubkey() || try_agent() {
+            if try_pubkey(session, user, host_config).await || try_agent(session, user).await {
                 return Ok(());
             }
         }
         AuthMethod::Password | AuthMethod::KeyboardInteractive => {
-            if try_password() {
+            if try_password(session, user, password).await {
                 return Ok(());
             }
-            // 回退到密钥，兼容误配 auth_method 的环境
-            if try_pubkey() || try_agent() {
+            if try_pubkey(session, user, host_config).await || try_agent(session, user).await {
                 return Ok(());
             }
         }
         AuthMethod::Auto => {
-            if try_agent() || try_pubkey() || try_password() {
+            if try_agent(session, user).await
+                || try_pubkey(session, user, host_config).await
+                || try_password(session, user, password).await
+            {
                 return Ok(());
             }
         }
@@ -210,22 +261,22 @@ fn authenticate_session(
     )
 }
 
-fn resolve_remote_path(sftp: &ssh2::Sftp, remote_path: &str) -> Result<String, String> {
+async fn resolve_remote_path(sftp: &SftpSession, remote_path: &str) -> Result<String, String> {
     let path = remote_path.trim();
     if path.is_empty() {
         return Err("远端路径不能为空".to_string());
     }
     if path == "~" || path.starts_with("~/") || path.starts_with('~') {
-        match sftp.realpath(Path::new(path)) {
-            Ok(resolved) => Ok(resolved.to_string_lossy().into_owned()),
+        match sftp.canonicalize(path).await {
+            Ok(resolved) => Ok(resolved),
             Err(_) if path.starts_with("~/") => {
-                // 部分服务端不展开 ~，退化为相对登录目录
                 let home = sftp
-                    .realpath(Path::new("."))
+                    .canonicalize(".")
+                    .await
                     .map_err(|e| format!("解析远端 HOME 失败: {}", e))?;
                 Ok(format!(
                     "{}/{}",
-                    home.to_string_lossy().trim_end_matches('/'),
+                    home.trim_end_matches('/'),
                     &path[2..]
                 ))
             }
@@ -245,21 +296,31 @@ fn check_cancelled(cancel: &AtomicBool) -> Result<(), String> {
 }
 
 /// 建立已认证的 SSH 会话并打开 SFTP。
-fn open_sftp(
+async fn open_sftp(
     ssh_host: &str,
     auth_method: AuthMethod,
     password: Option<&str>,
-) -> Result<(Session, ssh2::Sftp), String> {
+) -> Result<(Handle<ClientHandler>, SftpSession), String> {
     let host_config = ssh_config_get_host_config(ssh_host)
         .ok_or_else(|| format!("~/.ssh/config 中未找到 Host: {}", ssh_host))?;
-    let sess = connect_session(&host_config)?;
-    authenticate_session(&sess, &host_config, auth_method, password)?;
-    let sftp = sess.sftp().map_err(err_ssh)?;
-    Ok((sess, sftp))
+    let mut session = connect_session(&host_config).await?;
+    authenticate_session(&mut session, &host_config, auth_method, password).await?;
+    let channel = session
+        .channel_open_session()
+        .await
+        .map_err(err_ssh)?;
+    channel
+        .request_subsystem(true, "sftp")
+        .await
+        .map_err(err_ssh)?;
+    let sftp = SftpSession::new(channel.into_stream())
+        .await
+        .map_err(err_ssh)?;
+    Ok((session, sftp))
 }
 
 /// 通过 SFTP 上传本地文件到远端，并报告字节进度。
-pub fn sftp_upload(
+pub async fn sftp_upload(
     app: &AppHandle,
     transfer_id: &str,
     cancel: &AtomicBool,
@@ -272,26 +333,34 @@ pub fn sftp_upload(
 ) -> Result<(), String> {
     check_cancelled(cancel)?;
     if !local_path.is_file() {
-        return Err(format!("本地文件不存在或不是文件: {}", local_path.display()));
+        return Err(format!(
+            "本地文件不存在或不是文件: {}",
+            local_path.display()
+        ));
     }
-    let total_bytes = std::fs::metadata(local_path)
+    let total_bytes = tokio::fs::metadata(local_path)
+        .await
         .map_err(|e| format!("读取本地文件失败: {}", e))?
         .len();
 
-    let (_sess, sftp) = open_sftp(ssh_host, auth_method, password)?;
+    let (_session, sftp) = open_sftp(ssh_host, auth_method, password).await?;
     check_cancelled(cancel)?;
-    let remote = resolve_remote_path(&sftp, remote_path)?;
+    let remote = resolve_remote_path(&sftp, remote_path).await?;
 
     if !overwrite {
-        if sftp.stat(Path::new(&remote)).is_ok() {
-            return Err(format!("远端文件已存在: {}", remote));
+        match sftp.try_exists(&remote).await {
+            Ok(true) => return Err(format!("远端文件已存在: {}", remote)),
+            Ok(false) => {}
+            Err(e) => return Err(format!("检查远端文件失败: {}", e)),
         }
     }
 
-    let mut local = std::fs::File::open(local_path)
+    let mut local = tokio::fs::File::open(local_path)
+        .await
         .map_err(|e| format!("打开本地文件失败: {}", e))?;
     let mut remote_file = sftp
-        .create(Path::new(&remote))
+        .create(&remote)
+        .await
         .map_err(|e| format!("创建远端文件失败: {}", e))?;
 
     emit_progress(app, transfer_id, 0, Some(total_bytes));
@@ -302,25 +371,28 @@ pub fn sftp_upload(
         check_cancelled(cancel)?;
         let n = local
             .read(&mut buf)
+            .await
             .map_err(|e| format!("读取本地文件失败: {}", e))?;
         if n == 0 {
             break;
         }
         remote_file
             .write_all(&buf[..n])
+            .await
             .map_err(|e| format!("写入远端失败: {}", e))?;
         transferred += n as u64;
         ticker.emit(app, transfer_id, transferred, Some(total_bytes));
     }
     remote_file
         .flush()
+        .await
         .map_err(|e| format!("刷新远端文件失败: {}", e))?;
     emit_progress(app, transfer_id, transferred, Some(total_bytes));
     Ok(())
 }
 
 /// 通过 SFTP 从远端下载文件到本地，并报告字节进度。
-pub fn sftp_download(
+pub async fn sftp_download(
     app: &AppHandle,
     transfer_id: &str,
     cancel: &AtomicBool,
@@ -336,22 +408,27 @@ pub fn sftp_download(
         return Err(format!("本地文件已存在: {}", local_path.display()));
     }
     if let Some(parent) = local_path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| e.to_string())?;
     }
 
-    let (_sess, sftp) = open_sftp(ssh_host, auth_method, password)?;
+    let (_session, sftp) = open_sftp(ssh_host, auth_method, password).await?;
     check_cancelled(cancel)?;
-    let remote = resolve_remote_path(&sftp, remote_path)?;
+    let remote = resolve_remote_path(&sftp, remote_path).await?;
 
     let mut remote_file = sftp
-        .open(Path::new(&remote))
+        .open(&remote)
+        .await
         .map_err(|e| format!("打开远端文件失败: {}", e))?;
     let total_bytes = remote_file
-        .stat()
+        .metadata()
+        .await
         .ok()
-        .and_then(|s| s.size);
+        .and_then(|m| m.size);
 
-    let mut local = std::fs::File::create(local_path)
+    let mut local = tokio::fs::File::create(local_path)
+        .await
         .map_err(|e| format!("创建本地文件失败: {}", e))?;
 
     emit_progress(app, transfer_id, 0, total_bytes);
@@ -362,18 +439,21 @@ pub fn sftp_download(
         check_cancelled(cancel)?;
         let n = remote_file
             .read(&mut buf)
+            .await
             .map_err(|e| format!("读取远端文件失败: {}", e))?;
         if n == 0 {
             break;
         }
         local
             .write_all(&buf[..n])
+            .await
             .map_err(|e| format!("写入本地文件失败: {}", e))?;
         transferred += n as u64;
         ticker.emit(app, transfer_id, transferred, total_bytes);
     }
     local
         .flush()
+        .await
         .map_err(|e| format!("刷新本地文件失败: {}", e))?;
     let final_total = total_bytes.or(Some(transferred));
     emit_progress(app, transfer_id, transferred, final_total);

@@ -1254,26 +1254,18 @@ pub async fn host_file_upload(
                         let _ = cancel_rx.await;
                         cancel_flag_watch.store(true, std::sync::atomic::Ordering::SeqCst);
                     });
-                    let app2 = app.clone();
-                    let tid = transfer_id_task.clone();
-                    let local_path2 = local_path.clone();
-                    let remote_path2 = remote_path.clone();
-                    let join = tokio::task::spawn_blocking(move || {
-                        crate::ssh_sftp::sftp_upload(
-                            &app2,
-                            &tid,
-                            &cancel_flag,
-                            &ssh_host,
-                            auth_method,
-                            password.as_deref(),
-                            Path::new(&local_path2),
-                            &remote_path2,
-                            overwrite,
-                        )
-                    });
-                    let outcome = join
-                        .await
-                        .map_err(|e| format!("SFTP 任务失败: {}", e))?;
+                    let outcome = crate::ssh_sftp::sftp_upload(
+                        &app,
+                        &transfer_id_task,
+                        &cancel_flag,
+                        &ssh_host,
+                        auth_method,
+                        password.as_deref(),
+                        Path::new(&local_path),
+                        &remote_path,
+                        overwrite,
+                    )
+                    .await;
                     cancel_watch.abort();
                     outcome
                 }
@@ -1372,26 +1364,18 @@ pub async fn host_file_download(
                         let _ = cancel_rx.await;
                         cancel_flag_watch.store(true, std::sync::atomic::Ordering::SeqCst);
                     });
-                    let app2 = app.clone();
-                    let tid = transfer_id_task.clone();
-                    let local_path2 = local_path.clone();
-                    let remote_path2 = remote_path.clone();
-                    let join = tokio::task::spawn_blocking(move || {
-                        crate::ssh_sftp::sftp_download(
-                            &app2,
-                            &tid,
-                            &cancel_flag,
-                            &ssh_host,
-                            auth_method,
-                            password.as_deref(),
-                            &remote_path2,
-                            Path::new(&local_path2),
-                            overwrite,
-                        )
-                    });
-                    let outcome = join
-                        .await
-                        .map_err(|e| format!("SFTP 任务失败: {}", e))?;
+                    let outcome = crate::ssh_sftp::sftp_download(
+                        &app,
+                        &transfer_id_task,
+                        &cancel_flag,
+                        &ssh_host,
+                        auth_method,
+                        password.as_deref(),
+                        &remote_path,
+                        Path::new(&local_path),
+                        overwrite,
+                    )
+                    .await;
                     cancel_watch.abort();
                     outcome
                 }

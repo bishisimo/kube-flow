@@ -4,6 +4,7 @@ import { NButton, NCheckbox, NSelect } from "naive-ui";
 import BaseModal from "../base/BaseModal.vue";
 import { extractErrorMessage } from "../../utils/errorMessage";
 import { useOrchestratorPackagesStore } from "../../stores/orchestratorPackages";
+import { useOrchestratorStore } from "../../stores/orchestrator";
 
 const props = defineProps<{
   visible: boolean;
@@ -19,6 +20,7 @@ const emit = defineEmits<{
 }>();
 
 const { copyComponentToEnv } = useOrchestratorPackagesStore();
+const { requestSwitchToOrchestrator } = useOrchestratorStore();
 
 const copyTargetEnvId = ref("");
 const copyOverwrite = ref(true);
@@ -56,7 +58,14 @@ async function onCopyComponentToEnv() {
       target.display_name,
       copyOverwrite.value
     );
-    emit("opMessage", `组件已复制到 ${target.display_name}：新增 ${result.copied}，更新 ${result.updated}，跳过 ${result.skipped}`);
+    requestSwitchToOrchestrator({
+      env_id: copyTargetEnvId.value,
+      component: props.selectedComponent,
+    });
+    emit(
+      "opMessage",
+      `组件已复制到 ${target.display_name}：新增 ${result.copied}，更新 ${result.updated}，跳过 ${result.skipped}`
+    );
   } catch (e) {
     emit("opError", extractErrorMessage(e));
   } finally {

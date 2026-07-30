@@ -30,6 +30,22 @@ macro_rules! kube_list_cluster {
             env_id: String,
             label_selector: Option<String>,
         ) -> CommandResult<Vec<$item_ty>> {
+            let (env, client) =
+                kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
+            let first = with_list_log(
+                $kind_str,
+                &env_id,
+                $list_fn(&client, label_selector.as_deref()),
+            )
+            .await;
+            let Err(err) = first else {
+                return first;
+            };
+            if let Some(e) =
+                kube_command_context::prepare_ssh_transport_retry(&store, &env, &err).await
+            {
+                return Err(e);
+            }
             let (_env, client) =
                 kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
             with_list_log(
@@ -53,11 +69,34 @@ macro_rules! kube_list_namespaced {
         ) -> CommandResult<Vec<$item_ty>> {
             let (env, client) =
                 kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
-            let ns = namespace.as_deref().or_else(|| env.default_namespace());
+            let ns = namespace
+                .as_deref()
+                .or_else(|| env.default_namespace())
+                .map(str::to_string);
+            let first = with_list_log(
+                $kind_str,
+                &env_id,
+                $list_fn(&client, ns.as_deref(), label_selector.as_deref()),
+            )
+            .await;
+            let Err(err) = first else {
+                return first;
+            };
+            if let Some(e) =
+                kube_command_context::prepare_ssh_transport_retry(&store, &env, &err).await
+            {
+                return Err(e);
+            }
+            let (env, client) =
+                kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
+            let ns = namespace
+                .as_deref()
+                .or_else(|| env.default_namespace())
+                .map(str::to_string);
             with_list_log(
                 $kind_str,
                 &env_id,
-                $list_fn(&client, ns, label_selector.as_deref()),
+                $list_fn(&client, ns.as_deref(), label_selector.as_deref()),
             )
             .await
         }
@@ -116,6 +155,20 @@ pub async fn kube_list_nodes(
     env_id: String,
     label_selector: Option<String>,
 ) -> CommandResult<Vec<NodeItem>> {
+    let (env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
+    let gpu_resource_names = kube_command_context::load_app_settings()?.gpu_resource_names();
+    let first = with_list_log(
+        "Node",
+        &env_id,
+        list_nodes(&client, label_selector.as_deref(), &gpu_resource_names),
+    )
+    .await;
+    let Err(err) = first else {
+        return first;
+    };
+    if let Some(e) = kube_command_context::prepare_ssh_transport_retry(&store, &env, &err).await {
+        return Err(e);
+    }
     let (_env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
     let gpu_resource_names = kube_command_context::load_app_settings()?.gpu_resource_names();
     with_list_log(
@@ -235,6 +288,16 @@ pub async fn kube_list_pods_for_workload(
     name: String,
     namespace: Option<String>,
 ) -> CommandResult<Vec<PodItem>> {
+    let (env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
+    let first = list_pods_for_workload(&client, &kind, &name, namespace.as_deref())
+        .await
+        .map_err(err_str);
+    let Err(err) = first else {
+        return first;
+    };
+    if let Some(e) = kube_command_context::prepare_ssh_transport_retry(&store, &env, &err).await {
+        return Err(e);
+    }
     let (_env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
     list_pods_for_workload(&client, &kind, &name, namespace.as_deref())
         .await
@@ -253,6 +316,25 @@ pub async fn kube_list_crd_instances(
     namespace: Option<String>,
     label_selector: Option<String>,
 ) -> CommandResult<Vec<DynamicCrdInstanceItem>> {
+    let (env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
+    let first = with_list_log(
+        &format!("CRD:{kind}"),
+        &env_id,
+        list_crd_instances(
+            &client,
+            &api_version,
+            &kind,
+            namespace.as_deref(),
+            label_selector.as_deref(),
+        ),
+    )
+    .await;
+    let Err(err) = first else {
+        return first;
+    };
+    if let Some(e) = kube_command_context::prepare_ssh_transport_retry(&store, &env, &err).await {
+        return Err(e);
+    }
     let (_env, client) = kube_command_context::kube_client_for_env_id(&store, &env_id).await?;
     with_list_log(
         &format!("CRD:{kind}"),

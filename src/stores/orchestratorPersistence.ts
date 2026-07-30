@@ -1,11 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { OrchestratorImportBatch, OrchestratorManifest } from "../stores/orchestratorTypes";
+import type {
+  OrchestratorComponentMeta,
+  OrchestratorImportBatch,
+  OrchestratorManifest,
+} from "../stores/orchestratorTypes";
 import type { OrchestratorPackage } from "../stores/orchestratorPackages";
 
 export interface OrchestratorPersistedData {
   manifests: OrchestratorManifest[];
   importBatches: OrchestratorImportBatch[];
   packages: OrchestratorPackage[];
+  components: OrchestratorComponentMeta[];
 }
 
 const KEY_MANIFESTS = "kube-flow:orchestrator:manifests";
@@ -56,16 +61,40 @@ function normalizePackages(items: unknown): OrchestratorPackage[] {
     });
 }
 
+function normalizeComponents(items: unknown): OrchestratorComponentMeta[] {
+  if (!Array.isArray(items)) return [];
+  return items
+    .filter((c) => c && typeof c === "object")
+    .map((c) => {
+      const item = c as Partial<OrchestratorComponentMeta>;
+      return {
+        env_id: typeof item.env_id === "string" ? item.env_id : "",
+        name: typeof item.name === "string" ? item.name : "",
+        namespace:
+          typeof item.namespace === "string" && item.namespace.trim()
+            ? item.namespace.trim()
+            : "default",
+      };
+    })
+    .filter((c) => c.env_id && c.name);
+}
+
 export function readOrchestratorLegacyLocalStorage(): OrchestratorPersistedData {
   return {
     manifests: normalizeManifests(readLegacyWrapped<unknown>(KEY_MANIFESTS, [])),
     importBatches: normalizeBatches(readLegacyWrapped<unknown>(KEY_BATCHES, [])),
     packages: normalizePackages(readLegacyWrapped<unknown>(KEY_PACKAGES, [])),
+    components: [],
   };
 }
 
 function hasOrchestratorContent(data: OrchestratorPersistedData): boolean {
-  return data.manifests.length > 0 || data.importBatches.length > 0 || data.packages.length > 0;
+  return (
+    data.manifests.length > 0 ||
+    data.importBatches.length > 0 ||
+    data.packages.length > 0 ||
+    data.components.length > 0
+  );
 }
 
 function pickRicherOrchestratorData(
@@ -84,11 +113,13 @@ async function orchestratorDataLoad(): Promise<OrchestratorPersistedData> {
     manifests?: unknown;
     importBatches?: unknown;
     packages?: unknown;
+    components?: unknown;
   }>("orchestrator_data_load");
   return {
     manifests: normalizeManifests(raw.manifests),
     importBatches: normalizeBatches(raw.importBatches),
     packages: normalizePackages(raw.packages),
+    components: normalizeComponents(raw.components),
   };
 }
 
@@ -98,6 +129,7 @@ async function orchestratorDataSave(data: OrchestratorPersistedData): Promise<vo
       manifests: data.manifests,
       importBatches: data.importBatches,
       packages: data.packages,
+      components: data.components,
     },
   });
 }
@@ -119,13 +151,19 @@ export async function hydrateOrchestratorData(
   hydratePromise = (async () => {
     const fromDisk = await orchestratorDataLoad().catch((e) => {
       console.error("[orchestrator-data] load failed:", e);
-      return { manifests: [], importBatches: [], packages: [] } satisfies OrchestratorPersistedData;
+      return {
+        manifests: [],
+        importBatches: [],
+        packages: [],
+        components: [],
+      } satisfies OrchestratorPersistedData;
     });
     const legacy = readOrchestratorLegacyLocalStorage();
     const merged = pickRicherOrchestratorData(fromDisk, legacy);
     apply(merged);
-    if (hasOrchestratorContent(merged)) {
-      await orchestratorDataSave(merged).catch((e) =>
+    const toSave = snapshotProvider ? snapshotProvider() : merged;
+    if (hasOrchestratorContent(toSave)) {
+      await orchestratorDataSave(toSave).catch((e) =>
         console.error("[orchestrator-data] migrate save failed:", e)
       );
     }

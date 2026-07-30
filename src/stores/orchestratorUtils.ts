@@ -63,6 +63,100 @@ export function normalizeComponent(component: string): string {
   return v || "default";
 }
 
+/** 常见集群级资源：不同一改写 metadata.namespace。 */
+const CLUSTER_SCOPED_KINDS = new Set([
+  "Namespace",
+  "Node",
+  "PersistentVolume",
+  "ClusterRole",
+  "ClusterRoleBinding",
+  "StorageClass",
+  "IngressClass",
+  "PriorityClass",
+  "CustomResourceDefinition",
+  "MutatingWebhookConfiguration",
+  "ValidatingWebhookConfiguration",
+  "CSIDriver",
+  "CSINode",
+  "VolumeAttachment",
+  "RuntimeClass",
+  "APIService",
+  "FlowSchema",
+  "PriorityLevelConfiguration",
+]);
+
+export function isClusterScopedKind(kind: string): boolean {
+  return CLUSTER_SCOPED_KINDS.has(kind);
+}
+
+export function normalizeInstallNamespace(namespace: string | null | undefined): string {
+  const v = (namespace ?? "").trim();
+  return v || "default";
+}
+
+/**
+ * 将 YAML 的 metadata.namespace 对齐到组件安装命名空间。
+ * 集群级资源会移除 namespace；命名空间级资源写入 targetNamespace。
+ */
+export function rewriteYamlNamespace(yaml: string, targetNamespace: string, kindHint?: string): string {
+  try {
+    const parsed = jsYaml.load(yaml);
+    if (!parsed || typeof parsed !== "object") return yaml;
+    const obj = parsed as Record<string, unknown>;
+    const kind =
+      (typeof kindHint === "string" && kindHint ? kindHint : null) ||
+      (typeof obj.kind === "string" ? obj.kind : "");
+    const meta =
+      obj.metadata && typeof obj.metadata === "object"
+        ? ({ ...(obj.metadata as Record<string, unknown>) } as Record<string, unknown>)
+        : ({} as Record<string, unknown>);
+    if (isClusterScopedKind(kind)) {
+      delete meta.namespace;
+    } else {
+      meta.namespace = normalizeInstallNamespace(targetNamespace);
+    }
+    obj.metadata = meta;
+    return jsYaml.dump(obj, { lineWidth: -1 });
+  } catch {
+    return yaml;
+  }
+}
+
+/** 从资源列表推断组件安装命名空间（取出现次数最多的非空 namespace）。 */
+export function inferNamespaceFromResources(
+  items: Array<{ kind: string; namespace: string | null }>
+): string {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    if (isClusterScopedKind(item.kind)) continue;
+    const ns = normalizeInstallNamespace(item.namespace);
+    counts.set(ns, (counts.get(ns) ?? 0) + 1);
+  }
+  let best = "default";
+  let bestCount = 0;
+  for (const [ns, count] of counts) {
+    if (count > bestCount) {
+      best = ns;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
+/** Service 的 clusterIP / clusterIPs 由集群分配，同步到编排资产时需剥离；Headless（None）除外。 */
+function stripServiceAllocatedClusterIps(obj: Record<string, unknown>): void {
+  if (obj.kind !== "Service") return;
+  const spec =
+    obj.spec && typeof obj.spec === "object" ? (obj.spec as Record<string, unknown>) : null;
+  if (!spec) return;
+  const clusterIp = typeof spec.clusterIP === "string" ? spec.clusterIP : "";
+  if (clusterIp === "None") return;
+  const nextSpec = { ...spec };
+  delete nextSpec.clusterIP;
+  delete nextSpec.clusterIPs;
+  obj.spec = nextSpec;
+}
+
 export function sanitizeYamlForSync(yaml: string): string {
   try {
     const parsed = jsYaml.load(yaml);
@@ -82,6 +176,7 @@ export function sanitizeYamlForSync(yaml: string): string {
       next.metadata = meta;
     }
     delete next.status;
+    stripServiceAllocatedClusterIps(next);
     return jsYaml.dump(next, { lineWidth: -1 });
   } catch {
     return yaml;

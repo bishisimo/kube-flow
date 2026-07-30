@@ -34,6 +34,7 @@ import { useOrchestratorImportPreview } from "../features/orchestrator/useOrches
 import { useEnvStore } from "../stores/env";
 import { useYamlMonacoTheme } from "../stores/yamlTheme";
 import { useOrchestratorStore, type OrchestratorManifest } from "../stores/orchestrator";
+import { isClusterScopedKind, rewriteYamlNamespace } from "../stores/orchestratorUtils";
 import OrchestratorPackageView from "../components/orchestrator/OrchestratorPackageView.vue";
 import OrchestratorCopyDialog from "../components/orchestrator/OrchestratorCopyDialog.vue";
 import OrchestratorDiffModal from "../components/orchestrator/OrchestratorDiffModal.vue";
@@ -78,12 +79,16 @@ const APPLY_ORDER: Record<string, number> = {
 const { environments, currentId } = useEnvStore();
 const {
   manifests,
+  componentMetas,
   orchestratorFocusTarget,
   saveManifestYaml,
   setManifestIdentity,
   setManifestComponent,
   deleteManifest,
   importManifestsToEnv,
+  getComponentNamespace,
+  setComponentNamespace,
+  deleteComponentMeta,
 } = useOrchestratorStore();
 const { monacoTheme } = useYamlMonacoTheme();
 
@@ -91,6 +96,7 @@ const activeView = ref<"resources" | "packages">("resources");
 const selectedEnvId = ref<string>("");
 const selectedComponent = ref<string>("");
 const selectedManifestId = ref<string>("");
+const componentNamespaceDraft = ref("default");
 const editYaml = ref("");
 const validationErrors = ref<string[]>([]);
 const validationWarnings = ref<string[]>([]);
@@ -154,6 +160,13 @@ const componentSelectOptions = computed(() =>
 const selectedComponentResourceCount = computed(
   () => componentItems.value.find((c) => c.name === selectedComponent.value)?.count ?? 0
 );
+
+const selectedComponentNamespace = computed(() => {
+  if (!selectedEnvId.value || !selectedComponent.value) return "default";
+  // 依赖 componentMetas 以保持响应式
+  void componentMetas.value.length;
+  return getComponentNamespace(selectedEnvId.value, selectedComponent.value);
+});
 
 const manifestsByComponent = computed(() =>
   manifestsByEnv.value.filter((m) => m.component === selectedComponent.value)
@@ -522,6 +535,7 @@ function confirmDeleteFromContextMenu() {
     .filter((m) => m.env_id === selectedEnvId.value && m.component === target.component)
     .map((m) => m.id);
   for (const id of ids) removeManifestById(id);
+  deleteComponentMeta(selectedEnvId.value, target.component);
   if (selectedComponent.value === target.component) {
     const next = components.value.find((name) => name !== target.component) ?? "";
     selectedComponent.value = next;
@@ -538,6 +552,22 @@ function hasManifestDraft(manifestId: string): boolean {
   const manifest = manifests.value.find((m) => m.id === manifestId);
   if (!draft || !manifest) return false;
   return draft !== manifest.yaml;
+}
+
+function commitComponentNamespace() {
+  if (!selectedEnvId.value || !selectedComponent.value) return;
+  const next = componentNamespaceDraft.value.trim() || "default";
+  componentNamespaceDraft.value = next;
+  if (next === selectedComponentNamespace.value) return;
+  const ns = setComponentNamespace(selectedEnvId.value, selectedComponent.value, next);
+  componentNamespaceDraft.value = ns;
+  // 命名空间变更会改写组件内 YAML，同步当前编辑区
+  const current = selectedManifest.value;
+  if (current) {
+    editYaml.value = manifestDraftCache.value[current.id] ?? current.yaml;
+  }
+  opError.value = null;
+  opMessage.value = `组件「${selectedComponent.value}」安装命名空间已设为 ${ns}。`;
 }
 
 function applyManifestComponentAssignment() {
@@ -639,6 +669,14 @@ watch(
 );
 
 watch(
+  () => [selectedEnvId.value, selectedComponent.value, selectedComponentNamespace.value] as const,
+  () => {
+    componentNamespaceDraft.value = selectedComponentNamespace.value;
+  },
+  { immediate: true }
+);
+
+watch(
   () => [selectedComponent.value, manifestsByComponent.value.map((m) => m.id).join(",")] as const,
   () => {
     if (!manifestsByComponent.value.length) {
@@ -734,7 +772,7 @@ function validateCurrent(): boolean {
 }
 
 function onSaveYaml() {
-  if (!selectedManifest.value) return;
+  if (!selectedManifest.value || !selectedEnvId.value) return;
   const ok = validateCurrent();
   if (!ok) return;
   const identity = parseIdentity(editYaml.value);
@@ -742,9 +780,17 @@ function onSaveYaml() {
     opError.value = "无法解析资源身份信息（kind/metadata.name）。";
     return;
   }
+  const ns = getComponentNamespace(selectedEnvId.value, selectedComponent.value);
+  const preparedYaml = rewriteYamlNamespace(editYaml.value, ns, identity.kind);
+  const preparedIdentity = {
+    kind: identity.kind,
+    name: identity.name,
+    namespace: isClusterScopedKind(identity.kind) ? null : ns,
+  };
+  editYaml.value = preparedYaml;
   setManifestComponent(selectedManifest.value.id, selectedComponent.value);
-  setManifestIdentity(selectedManifest.value.id, identity);
-  saveManifestYaml(selectedManifest.value.id, editYaml.value, "save");
+  setManifestIdentity(selectedManifest.value.id, preparedIdentity);
+  saveManifestYaml(selectedManifest.value.id, preparedYaml, "save");
   delete manifestDraftCache.value[selectedManifest.value.id];
   opError.value = null;
   opMessage.value = "已保存资源 YAML。";
@@ -859,6 +905,17 @@ function onViewHistory(item: ManifestHistoryItem) {
                     class="env-select-naive"
                   />
                 </label>
+                <label v-if="selectedComponent" class="component-namespace-field">
+                  <span class="env-select-label">安装命名空间</span>
+                  <NInput
+                    v-model:value="componentNamespaceDraft"
+                    placeholder="例如 default / prod"
+                    class="env-select-naive"
+                    @blur="commitComponentNamespace"
+                    @keydown.enter.prevent="commitComponentNamespace"
+                  />
+                  <small class="component-namespace-hint">该组件下 namespaced 资源统一安装到此命名空间</small>
+                </label>
                 <div v-if="selectedEnvId && !componentSelectOptions.length" class="empty orch-empty-inline">
                   当前环境暂无组件，请先新建或导入资源。
                 </div>
@@ -920,7 +977,8 @@ function onViewHistory(item: ManifestHistoryItem) {
                       <strong v-if="hasManifestDraft(m.id)" class="draft-tag">草稿</strong>
                     </div>
                     <div class="item-sub">
-                      <span>命名空间：{{ m.resource_namespace || "default" }}</span>
+                      <span v-if="m.resource_namespace === null">集群资源</span>
+                      <span v-else>命名空间：{{ selectedComponentNamespace }}</span>
                     </div>
                     <div v-if="m.source_file_name" class="item-meta">
                       <span>{{ m.source_file_name }}#{{ m.source_doc_index ?? 1 }}</span>
@@ -1157,16 +1215,16 @@ function onViewHistory(item: ManifestHistoryItem) {
       </aside>
     </div>
 
-    <OrchestratorPackageView
-      v-else
-      :selected-env-id="selectedEnvId"
-      :environments="environments"
-      :components="components"
-      :manifests-by-env="manifestsByEnv"
-      @op-message="opMessage = $event"
-      @op-error="opError = $event"
-    />
-
+    <div v-else class="pkg-view-host">
+      <OrchestratorPackageView
+        :selected-env-id="selectedEnvId"
+        :environments="environments"
+        :components="components"
+        :manifests-by-env="manifestsByEnv"
+        @op-message="opMessage = $event"
+        @op-error="opError = $event"
+      />
+    </div>
     <OrchestratorDiffModal
       :visible="diffVisible"
       :loading="diffLoading"
