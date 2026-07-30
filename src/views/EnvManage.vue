@@ -20,10 +20,14 @@ const emit = defineEmits<{
   (e: "open-ssh-settings"): void;
 }>();
 
+const manage = useEnvManage();
 const {
+  environments,
   listLoading,
   allTags,
   selectedFilterTags,
+  searchQuery,
+  hasActiveFilter,
   filteredEnvironments,
   loadList,
   getTunnelForEnv,
@@ -35,7 +39,11 @@ const {
   removeEnv,
   useEnvAndEmit,
   openEnvTerminal,
-} = useEnvManage();
+} = manage;
+
+function onSearchQueryUpdate(value: string) {
+  searchQuery.value = value ?? "";
+}
 
 const showCreate = ref(false);
 const showEdit = ref(false);
@@ -81,12 +89,16 @@ async function onContextSwitch(env: Environment, ctx: string) {
     </header>
 
     <EnvFilterBar
-      v-if="!listLoading"
+      :query="searchQuery"
       :tags="allTags"
       :selected="selectedFilterTags"
+      @update:query="onSearchQueryUpdate"
       @toggle="toggleFilterTag"
       @clear="clearFilter"
     />
+    <p v-if="!listLoading && hasActiveFilter" class="filter-summary">
+      显示 {{ filteredEnvironments.length }} / {{ environments.length }} 个环境
+    </p>
 
     <div class="body">
       <NSpace v-if="listLoading" v-bind="kfSpace.centered" class="state-loading">
@@ -111,18 +123,18 @@ async function onContextSwitch(env: Environment, ctx: string) {
       <NEmpty
         v-else
         class="state-empty"
-        :description="selectedFilterTags.size ? '无匹配环境' : '暂无环境'"
+        :description="hasActiveFilter ? '无匹配环境' : '暂无环境'"
       >
         <template #extra>
           <p class="empty-desc">
             {{
-              selectedFilterTags.size
-                ? "尝试清除标签筛选或新建环境。"
+              hasActiveFilter
+                ? "尝试调整搜索词、清除标签筛选或新建环境。"
                 : "点击「新建环境」添加本地 kubeconfig 或 SSH 隧道连接。"
             }}
           </p>
           <NSpace v-bind="kfSpace.centeredActions" class="empty-actions">
-            <NButton v-if="selectedFilterTags.size" @click="clearFilter">清除筛选</NButton>
+            <NButton v-if="hasActiveFilter" @click="clearFilter">清除筛选</NButton>
             <NButton type="primary" @click="openCreate">新建环境</NButton>
           </NSpace>
         </template>
@@ -171,6 +183,11 @@ async function onContextSwitch(env: Environment, ctx: string) {
 .header-row :deep(.n-space-item:first-child) {
   flex: 1;
   min-width: 12rem;
+}
+.filter-summary {
+  margin: -0.35rem 0 0.85rem;
+  font-size: 0.75rem;
+  color: var(--kf-text-secondary);
 }
 .body {
   flex: 1;

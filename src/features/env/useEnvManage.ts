@@ -15,6 +15,30 @@ import { useEnvStore } from "../../stores/env";
 import { useShellStore } from "../../stores/shell";
 import { getNodeTerminalStrategy } from "../../stores/nodeTerminalStrategy";
 
+function envMatchesQuery(env: Environment, tunnel: SshTunnel | undefined, query: string): boolean {
+  // query 已由调用方 trim + toLowerCase
+  if (!query) return true;
+  const haystack = [
+    env.display_name,
+    env.source === "ssh_tunnel" ? "ssh" : "本地",
+    env.source,
+    ...(env.tags ?? []),
+    ...(env.contexts ?? []).flatMap((c) => [
+      c.context_name,
+      c.display_name ?? "",
+      c.cluster_name ?? "",
+      c.default_namespace ?? "",
+    ]),
+    env.kubeconfig_path ?? "",
+    tunnel?.ssh_host ?? "",
+    tunnel?.name ?? "",
+    tunnel?.remote_kubeconfig_path ?? "",
+  ]
+    .join("\n")
+    .toLowerCase();
+  return haystack.includes(query);
+}
+
 export function useEnvManage() {
   const envStore = useEnvStore();
   const shellStore = useShellStore();
@@ -22,7 +46,8 @@ export function useEnvManage() {
   const environments = ref<Environment[]>([]);
   const sshTunnels = ref<SshTunnel[]>([]);
   const listLoading = ref(false);
-  const selectedFilterTags = ref<Set<string>>(new Set());
+  const selectedFilterTags = ref<string[]>([]);
+  const searchQuery = ref("");
 
   const allTags = computed<string[]>(() => {
     const set = new Set<string>();
@@ -32,12 +57,24 @@ export function useEnvManage() {
     return [...set].sort((a, b) => a.localeCompare(b));
   });
 
+  const hasActiveFilter = computed(
+    () => selectedFilterTags.value.length > 0 || Boolean(searchQuery.value.trim())
+  );
+
   const filteredEnvironments = computed<Environment[]>(() => {
-    const sel = selectedFilterTags.value;
-    if (sel.size === 0) return environments.value;
-    return environments.value.filter((env) =>
-      (env.tags ?? []).some((t) => sel.has(t.trim()))
-    );
+    const selected = new Set(selectedFilterTags.value);
+    const query = searchQuery.value.trim().toLowerCase();
+    return environments.value.filter((env) => {
+      if (selected.size > 0 && !(env.tags ?? []).some((t) => selected.has(t.trim()))) {
+        return false;
+      }
+      if (!query) return true;
+      const tunnel =
+        env.source === "ssh_tunnel" && env.ssh_tunnel_id
+          ? sshTunnels.value.find((t) => t.id === env.ssh_tunnel_id)
+          : undefined;
+      return envMatchesQuery(env, tunnel, query);
+    });
   });
 
   async function loadList() {
@@ -69,14 +106,13 @@ export function useEnvManage() {
   }
 
   function toggleFilterTag(tag: string) {
-    const next = new Set(selectedFilterTags.value);
-    if (next.has(tag)) next.delete(tag);
-    else next.add(tag);
-    selectedFilterTags.value = next;
+    const cur = selectedFilterTags.value;
+    selectedFilterTags.value = cur.includes(tag) ? cur.filter((t) => t !== tag) : [...cur, tag];
   }
 
   function clearFilter() {
-    selectedFilterTags.value = new Set();
+    selectedFilterTags.value = [];
+    searchQuery.value = "";
   }
 
   async function switchContext(env: Environment, contextName: string) {
@@ -123,6 +159,8 @@ export function useEnvManage() {
     listLoading,
     allTags,
     selectedFilterTags,
+    searchQuery,
+    hasActiveFilter,
     filteredEnvironments,
     loadList,
     getTunnelForEnv,
