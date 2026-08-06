@@ -11,6 +11,10 @@ const props = defineProps<{
   selectedEnvId: string;
   selectedComponent: string;
   environments: Array<{ id: string; display_name: string }>;
+  /** 当前组件未保存草稿数；大于 0 时默认勾选先保存再拷贝 */
+  draftCount?: number;
+  /** 跨环境拷贝前落盘当前组件草稿，返回成功保存条数 */
+  flushDrafts?: () => number;
 }>();
 
 const emit = defineEmits<{
@@ -24,7 +28,10 @@ const { requestSwitchToOrchestrator } = useOrchestratorStore();
 
 const copyTargetEnvId = ref("");
 const copyOverwrite = ref(true);
+const saveDraftsFirst = ref(true);
 const copyLoading = ref(false);
+
+const draftCount = computed(() => Math.max(0, props.draftCount ?? 0));
 
 const copyTargetOptions = computed(() =>
   props.environments.filter((e) => e.id !== props.selectedEnvId).map((e) => ({ label: e.display_name, value: e.id }))
@@ -45,12 +52,24 @@ watch(
   { immediate: true }
 );
 
+watch(
+  () => [props.visible, draftCount.value] as const,
+  ([vis]) => {
+    if (!vis) return;
+    saveDraftsFirst.value = draftCount.value > 0;
+  }
+);
+
 async function onCopyComponentToEnv() {
   if (!props.selectedEnvId || !props.selectedComponent || !copyTargetEnvId.value) return;
   const target = props.environments.find((e) => e.id === copyTargetEnvId.value);
   if (!target) return;
   copyLoading.value = true;
   try {
+    let savedDrafts = 0;
+    if (saveDraftsFirst.value && draftCount.value > 0 && props.flushDrafts) {
+      savedDrafts = props.flushDrafts();
+    }
     const result = copyComponentToEnv(
       props.selectedEnvId,
       props.selectedComponent,
@@ -62,9 +81,10 @@ async function onCopyComponentToEnv() {
       env_id: copyTargetEnvId.value,
       component: props.selectedComponent,
     });
+    const draftHint = savedDrafts > 0 ? `已先保存 ${savedDrafts} 处草稿。` : "";
     emit(
       "opMessage",
-      `组件已复制到 ${target.display_name}：新增 ${result.copied}，更新 ${result.updated}，跳过 ${result.skipped}`
+      `组件已跨环境拷贝到 ${target.display_name}：新增 ${result.copied}，更新 ${result.updated}，跳过 ${result.skipped}。${draftHint}`
     );
   } catch (e) {
     emit("opError", extractErrorMessage(e));
@@ -81,8 +101,11 @@ function onClose() {
 </script>
 
 <template>
-  <BaseModal :visible="visible" title="复制组件到环境" width="480px" @close="onClose">
+  <BaseModal :visible="visible" title="跨环境拷贝组件" width="480px" @close="onClose">
     <div class="copy-dialog-body">
+      <div class="copy-tip">
+        将把当前环境下组件 <strong>{{ selectedComponent }}</strong> 的全部资源 YAML 拷贝到目标环境的编排资产（不会写入 Kubernetes 集群）。
+      </div>
       <label class="field-label">
         <span>目标环境</span>
         <NSelect
@@ -93,10 +116,17 @@ function onClose() {
           class="env-select-naive"
         />
       </label>
+      <NCheckbox
+        v-if="draftCount > 0"
+        v-model:checked="saveDraftsFirst"
+        :disabled="copyLoading"
+        class="field-check-naive"
+      >
+        先保存本组件全部草稿（{{ draftCount }} 处），再拷贝
+      </NCheckbox>
       <NCheckbox v-model:checked="copyOverwrite" :disabled="copyLoading" class="field-check-naive">
         覆盖同名资源
       </NCheckbox>
-      <div class="copy-tip">将复制当前环境下组件 <strong>{{ selectedComponent }}</strong> 的全部资源 YAML。</div>
     </div>
     <template #footer>
       <NButton secondary :disabled="copyLoading" @click="onClose">取消</NButton>
@@ -106,7 +136,7 @@ function onClose() {
         :loading="copyLoading"
         @click="onCopyComponentToEnv"
       >
-        开始复制
+        开始拷贝
       </NButton>
     </template>
   </BaseModal>

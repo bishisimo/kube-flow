@@ -886,7 +886,7 @@ const menuOptions = computed<MenuOption[]>(() =>
           <div class="setting-row">
             <div class="setting-copy">
               <div class="setting-title">终端实例缓存数量</div>
-              <div class="setting-desc">默认 6 个。终端中心会保留最近活跃的终端实例屏幕历史，超出后仅回收前端实例，不会关闭会话本身。</div>
+              <div class="setting-desc">默认 6 个。终端中心会保留最近活跃的终端实例屏幕历史（含断开后的交互缓冲），超出后仅回收前端实例，不会关闭会话本身。</div>
             </div>
             <NSpace v-bind="kfSpace.settingInline" class="setting-input-wrap">
               <NInputNumber

@@ -8,11 +8,20 @@ import { hostShellAck, hostShellResize, hostShellStdin } from "../api/terminal";
 import { base64ToBytes, bytesToBase64 } from "../utils/terminalBytes";
 import "@xterm/xterm/css/xterm.css";
 
-const props = defineProps<{
-  streamId: string | null;
-  mode?: "pod" | "host";
-  active?: boolean;
-}>();
+const props = withDefaults(
+  defineProps<{
+    streamId: string | null;
+    mode?: "pod" | "host";
+    active?: boolean;
+    /** 递增时清空屏幕（例如切换 Pod/容器）；streamId 变化本身保留交互历史 */
+    historyEpoch?: number;
+  }>(),
+  {
+    mode: "pod",
+    active: true,
+    historyEpoch: 0,
+  }
+);
 
 const emit = defineEmits<{
   (e: "end", payload: { streamId: string; error?: string }): void;
@@ -32,7 +41,13 @@ const inputEncoder = new TextEncoder();
 let lastResizeCols = 0;
 let lastResizeRows = 0;
 let listenerSetupSeq = 0;
+let fitRaf = 0;
+let resizeDebounceTimer: number | null = null;
+let lastFitWidth = 0;
+let lastFitHeight = 0;
+let sawStream = false;
 const INPUT_FLUSH_MS = 8;
+const RESIZE_DEBOUNCE_MS = 48;
 
 /** 输出写队列：watermark 背压，避免大刷屏卡住输入。 */
 const WRITE_HIGH = 256 * 1024;
@@ -186,6 +201,28 @@ function sanitizeTerminalInput(text: string): string {
 function resetTerminalView() {
   clearOutputQueue();
   terminal?.reset();
+  sawStream = false;
+}
+
+/** 导出当前缓冲区内的纯文本交互历史，供保存或外部编辑器打开。 */
+function getHistoryText(): string {
+  if (!terminal) return "";
+  const buffer = terminal.buffer.active;
+  const lines: string[] = [];
+  const total = buffer.length;
+  for (let i = 0; i < total; i += 1) {
+    const line = buffer.getLine(i);
+    if (line) lines.push(line.translateToString(true));
+  }
+  while (lines.length && !lines[lines.length - 1].trim()) {
+    lines.pop();
+  }
+  return lines.join("\n");
+}
+
+function writeReconnectMarker() {
+  if (!terminal || !sawStream) return;
+  terminal.writeln("\x1b[90m── 会话已重新连接，上方为断开前的交互历史 ──\x1b[0m");
 }
 
 async function tryLoadWebgl(term: Terminal) {
@@ -196,6 +233,28 @@ async function tryLoadWebgl(term: Terminal) {
   } catch {
     // WebGL 不可用时保持 canvas/dom 渲染
   }
+}
+
+function scheduleFitAndResize(force = false) {
+  if (fitRaf) cancelAnimationFrame(fitRaf);
+  fitRaf = requestAnimationFrame(() => {
+    fitRaf = 0;
+    fitAndResize(force);
+  });
+}
+
+function fitAndResize(force = false) {
+  if (!fitAddon || !terminal || !terminalRef.value) return;
+  const width = terminalRef.value.clientWidth;
+  const height = terminalRef.value.clientHeight;
+  if (!force && width === lastFitWidth && height === lastFitHeight && lastResizeCols > 0) {
+    return;
+  }
+  if (width <= 0 || height <= 0) return;
+  lastFitWidth = width;
+  lastFitHeight = height;
+  fitAddon.fit();
+  trySendResize();
 }
 
 function initTerminal() {
@@ -216,7 +275,7 @@ function initTerminal() {
   void tryLoadWebgl(terminal);
 
   // 立即 fit 一次：open() 后 xterm 已同步测量字符尺寸，容器此时也已布局完成
-  fitAddon.fit();
+  fitAndResize(true);
 
   terminal.onData((data) => {
     const sanitized = sanitizeTerminalInput(data);
@@ -232,17 +291,21 @@ function initTerminal() {
     enqueueInputBytes(bytes);
   });
 
-  // ResizeObserver 处理容器尺寸变化（切换侧边栏、窗口缩放、tab 从隐藏变可见）
+  // ResizeObserver：尺寸稳定后再 fit，避免刚挂载时多次布局抖动
   resizeObserver = new ResizeObserver(() => {
-    fitAddon?.fit();
-    trySendResize();
+    if (resizeDebounceTimer !== null) {
+      window.clearTimeout(resizeDebounceTimer);
+    }
+    resizeDebounceTimer = window.setTimeout(() => {
+      resizeDebounceTimer = null;
+      scheduleFitAndResize();
+    }, RESIZE_DEBOUNCE_MS);
   });
   resizeObserver.observe(terminalRef.value);
 }
 
 function trySendResize() {
   if (!props.streamId || !terminal) return;
-  fitAddon?.fit();
   const cols = terminal.cols;
   const rows = terminal.rows;
   if (cols <= 0 || rows <= 0) return;
@@ -308,28 +371,33 @@ async function setupListeners() {
   unlistenEnd = nextUnlistenEnd;
 }
 
-function fitAndResize() {
-  fitAddon?.fit();
-  trySendResize();
-}
+watch(
+  () => props.historyEpoch,
+  () => {
+    resetTerminalView();
+  }
+);
 
-// 处理 streamId 变化（切换 Pod/容器），不处理初始值（由 onMounted 负责）
+// streamId 变化只重绑监听与尺寸，不清空屏幕历史
 watch(
   () => props.streamId,
-  async (id) => {
+  async (id, prev) => {
     clearInputBuffer();
     clearOutputQueue();
     lastResizeCols = 0;
     lastResizeRows = 0;
-    resetTerminalView();
-    // 先 fit + resize，再设置监听：确保远端 shell 启动时 PTY 尺寸正确
+    if (id && prev && id !== prev) {
+      writeReconnectMarker();
+    } else if (id && !prev && sawStream) {
+      writeReconnectMarker();
+    }
     if (id) {
-      fitAddon?.fit();
-      trySendResize();
+      sawStream = true;
+      scheduleFitAndResize(true);
     }
     await setupListeners();
     if (id) {
-      requestAnimationFrame(fitAndResize);
+      scheduleFitAndResize(true);
     }
   }
 );
@@ -338,16 +406,15 @@ watch(
   () => props.active,
   (active) => {
     if (!active || !props.streamId) return;
-    requestAnimationFrame(fitAndResize);
+    scheduleFitAndResize(true);
   }
 );
 
 onMounted(async () => {
   initTerminal();
-  resetTerminalView();
   if (props.streamId) {
-    fitAddon?.fit();
-    trySendResize();
+    sawStream = true;
+    scheduleFitAndResize(true);
   }
   await setupListeners();
 });
@@ -357,6 +424,11 @@ onUnmounted(() => {
   flushAck();
   clearInputBuffer();
   clearOutputQueue();
+  if (fitRaf) cancelAnimationFrame(fitRaf);
+  if (resizeDebounceTimer !== null) {
+    window.clearTimeout(resizeDebounceTimer);
+    resizeDebounceTimer = null;
+  }
   unlistenChunk?.();
   unlistenEnd?.();
   resizeObserver?.disconnect();
@@ -364,6 +436,11 @@ onUnmounted(() => {
   terminal = null;
   fitAddon = null;
   stdinWriteQueue = Promise.resolve();
+});
+
+defineExpose({
+  getHistoryText,
+  fitAndResize,
 });
 </script>
 
@@ -375,7 +452,9 @@ onUnmounted(() => {
 .pod-shell-terminal {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   overflow: hidden;
+  contain: layout paint;
 }
 .pod-shell-terminal :deep(.xterm) {
   height: 100%;

@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch, type ComponentPublicInstance } from "vue";
 import { NAlert, NButton, NEmpty, NScrollbar, NSelect, NSpace, NTag, NTooltip } from "naive-ui";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { save } from "@tauri-apps/plugin-dialog";
+import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { kfSpace } from "../kf";
 
 defineOptions({ name: "PodShellView" });
@@ -28,11 +30,17 @@ import { bytesToBase64, estimateTerminalSize } from "../utils/terminalBytes";
 import { isConnectionError, useConnectionStore } from "../stores/connection";
 import { useStrongholdAuthStore } from "../stores/strongholdAuth";
 import { useAppSettingsStore } from "../stores/appSettings";
+import { storageWriteTextFile } from "../api/storage";
 import PodShellTerminal from "../components/PodShellTerminal.vue";
 import FileTransferDialog, {
   type FileTransferDirection,
 } from "../components/FileTransferDialog.vue";
 import { buildCompactRailItems } from "../utils/compactRail";
+
+type PodShellTerminalExpose = {
+  getHistoryText: () => string;
+  fitAndResize: (force?: boolean) => void;
+};
 
 const {
   sessions,
@@ -58,6 +66,11 @@ const hostEntryEnvId = ref<string | null>(null);
 const reconnectingSessionIds = new Set<string>();
 const suppressEndStreamIds = new Set<string>();
 const terminalActivationOrder = ref<string[]>([]);
+/** 已挂载过终端实例的会话：断开后仍保留屏幕历史，超出缓存上限再回收。 */
+const retainedTerminalIds = ref<string[]>([]);
+const terminalHistoryEpoch = ref<Record<string, number>>({});
+const terminalRefs = new Map<string, PodShellTerminalExpose>();
+const historyExportBusy = ref(false);
 const fileTransferBusy = ref(false);
 const fileTransferStatus = ref<{ type: "success" | "error"; text: string } | null>(null);
 const fileTransferDialogVisible = ref(false);
@@ -141,20 +154,32 @@ const envConnectionAlert = computed(() => {
   return null;
 });
 
-const hasMountedTerminalSession = computed(() => sessions.value.some((session) => Boolean(session.streamId)));
 const visibleTerminalSessions = computed(() => {
   const limit = Math.max(1, terminalInstanceCacheLimit.value || 6);
-  const connected = sessions.value.filter((session) => Boolean(session.streamId));
-  if (!connected.length) return [];
+  const retained = new Set(retainedTerminalIds.value);
+  const candidates = sessions.value.filter((session) => retained.has(session.id));
+  if (!candidates.length) return [];
   const order = terminalActivationOrder.value;
   const rank = new Map<string, number>();
   order.forEach((id, index) => rank.set(id, index));
-  const sorted = [...connected].sort((a, b) => {
+  const sorted = [...candidates].sort((a, b) => {
     const aRank = rank.get(a.id) ?? Number.MAX_SAFE_INTEGER;
     const bRank = rank.get(b.id) ?? Number.MAX_SAFE_INTEGER;
     return aRank - bRank;
   });
   return sorted.slice(0, limit);
+});
+const currentSessionShowsStage = computed(() => {
+  const session = currentSession.value;
+  if (!session) return false;
+  if (session.streamId) return true;
+  if (session.status === "connecting" || session.status === "reconnecting") return true;
+  if (retainedTerminalIds.value.includes(session.id)) return true;
+  return false;
+});
+const currentSessionHasHistory = computed(() => {
+  const id = currentSession.value?.id;
+  return Boolean(id && retainedTerminalIds.value.includes(id));
 });
 const compactSessionItems = computed(() =>
   buildCompactRailItems(
@@ -255,10 +280,114 @@ function touchTerminalSession(sessionId: string | null) {
   const next = terminalActivationOrder.value.filter((id) => id !== sessionId);
   next.unshift(sessionId);
   terminalActivationOrder.value = next;
+  retainTerminalSession(sessionId);
+}
+
+function retainTerminalSession(sessionId: string) {
+  if (!retainedTerminalIds.value.includes(sessionId)) {
+    retainedTerminalIds.value = [...retainedTerminalIds.value, sessionId];
+  }
+  pruneRetainedTerminals();
+}
+
+function pruneRetainedTerminals() {
+  const limit = Math.max(1, terminalInstanceCacheLimit.value || 6);
+  const alive = new Set(sessions.value.map((session) => session.id));
+  const currentId = currentSessionId.value;
+  let next = retainedTerminalIds.value.filter((id) => alive.has(id));
+  if (next.length > limit) {
+    const rank = new Map<string, number>();
+    terminalActivationOrder.value.forEach((id, index) => rank.set(id, index));
+    next = [...next].sort((a, b) => {
+      if (a === currentId) return -1;
+      if (b === currentId) return 1;
+      return (rank.get(a) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b) ?? Number.MAX_SAFE_INTEGER);
+    });
+    const kept = next.slice(0, limit);
+    const dropped = next.slice(limit);
+    for (const id of dropped) {
+      terminalRefs.delete(id);
+      const { [id]: _removed, ...rest } = terminalHistoryEpoch.value;
+      terminalHistoryEpoch.value = rest;
+    }
+    next = kept;
+  }
+  retainedTerminalIds.value = next;
+}
+
+function bumpHistoryEpoch(sessionId: string) {
+  terminalHistoryEpoch.value = {
+    ...terminalHistoryEpoch.value,
+    [sessionId]: (terminalHistoryEpoch.value[sessionId] ?? 0) + 1,
+  };
+}
+
+function setTerminalRef(sessionId: string, instance: Element | ComponentPublicInstance | null) {
+  if (!instance || !("getHistoryText" in instance)) {
+    terminalRefs.delete(sessionId);
+    return;
+  }
+  terminalRefs.set(sessionId, instance as unknown as PodShellTerminalExpose);
 }
 
 function markStreamSuppressEnd(streamId: string | null) {
   if (streamId) suppressEndStreamIds.add(streamId);
+}
+
+function historyDefaultFileName(session: (typeof sessions.value)[number]): string {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const base =
+    session.kind === "host"
+      ? `${session.envName}-host`
+      : `${session.envName}-${session.namespace || "default"}-${session.podName || "pod"}`;
+  return `${base.replace(/[^\w.\-]+/g, "_")}-${stamp}.txt`;
+}
+
+async function exportCurrentSessionHistory(openAfterSave: "none" | "default" | "vscode" | "reveal") {
+  const session = currentSession.value;
+  if (!session || historyExportBusy.value) return;
+  const term = terminalRefs.get(session.id);
+  const text = term?.getHistoryText()?.trimEnd() ?? "";
+  if (!text) {
+    fileTransferStatus.value = { type: "error", text: "当前会话暂无交互历史可保存" };
+    return;
+  }
+  historyExportBusy.value = true;
+  try {
+    const selected = await save({
+      title: "保存终端交互历史",
+      defaultPath: historyDefaultFileName(session),
+      filters: [{ name: "Text", extensions: ["txt", "log"] }],
+    });
+    if (typeof selected !== "string" || !selected) return;
+    const header = [
+      `# kube-flow terminal history`,
+      `# kind: ${session.kind}`,
+      `# env: ${session.envName}`,
+      session.kind === "host"
+        ? `# host: ${session.hostLabel || session.envName}`
+        : `# target: ${session.namespace || "default"}/${session.podName || "-"}${session.container ? ` (${session.container})` : ""}`,
+      `# exportedAt: ${new Date().toISOString()}`,
+      "",
+    ].join("\n");
+    await storageWriteTextFile(selected, `${header}${text}\n`);
+    fileTransferStatus.value = { type: "success", text: "交互历史已保存" };
+    if (openAfterSave === "reveal") {
+      await revealItemInDir(selected);
+    } else if (openAfterSave === "vscode") {
+      try {
+        await openPath(selected, "code");
+      } catch {
+        await openPath(selected);
+      }
+    } else if (openAfterSave === "default") {
+      await openPath(selected);
+    }
+  } catch (e) {
+    fileTransferStatus.value = { type: "error", text: extractErrorMessage(e) };
+  } finally {
+    historyExportBusy.value = false;
+  }
 }
 
 const fileTransferTargetLabel = computed(() => {
@@ -397,9 +526,16 @@ function downloadFileForCurrentSession() {
   openFileTransferDialog("download");
 }
 
-/** 启动 shell 前按当前终端舞台估算 PTY 尺寸。 */
-function shellLaunchSize(): { cols: number; rows: number } {
-  const el = document.querySelector(".terminal-stage") as HTMLElement | null;
+/** 启动 shell 前等待舞台布局完成，再按终端区域估算 PTY 尺寸，减少首连抖动。 */
+async function shellLaunchSize(): Promise<{ cols: number; rows: number }> {
+  await nextTick();
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
+  const el =
+    (document.querySelector(".terminal-stack .pod-shell-terminal") as HTMLElement | null) ??
+    (document.querySelector(".terminal-stack") as HTMLElement | null) ??
+    (document.querySelector(".terminal-stage") as HTMLElement | null);
   return estimateTerminalSize(el);
 }
 
@@ -407,7 +543,7 @@ async function startHostSessionStream(sessionId: string): Promise<boolean> {
   const session = sessions.value.find((item) => item.id === sessionId);
   if (!session) return false;
   try {
-    const { cols, rows } = shellLaunchSize();
+    const { cols, rows } = await shellLaunchSize();
     const streamId = await hostShellStart(
       session.envId,
       session.nodeTerminalLaunch ?? null,
@@ -459,7 +595,7 @@ async function tryReconnectSession(sessionId: string, resetClient: boolean): Pro
     if (resetClient) {
       await kubeRemoveClient(session.envId).catch(() => {});
     }
-    const { cols, rows } = shellLaunchSize();
+    const { cols, rows } = await shellLaunchSize();
     const streamId = await kubePodExecStart(
       session.envId,
       session.namespace || "default",
@@ -531,7 +667,7 @@ async function openPodConnection(
     });
   }
   try {
-    const { cols, rows } = shellLaunchSize();
+    const { cols, rows } = await shellLaunchSize();
     const streamId = await kubePodExecStart(envId, namespace, podName, container || null, cols, rows);
     updateSession(id, { streamId, status: "connected", error: undefined });
     clearReconnectState(id);
@@ -598,7 +734,7 @@ async function openHostConnectionWithBootstrap(
     });
   }
   try {
-    const { cols, rows } = shellLaunchSize();
+    const { cols, rows } = await shellLaunchSize();
     const streamId = await hostShellStart(envId, nodeTerminalLaunch ?? null, cols, rows);
     updateSession(id, { streamId, status: "connected", error: undefined });
     if (!nodeTerminalLaunch) {
@@ -741,12 +877,13 @@ async function switchPod(newPodName: string) {
     await kubePodExecStop(session.streamId);
   }
   clearReconnectState(session.id);
+  bumpHistoryEpoch(session.id);
   updateSession(session.id, { streamId: null, status: "connecting", podName: newPodName });
   try {
     const containers = await kubeGetPodContainers(session.envId, session.namespace, newPodName);
     const container = containers[0] ?? "";
     updateSession(session.id, { container });
-    const { cols, rows } = shellLaunchSize();
+    const { cols, rows } = await shellLaunchSize();
     const streamId = await kubePodExecStart(
       session.envId,
       session.namespace,
@@ -781,9 +918,10 @@ async function switchContainer(newContainer: string) {
     await kubePodExecStop(session.streamId);
   }
   clearReconnectState(session.id);
+  bumpHistoryEpoch(session.id);
   updateSession(session.id, { streamId: null, status: "connecting", container: newContainer });
   try {
-    const { cols, rows } = shellLaunchSize();
+    const { cols, rows } = await shellLaunchSize();
     const streamId = await kubePodExecStart(
       session.envId,
       session.namespace,
@@ -820,6 +958,11 @@ function closeSession(id: string) {
     }
   }
   clearReconnectState(id);
+  terminalRefs.delete(id);
+  retainedTerminalIds.value = retainedTerminalIds.value.filter((item) => item !== id);
+  terminalActivationOrder.value = terminalActivationOrder.value.filter((item) => item !== id);
+  const { [id]: _removed, ...rest } = terminalHistoryEpoch.value;
+  terminalHistoryEpoch.value = rest;
   removeSession(id);
 }
 
@@ -900,16 +1043,23 @@ watch(
 );
 
 watch(
-  () => sessions.value.map((session) => `${session.id}:${session.streamId ?? ""}`).join("|"),
+  () => sessions.value.map((session) => session.id).join("|"),
   () => {
-    const activeIds = new Set(sessions.value.filter((session) => Boolean(session.streamId)).map((session) => session.id));
-    terminalActivationOrder.value = terminalActivationOrder.value.filter((id) => activeIds.has(id));
-    if (currentSession.value?.streamId) {
+    const alive = new Set(sessions.value.map((session) => session.id));
+    terminalActivationOrder.value = terminalActivationOrder.value.filter((id) => alive.has(id));
+    retainedTerminalIds.value = retainedTerminalIds.value.filter((id) => alive.has(id));
+    if (currentSession.value) {
       touchTerminalSession(currentSession.value.id);
+    } else {
+      pruneRetainedTerminals();
     }
   },
   { immediate: true }
 );
+
+watch(terminalInstanceCacheLimit, () => {
+  pruneRetainedTerminals();
+});
 
 /**
  * 与「当前工作台选中的环境」对齐：有 currentId 且仍存在于环境列表时默认选它，避免曾用首项当默认值；
@@ -1058,8 +1208,8 @@ onUnmounted(() => {
 
     <main class="terminal-main">
       <header class="terminal-header">
-        <div v-if="currentSessionSubtitle" class="terminal-header-main">
-          <p class="terminal-subtitle">{{ currentSessionSubtitle }}</p>
+        <div class="terminal-header-main">
+          <p class="terminal-subtitle">{{ currentSessionSubtitle || "集中管理 Pod Shell 与主机 Shell。" }}</p>
         </div>
       </header>
 
@@ -1074,7 +1224,7 @@ onUnmounted(() => {
       </NAlert>
 
       <section
-        v-if="currentSession && (currentSession.streamId || currentSession.status === 'connecting' || currentSession.status === 'reconnecting')"
+        v-if="currentSession && currentSessionShowsStage"
         class="terminal-stage"
         :class="{ 'is-drop-target': dropArmed }"
       >
@@ -1130,6 +1280,23 @@ onUnmounted(() => {
               >{{ fileTransferStatus.text }}</NTag>
               <NButton
                 size="small"
+                :loading="historyExportBusy"
+                :disabled="!currentSessionHasHistory || historyExportBusy"
+                @click="exportCurrentSessionHistory('none')"
+              >保存历史</NButton>
+              <NTooltip placement="bottom" :show-arrow="false">
+                <template #trigger>
+                  <NButton
+                    size="small"
+                    :loading="historyExportBusy"
+                    :disabled="!currentSessionHasHistory || historyExportBusy"
+                    @click="exportCurrentSessionHistory('vscode')"
+                  >导出并打开</NButton>
+                </template>
+                保存后优先用 VS Code（code）打开，失败则回退系统默认应用
+              </NTooltip>
+              <NButton
+                size="small"
                 :loading="fileTransferBusy"
                 :disabled="!currentSession.streamId || fileTransferBusy"
                 @click="uploadFileForCurrentSession"
@@ -1145,23 +1312,46 @@ onUnmounted(() => {
           </NSpace>
         </div>
 
-        <div v-if="hasMountedTerminalSession" class="terminal-stack">
+        <div class="terminal-stack" :class="{ 'is-inactive': !currentSession.streamId }">
           <PodShellTerminal
             v-for="session in visibleTerminalSessions"
-            v-show="session.id === currentSession.id && session.streamId"
-            :key="`${session.id}:${session.streamId}`"
+            v-show="session.id === currentSession.id"
+            :key="session.id"
+            :ref="(el) => setTerminalRef(session.id, el)"
             :stream-id="session.streamId"
             :mode="session.kind"
             :active="session.id === currentSession.id"
+            :history-epoch="terminalHistoryEpoch[session.id] ?? 0"
             @end="onTerminalEnd(session.id, $event)"
           />
-        </div>
-
-        <div v-if="!currentSession.streamId" class="terminal-loading">
-          <p>
-            {{ currentSession.status === "reconnecting" ? "正在恢复终端连接…" : "正在建立终端连接…" }}
-          </p>
-          <p v-if="currentSession.error" class="terminal-loading-hint">{{ currentSession.error }}</p>
+          <div
+            v-if="!currentSession.streamId"
+            class="terminal-session-overlay"
+            :class="currentSession.status === 'error' || currentSession.status === 'disconnected' ? 'is-error' : ''"
+          >
+            <template v-if="currentSession.status === 'connecting' || currentSession.status === 'reconnecting'">
+              <p class="terminal-overlay-title">
+                {{ currentSession.status === "reconnecting" ? "正在恢复终端连接…" : "正在建立终端连接…" }}
+              </p>
+              <p v-if="currentSession.error" class="terminal-overlay-hint">{{ currentSession.error }}</p>
+            </template>
+            <template v-else>
+              <p class="terminal-overlay-title">
+                {{ currentSession.status === "error" ? "当前会话暂不可用" : "连接已断开" }}
+              </p>
+              <p v-if="currentSession.error" class="terminal-overlay-hint">{{ currentSession.error }}</p>
+              <p v-if="currentSessionHasHistory" class="terminal-overlay-hint">背景仍保留断开前的交互历史，可保存后用外部编辑器查看。</p>
+              <NSpace v-bind="kfSpace.centeredActions" class="empty-actions">
+                <NButton type="primary" @click="reconnectSessionNow(currentSession.id)">立即重连</NButton>
+                <NButton
+                  secondary
+                  :disabled="!currentSessionHasHistory || historyExportBusy"
+                  @click="exportCurrentSessionHistory('vscode')"
+                >导出历史</NButton>
+                <NButton secondary @click="closeSession(currentSession.id)">关闭会话</NButton>
+              </NSpace>
+            </template>
+          </div>
         </div>
       </section>
 
@@ -1355,6 +1545,25 @@ onUnmounted(() => {
   flex: 1;
   min-width: 0;
 }
+/* 深色 quick-open 卡片上的 Naive Select：避免浅色主题文字/背景撞色 */
+.quick-open-card :deep(.quick-open-select-naive .n-base-selection) {
+  --n-color: color-mix(in srgb, var(--kf-embed-t-canvas) 78%, var(--kf-embed-t-slate)) !important;
+  --n-color-active: color-mix(in srgb, var(--kf-embed-t-canvas) 68%, var(--kf-embed-t-slate)) !important;
+  --n-border: 1px solid var(--kf-border-strong) !important;
+  --n-border-active: 1px solid color-mix(in srgb, var(--kf-primary) 55%, var(--kf-border-strong)) !important;
+  --n-border-hover: 1px solid color-mix(in srgb, var(--kf-primary) 40%, var(--kf-border-strong)) !important;
+  --n-text-color: var(--kf-embed-t-foreground) !important;
+  --n-placeholder-color: var(--kf-embed-t-foreground-subtle) !important;
+  --n-caret-color: var(--kf-embed-t-foreground) !important;
+  --n-arrow-color: var(--kf-embed-t-foreground-subtle) !important;
+  background: color-mix(in srgb, var(--kf-embed-t-canvas) 78%, var(--kf-embed-t-slate)) !important;
+  color: var(--kf-embed-t-foreground) !important;
+}
+.quick-open-card :deep(.quick-open-select-naive .n-base-selection-label),
+.quick-open-card :deep(.quick-open-select-naive .n-base-selection-input),
+.quick-open-card :deep(.quick-open-select-naive .n-base-selection-placeholder) {
+  color: var(--kf-embed-t-foreground) !important;
+}
 .session-item-main-button {
   flex: 1;
   min-width: 0;
@@ -1403,6 +1612,29 @@ onUnmounted(() => {
 .switcher-naive {
   min-width: 120px;
   max-width: min(42vw, 280px);
+}
+/* 深色终端上下文条上的容器/Pod 选择框：强制使用嵌入终端色板 */
+.terminal-context-bar :deep(.switcher-naive .n-base-selection) {
+  --n-color: color-mix(in srgb, var(--kf-embed-t-canvas) 72%, var(--kf-embed-t-slate)) !important;
+  --n-color-active: color-mix(in srgb, var(--kf-embed-t-canvas) 62%, var(--kf-embed-t-slate)) !important;
+  --n-border: 1px solid var(--kf-border-strong) !important;
+  --n-border-active: 1px solid color-mix(in srgb, var(--kf-primary) 55%, var(--kf-border-strong)) !important;
+  --n-border-hover: 1px solid color-mix(in srgb, var(--kf-primary) 40%, var(--kf-border-strong)) !important;
+  --n-text-color: var(--kf-embed-t-foreground) !important;
+  --n-placeholder-color: var(--kf-embed-t-foreground-subtle) !important;
+  --n-caret-color: var(--kf-embed-t-foreground) !important;
+  --n-arrow-color: var(--kf-embed-t-foreground-subtle) !important;
+  background: color-mix(in srgb, var(--kf-embed-t-canvas) 72%, var(--kf-embed-t-slate)) !important;
+  color: var(--kf-embed-t-foreground) !important;
+}
+.terminal-context-bar :deep(.switcher-naive .n-base-selection-label),
+.terminal-context-bar :deep(.switcher-naive .n-base-selection-input),
+.terminal-context-bar :deep(.switcher-naive .n-base-selection-placeholder),
+.terminal-context-bar :deep(.switcher-naive .n-base-selection-overlay) {
+  color: var(--kf-embed-t-foreground) !important;
+}
+.terminal-context-bar :deep(.switcher-naive.n-select--disabled .n-base-selection) {
+  opacity: 0.72;
 }
 .empty-card.n-button {
   height: auto;
@@ -1602,6 +1834,7 @@ onUnmounted(() => {
   align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
+  min-height: 3.25rem;
   padding: 1.1rem 1.25rem 1rem;
   border-bottom: 1px solid var(--kf-border);
   background: color-mix(in srgb, var(--kf-surface-strong) 75%, transparent);
@@ -1775,13 +2008,60 @@ onUnmounted(() => {
 }
 
 .terminal-stack {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
+  background: var(--kf-embed-t-canvas);
+  border-radius: 0 0 20px 20px;
+  overflow: hidden;
+  contain: layout paint;
 }
 
 .terminal-stack :deep(.pod-shell-terminal) {
   flex: 1;
+  min-width: 0;
+}
+
+.terminal-stack.is-inactive :deep(.pod-shell-terminal) {
+  filter: brightness(0.72);
+}
+
+.terminal-session-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  padding: 1.5rem;
+  background: color-mix(in srgb, var(--kf-embed-t-canvas) 62%, transparent);
+  backdrop-filter: blur(2px);
+  color: var(--kf-embed-t-foreground);
+  pointer-events: auto;
+}
+
+.terminal-session-overlay.is-error {
+  background: color-mix(in srgb, var(--kf-embed-t-canvas) 78%, transparent);
+}
+
+.terminal-overlay-title {
+  margin: 0;
+  text-align: center;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--kf-embed-t-foreground);
+}
+
+.terminal-overlay-hint {
+  margin: 0;
+  max-width: min(40rem, 100%);
+  text-align: center;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: var(--kf-embed-t-foreground-subtle);
 }
 
 .terminal-loading,

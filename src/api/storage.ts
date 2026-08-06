@@ -26,3 +26,8 @@ export async function storageGetDiskUsage(): Promise<StorageDiskUsage> {
 export async function storageDeleteSshBackups(): Promise<number> {
   return invoke<number>("storage_delete_ssh_backups");
 }
+
+/** 将文本写入用户选定的绝对路径。 */
+export async function storageWriteTextFile(path: string, content: string): Promise<void> {
+  await invoke("storage_write_text_file", { path, content });
+}

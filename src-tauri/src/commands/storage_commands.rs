@@ -123,6 +123,21 @@ pub fn storage_get_disk_usage() -> CommandResult<StorageDiskUsage> {
     })
 }
 
+/// 将文本写入用户选定的绝对路径（用于终端交互历史等导出）。
+#[tauri::command]
+pub fn storage_write_text_file(path: String, content: String) -> CommandResult<()> {
+    let target = PathBuf::from(&path);
+    if !target.is_absolute() {
+        return Err("path must be absolute".to_string());
+    }
+    if let Some(parent) = target.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(err_str)?;
+        }
+    }
+    std::fs::write(&target, content).map_err(err_str)
+}
+
 /// 删除 ~/.ssh 下由 kube-flow 写入的配置备份文件，返回删除数量。
 #[tauri::command]
 pub fn storage_delete_ssh_backups() -> CommandResult<u32> {

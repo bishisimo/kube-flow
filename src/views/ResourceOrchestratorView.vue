@@ -3,11 +3,13 @@ import { computed, ref, watch } from "vue";
 import {
   NButton,
   NCheckbox,
+  NDropdown,
   NInput,
   NRadio,
   NRadioGroup,
   NSelect,
   NSpace,
+  type DropdownOption,
 } from "naive-ui";
 import { kfSpace } from "../kf";
 import BaseModal from "../components/base/BaseModal.vue";
@@ -104,6 +106,8 @@ const opMessage = ref<string | null>(null);
 const opError = ref<string | null>(null);
 const viewingHistoryItem = ref<ManifestHistoryItem | null>(null);
 const createYamlActive = ref(false);
+const historyPanelOpen = ref(false);
+const nsEditOpen = ref(false);
 const copyDialogVisible = ref(false);
 const diffVisible = ref(false);
 const diffLoading = ref(false);
@@ -171,16 +175,22 @@ const selectedComponentNamespace = computed(() => {
 const manifestsByComponent = computed(() =>
   manifestsByEnv.value.filter((m) => m.component === selectedComponent.value)
 );
-const activeGroupLabel = computed(() => selectedComponent.value);
 const componentOptionsForAssign = computed(() =>
   components.value.filter((name) => name !== selectedManifest.value?.component)
 );
 const componentAssignSelectOptions = computed(() =>
   componentOptionsForAssign.value.map((name) => ({ label: name, value: name }))
 );
-const manifestDraftCount = computed(() =>
-  manifestsByComponent.value.filter((m) => manifestDraftCache.value[m.id] && manifestDraftCache.value[m.id] !== m.yaml).length
-);
+const manifestDraftCount = computed(() => {
+  const draftIds = new Set<string>();
+  for (const m of manifestsByComponent.value) {
+    const draft = manifestDraftCache.value[m.id];
+    if (draft && draft !== m.yaml) draftIds.add(m.id);
+  }
+  const current = selectedManifest.value;
+  if (current && editYaml.value !== current.yaml) draftIds.add(current.id);
+  return draftIds.size;
+});
 const selectedManifest = computed<OrchestratorManifest | null>(
   () => manifests.value.find((m) => m.id === selectedManifestId.value) ?? null
 );
@@ -227,9 +237,26 @@ const componentApplyPlan = computed(() => {
     return a.resource_name.localeCompare(b.resource_name);
   });
 });
-const canOpenCopyDialog = computed(
+const canPushComponent = computed(
   () => Boolean(selectedEnvId.value && selectedComponent.value && environments.value.length > 1)
 );
+const moreMenuOptions = computed<DropdownOption[]>(() => {
+  const options: DropdownOption[] = [
+    { label: "新建资源", key: "create", disabled: !selectedEnvId.value },
+    { label: "应用包", key: "packages" },
+  ];
+  if (selectedManifest.value && !createYamlActive.value) {
+    options.push({
+      label: diffLoading.value ? "查看差异（生成中…）" : "查看差异",
+      key: "diff",
+      disabled: !selectedManifestId.value || diffLoading.value,
+    });
+  }
+  if (selectedComponent.value && selectedComponentResourceCount.value > 0) {
+    options.push({ label: "删除组件", key: "delete-component" });
+  }
+  return options;
+});
 const {
   importLoading,
   importComponent,
@@ -257,19 +284,15 @@ const {
 });
 const {
   applying,
-  applyDialogVisible,
   componentApplyDialogVisible,
   componentApplyItems,
   componentApplyPhase,
   canApplyCurrent,
   canApplyComponent,
-  canOpenApplyDialog,
   componentApplySummary,
   closeComponentApplyDialog,
-  openApplyDialog,
-  closeApplyDialog,
-  onApplyCurrentFromDialog,
-  onApplyComponentFromDialog,
+  onApplyCurrent,
+  openComponentApplyFlow,
   startComponentApplyFromDialog,
 } = useOrchestratorApplyFlow({
   selectedEnvId,
@@ -548,10 +571,96 @@ function confirmDeleteFromContextMenu() {
 }
 
 function hasManifestDraft(manifestId: string): boolean {
-  const draft = manifestDraftCache.value[manifestId];
   const manifest = manifests.value.find((m) => m.id === manifestId);
-  if (!draft || !manifest) return false;
-  return draft !== manifest.yaml;
+  if (!manifest) return false;
+  const draft = manifestDraftCache.value[manifestId];
+  if (draft && draft !== manifest.yaml) return true;
+  if (manifestId === selectedManifestId.value && editYaml.value !== manifest.yaml) return true;
+  return false;
+}
+
+function saveManifestDraftById(manifestId: string): boolean {
+  const manifest = manifests.value.find((m) => m.id === manifestId);
+  if (!manifest || !selectedEnvId.value) return false;
+  const yaml =
+    manifestId === selectedManifestId.value
+      ? editYaml.value
+      : manifestDraftCache.value[manifestId];
+  if (!yaml || yaml === manifest.yaml) return false;
+
+  let parsed: unknown;
+  try {
+    parsed = jsYaml.load(yaml);
+  } catch {
+    return false;
+  }
+  if (!parsed || typeof parsed !== "object") return false;
+  const obj = parsed as Record<string, unknown>;
+  if (typeof obj.apiVersion !== "string" || !obj.apiVersion) return false;
+  if (typeof obj.kind !== "string" || !obj.kind) return false;
+  const metadata =
+    obj.metadata && typeof obj.metadata === "object"
+      ? (obj.metadata as Record<string, unknown>)
+      : null;
+  if (!metadata || typeof metadata.name !== "string" || !metadata.name) return false;
+
+  const identity = parseIdentity(yaml);
+  if (!identity) return false;
+  const ns = getComponentNamespace(selectedEnvId.value, manifest.component);
+  const preparedYaml = rewriteYamlNamespace(yaml, ns, identity.kind);
+  const preparedIdentity = {
+    kind: identity.kind,
+    name: identity.name,
+    namespace: isClusterScopedKind(identity.kind) ? null : ns,
+  };
+  setManifestComponent(manifestId, manifest.component);
+  setManifestIdentity(manifestId, preparedIdentity);
+  saveManifestYaml(manifestId, preparedYaml, "save");
+  delete manifestDraftCache.value[manifestId];
+  if (manifestId === selectedManifestId.value) {
+    editYaml.value = preparedYaml;
+  }
+  return true;
+}
+
+function flushComponentDrafts(): number {
+  let saved = 0;
+  for (const m of manifestsByComponent.value) {
+    if (saveManifestDraftById(m.id)) saved += 1;
+  }
+  return saved;
+}
+
+function onMoreMenuSelect(key: string | number) {
+  switch (key) {
+    case "create":
+      openCreateYamlDialog();
+      break;
+    case "packages":
+      activeView.value = "packages";
+      break;
+    case "diff":
+      loadDiff();
+      break;
+    case "delete-component":
+      if (selectedComponent.value) {
+        openDeleteComponentDialog(selectedComponent.value, selectedComponentResourceCount.value);
+      }
+      break;
+  }
+}
+
+function backToResourcesView() {
+  activeView.value = "resources";
+}
+
+function openCopyComponentDialog() {
+  if (!canPushComponent.value) return;
+  copyDialogVisible.value = true;
+}
+
+function openApplyComponent() {
+  openComponentApplyFlow();
 }
 
 function commitComponentNamespace() {
@@ -831,6 +940,8 @@ function onViewHistory(item: ManifestHistoryItem) {
   viewingHistoryItem.value = item;
 }
 
+defineExpose({ openComponentAssignDialog });
+
 </script>
 
 <template>
@@ -839,380 +950,353 @@ function onViewHistory(item: ManifestHistoryItem) {
       <NSpace v-bind="kfSpace.orchestratorToolbar" class="toolbar-row">
         <div class="toolbar-brand">
           <span class="title">编排中心</span>
-          <span v-if="activeView === 'resources'" class="toolbar-subtitle">
-            {{
-              createYamlActive
-                ? "当前正在编辑新建草稿"
-                : `组件：${activeGroupLabel || "-"}（${manifestsByComponent.length} 资源）`
-            }}
-          </span>
         </div>
-        <NSpace v-bind="kfSpace.viewSwitch" class="view-switch">
-          <NButton
-            size="small"
-            :type="activeView === 'resources' ? 'primary' : 'default'"
-            :secondary="activeView !== 'resources'"
-            @click="activeView = 'resources'"
-          >资源</NButton>
-          <NButton
-            size="small"
-            :type="activeView === 'packages' ? 'primary' : 'default'"
-            :secondary="activeView !== 'packages'"
-            @click="activeView = 'packages'"
-          >应用包</NButton>
-        </NSpace>
-        <NButton
-          v-if="activeView === 'resources'"
-          type="primary"
-          size="small"
-          class="btn-create-naive"
-          :disabled="!selectedEnvId"
-          @click="openCreateYamlDialog"
-        >新建资源</NButton>
-      </NSpace>
-    </header>
-
-    <div v-if="activeView === 'resources'" class="body">
-      <aside class="list">
-        <div class="component-switcher">
-          <div class="env-select-card env-select-card-sidebar">
-            <span class="env-select-label">当前环境</span>
-            <label class="env-select-main">
-              <NSelect
-                v-model:value="selectedEnvId"
-                :options="envSelectOptions"
-                placeholder="选择环境"
-                filterable
-                class="env-select-naive"
-              />
-            </label>
+        <template v-if="activeView === 'resources'">
+          <div class="toolbar-env">
+            <span class="toolbar-env-label">环境</span>
+            <NSelect
+              v-model:value="selectedEnvId"
+              :options="envSelectOptions"
+              placeholder="选择环境"
+              filterable
+              class="toolbar-env-select env-select-naive"
+            />
           </div>
-          <div v-if="!selectedEnvId" class="empty">请先选择环境</div>
-          <template v-else>
-            <section class="orch-sidebar-tier orch-sidebar-tier--component" aria-labelledby="orch-sidebar-component-heading">
-              <div id="orch-sidebar-component-heading" class="env-select-card env-select-card-sidebar">
-                <div class="component-select-toolbar">
-                  <span class="env-select-label">当前组件</span>
-                  <small v-if="manifestDraftCount > 0" class="orch-sidebar-tier-meta">未保存草稿 {{ manifestDraftCount }}</small>
-                </div>
-                <label class="env-select-main">
-                  <NSelect
-                    v-model:value="selectedComponent"
-                    :options="componentSelectOptions"
-                    placeholder="选择组件"
-                    filterable
-                    :disabled="!componentSelectOptions.length"
-                    class="env-select-naive"
-                  />
-                </label>
-                <label v-if="selectedComponent" class="component-namespace-field">
-                  <span class="env-select-label">安装命名空间</span>
-                  <NInput
-                    v-model:value="componentNamespaceDraft"
-                    placeholder="例如 default / prod"
-                    class="env-select-naive"
-                    @blur="commitComponentNamespace"
-                    @keydown.enter.prevent="commitComponentNamespace"
-                  />
-                  <small class="component-namespace-hint">该组件下 namespaced 资源统一安装到此命名空间</small>
-                </label>
-                <div v-if="selectedEnvId && !componentSelectOptions.length" class="empty orch-empty-inline">
-                  当前环境暂无组件，请先新建或导入资源。
-                </div>
-              </div>
-            </section>
-
-            <section class="orch-sidebar-tier orch-sidebar-tier--resources" aria-labelledby="orch-sidebar-resources-heading">
-              <div id="orch-sidebar-resources-heading" class="orch-sidebar-tier-head">
-                <div class="orch-sidebar-tier-head-main">
-                  <span class="orch-sidebar-tier-label">资源</span>
-                  <span class="orch-sidebar-tier-count">{{ manifestsByComponent.length }}</span>
-                </div>
-                <NButton
-                  v-if="selectedComponent && selectedComponentResourceCount > 0"
-                  text
-                  type="error"
-                  size="small"
-                  class="orch-delete-component-icon-btn"
-                  title="删除该应用组件分组及其下的全部编排资源"
-                  aria-label="删除应用组件及其全部编排资源"
-                  @click="openDeleteComponentDialog(selectedComponent, selectedComponentResourceCount)"
-                >
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    aria-hidden="true"
-                  >
-                    <polyline points="3 6 5 6 21 6" />
-                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                    <line x1="10" y1="11" x2="10" y2="17" />
-                    <line x1="14" y1="11" x2="14" y2="17" />
-                  </svg>
-                </NButton>
-              </div>
-              <div class="resource-list-panel">
-                <div
-                  v-for="m in manifestsByComponent"
-                  :key="m.id"
-                  class="item"
-                  :class="{ active: selectedManifestId === m.id }"
-                >
-                  <NButton
-                    quaternary
-                    class="resource-item-main"
-                    @click="onSelectManifest(m.id)"
-                  >
-                    <div class="item-title">
-                      <span class="item-kind">{{ m.resource_kind }}</span>
-                    </div>
-                    <div class="item-name-row">
-                      <strong class="item-name">{{ m.resource_name }}</strong>
-                      <strong v-if="hasManifestDraft(m.id)" class="draft-tag">草稿</strong>
-                    </div>
-                    <div class="item-sub">
-                      <span v-if="m.resource_namespace === null">集群资源</span>
-                      <span v-else>命名空间：{{ selectedComponentNamespace }}</span>
-                    </div>
-                    <div v-if="m.source_file_name" class="item-meta">
-                      <span>{{ m.source_file_name }}#{{ m.source_doc_index ?? 1 }}</span>
-                    </div>
-                  </NButton>
-                  <NButton
-                    text
-                    type="error"
-                    class="resource-item-close"
-                    title="删除资源"
-                    aria-label="删除资源"
-                    @click="openDeleteResourceDialog(m)"
-                  >
-                    ×
-                  </NButton>
-                </div>
-                <div v-if="!manifestsByComponent.length" class="empty empty--tier-muted">当前组件暂无资源</div>
-              </div>
-            </section>
-          </template>
-        </div>
-      </aside>
-
-      <section class="editor-panel">
-        <input
-          ref="importFileInput"
-          type="file"
-          accept=".yaml,.yml"
-          multiple
-          class="import-file-input"
-          @change="onImportFilesSelected"
-        />
-        <div v-if="createYamlActive" class="meta-row">
-          <div class="meta-component-editor">
-            <div class="meta-field">
-              <span>新建资源</span>
-              <strong class="meta-component-name">{{ importComponent || selectedComponent || "default" }}</strong>
-            </div>
-          </div>
-          <NSpace v-bind="kfSpace.metaActions" class="meta-actions">
-            <NButton type="primary" size="small" :loading="importLoading" @click="triggerImportFileSelect">
-              {{ importLoading ? "导入中…" : "导入文件" }}
-            </NButton>
-            <NButton
-              size="small"
-              :disabled="importLoading"
-              @click="importTextDraft = ''; importPreviewItems = []; importSummaryMessage = null"
-            >清空</NButton>
-            <NButton size="small" :disabled="importLoading" @click="closeCreateYamlDialog">关闭</NButton>
-          </NSpace>
-        </div>
-        <div v-else-if="selectedManifest" class="meta-row">
-          <div class="meta-component-editor">
-            <div class="meta-field">
-              <span>当前所属组件</span>
-              <strong class="meta-component-name">{{ selectedManifest.component }}</strong>
-              <NButton
-                text
-                type="primary"
-                size="tiny"
-                class="component-change-trigger"
-                aria-label="变更组件归属"
-                title="变更组件归属"
-                @click="openComponentAssignDialog"
-              >更换</NButton>
-            </div>
-          </div>
-          <NSpace v-bind="kfSpace.metaActions" class="meta-actions">
-            <NButton
-              size="small"
-              secondary
-              :disabled="!selectedManifestId || diffLoading || createYamlActive"
-              :loading="diffLoading"
-              @click="loadDiff"
-            >{{ diffLoading ? "生成中…" : "查看差异" }}</NButton>
-            <NButton
-              size="small"
-              type="primary"
-              :disabled="!selectedManifestId || createYamlActive"
-              @click="onSaveYaml"
-            >保存</NButton>
-            <NButton
-              size="small"
-              :disabled="!canOpenCopyDialog || createYamlActive"
-              @click="copyDialogVisible = true"
-            >复制到其他环境</NButton>
-            <span class="btn-apply-sep" aria-hidden="true" />
-            <NButton
-              size="small"
-              type="primary"
-              :disabled="!canOpenApplyDialog || applying || createYamlActive"
-              :loading="applying"
-              @click="openApplyDialog"
-            >{{ applying ? "应用中…" : "应用到当前环境" }}</NButton>
-            <span class="hint">资源：{{ selectedManifest.resource_kind }}/{{ selectedManifest.resource_name }}</span>
-            <span v-if="selectedManifest.source_file_name" class="hint">
-              来源：{{ selectedManifest.source_file_name }}#{{ selectedManifest.source_doc_index ?? 1 }}
-            </span>
-          </NSpace>
-        </div>
-        <template v-if="createYamlActive">
-          <div class="create-toolbar">
-            <label class="field-label create-field">
-              <span>保存到组件</span>
-              <NInput
-                v-model:value="importComponent"
-                type="text"
-                size="small"
-                class="import-component-naive"
-                placeholder="输入组件名称"
-              />
-            </label>
-            <NCheckbox v-model:checked="importOverwrite" :disabled="importLoading" class="create-overwrite-naive">
-              遇到同名资源时覆盖已有编排资产
-            </NCheckbox>
-            <div class="create-toolbar-actions">
-              <NButton
-                type="primary"
-                size="small"
-                :disabled="!canConfirmImport"
-                :loading="importLoading"
-                @click="onConfirmImport"
-              >
-                {{
-                  importLoading
-                    ? "保存中…"
-                    : importValidItems.length === 1
-                      ? "保存资源"
-                      : `保存 ${importValidItems.length} 个资源`
-                }}
-              </NButton>
-            </div>
-          </div>
-          <CodeEditor
-            v-model:value="importTextDraft"
-            language="yaml"
-            :theme="monacoTheme"
-            :options="editorOptions"
-            class="editor"
-          />
-          <div v-if="importSummaryMessage" class="message message-ok">{{ importSummaryMessage }}</div>
-          <div v-if="opError" class="message message-error">{{ opError }}</div>
-          <div v-if="opMessage" class="message message-ok">{{ opMessage }}</div>
-        </template>
-        <template v-else-if="selectedManifest">
-          <CodeEditor
-            v-model:value="editYaml"
-            language="yaml"
-            :theme="monacoTheme"
-            :options="editorOptions"
-            class="editor"
-          />
-          <div v-if="validationErrors.length" class="message message-error">
-            {{ validationErrors.join("；") }}
-          </div>
-          <div v-if="validationWarnings.length" class="message message-warn">
-            {{ validationWarnings.join("；") }}
-          </div>
-          <div v-if="opError" class="message message-error">{{ opError }}</div>
-          <div v-if="opMessage" class="message message-ok">{{ opMessage }}</div>
-        </template>
-        <div v-else class="editor-empty-state">
-          <div class="editor-empty-icon">YAML</div>
-          <div class="editor-empty-title">还没有打开任何资源</div>
-          <div class="editor-empty-desc">
-            可以从左侧选择一个已有资源继续编辑，或者直接新建一份 YAML 草稿。
-          </div>
-          <NSpace v-bind="kfSpace.editorEmptyActions" class="editor-empty-actions">
-            <NButton type="primary" @click="openCreateYamlDialog">新建资源</NButton>
-            <NButton
-              v-if="manifestsByComponent.length"
-              secondary
-              @click="onSelectManifest(manifestsByComponent[0].id)"
-            >打开第一个资源</NButton>
-          </NSpace>
-        </div>
-      </section>
-
-      <aside class="history">
-        <template v-if="createYamlActive">
-          <div class="history-title">解析预览</div>
-          <div class="copy-tip preview-tip">可以直接编写 YAML，也可以先导入文件到当前草稿。</div>
-          <div v-if="!importPreviewItems.length" class="empty">草稿为空或尚未识别到资源。</div>
-          <div v-else class="create-preview-list">
-            <div
-              v-for="item in importPreviewItems"
-              :key="item.id"
-              class="import-preview-item"
-              :class="{
-                valid: item.valid && !item.conflict && !item.duplicate && item.warnings.length === 0,
-                conflict: item.valid && (item.conflict || item.duplicate || item.warnings.length > 0),
-                invalid: !item.valid,
-              }"
-            >
-              <div class="import-preview-title-row">
-                <span class="import-preview-type">{{ item.valid ? item.kind : "未识别资源" }}</span>
-                <span class="import-preview-doc">文档 #{{ item.docIndex }}</span>
-              </div>
-              <div class="import-preview-name-row">
-                <strong class="import-preview-name">{{ item.valid ? item.name : "请检查 YAML 结构" }}</strong>
-              </div>
-              <div class="import-preview-main">
-                <span>{{ item.valid ? `命名空间：${item.namespace || "default"}` : "当前文档未识别出有效资源" }}</span>
-              </div>
-              <div v-if="item.fileName !== '当前草稿'" class="import-preview-meta">
-                <small class="import-preview-source">来源文件：{{ item.fileName }}</small>
-              </div>
-              <div v-for="(msg, idx) in item.errors" :key="`err-side-${item.id}-${idx}`" class="import-preview-tip error-tip">{{ msg }}</div>
-              <div v-for="(msg, idx) in item.warnings" :key="`warn-side-${item.id}-${idx}`" class="import-preview-tip">
-                {{ msg }}
-              </div>
-            </div>
+          <div class="toolbar-trailing">
+            <NDropdown trigger="click" :options="moreMenuOptions" @select="onMoreMenuSelect">
+              <NButton size="small" secondary>更多</NButton>
+            </NDropdown>
           </div>
         </template>
         <template v-else>
-          <div class="history-title">历史快照</div>
-          <div v-if="!selectedManifest" class="empty">先选择一个资源，或新建 YAML 后再查看这里的内容。</div>
-          <div v-else-if="selectedHistory.length === 0" class="empty">暂无历史</div>
-          <div v-else class="history-list">
-            <NButton
-              v-for="h in selectedHistory"
-              :key="h.id"
-              quaternary
-              block
-              class="history-item"
-              :class="`history-${h.action}`"
-              @click="onViewHistory(h)"
-            >
-              <span>{{ ACTION_LABELS[h.action] ?? h.action }}</span>
-              <span>{{ new Date(h.at).toLocaleString() }}</span>
-            </NButton>
+          <span class="toolbar-subtitle">应用包</span>
+          <div class="toolbar-trailing">
+            <NButton size="small" secondary @click="backToResourcesView">返回资源</NButton>
           </div>
         </template>
-      </aside>
+      </NSpace>
+    </header>
+
+    <div v-if="activeView === 'resources'" class="body-stack">
+      <div v-if="selectedEnvId" class="component-bar">
+        <NSpace v-bind="kfSpace.orchestratorToolbar" class="component-bar-row">
+          <div class="component-bar-field">
+            <span class="component-bar-label">组件</span>
+            <NSelect
+              v-model:value="selectedComponent"
+              :options="componentSelectOptions"
+              placeholder="选择组件"
+              filterable
+              :disabled="!componentSelectOptions.length"
+              class="component-bar-select env-select-naive"
+            />
+          </div>
+          <span v-if="manifestDraftCount > 0" class="draft-pill">未保存 {{ manifestDraftCount }}</span>
+          <template v-if="selectedComponent">
+            <NButton
+              v-if="!nsEditOpen"
+              quaternary
+              size="tiny"
+              class="ns-chip"
+              @click="nsEditOpen = true"
+            >
+              ns: {{ selectedComponentNamespace }}
+            </NButton>
+            <div v-else class="ns-edit-row">
+              <NInput
+                v-model:value="componentNamespaceDraft"
+                placeholder="例如 default / prod"
+                size="small"
+                class="ns-edit-input"
+                @keydown.enter.prevent="commitComponentNamespace(); nsEditOpen = false"
+              />
+              <NButton size="small" @click="commitComponentNamespace(); nsEditOpen = false">确定</NButton>
+              <NButton
+                size="small"
+                secondary
+                @click="componentNamespaceDraft = selectedComponentNamespace; nsEditOpen = false"
+              >取消</NButton>
+            </div>
+          </template>
+          <NSpace v-bind="kfSpace.metaActions" class="component-bar-actions">
+            <NButton
+              type="primary"
+              size="small"
+              :disabled="!canPushComponent || createYamlActive"
+              @click="openCopyComponentDialog"
+            >跨环境拷贝…</NButton>
+            <NButton
+              size="small"
+              secondary
+              :disabled="!canApplyComponent || applying || createYamlActive"
+              :loading="applying"
+              @click="openApplyComponent"
+            >应用此组件</NButton>
+          </NSpace>
+        </NSpace>
+      </div>
+
+      <div
+        class="body"
+        :class="{ 'body--history-open': historyPanelOpen || createYamlActive }"
+      >
+        <aside class="list">
+          <div v-if="!selectedEnvId" class="empty orch-env-empty">请先选择环境</div>
+          <template v-else-if="!selectedComponent">
+            <div class="empty">当前环境暂无组件，请先新建或导入资源。</div>
+          </template>
+          <template v-else>
+            <div class="orch-sidebar-tier-head">
+              <div class="orch-sidebar-tier-head-main">
+                <span class="orch-sidebar-tier-label">资源</span>
+                <span class="orch-sidebar-tier-count">{{ manifestsByComponent.length }}</span>
+              </div>
+            </div>
+            <div class="resource-list-panel">
+              <div
+                v-for="m in manifestsByComponent"
+                :key="m.id"
+                class="item"
+                :class="{ active: selectedManifestId === m.id }"
+              >
+                <NButton
+                  quaternary
+                  class="resource-item-main"
+                  @click="onSelectManifest(m.id)"
+                >
+                  <div class="item-title">
+                    <span class="item-kind">{{ m.resource_kind }}</span>
+                  </div>
+                  <div class="item-name-row">
+                    <strong class="item-name">{{ m.resource_name }}</strong>
+                    <strong v-if="hasManifestDraft(m.id)" class="draft-tag">草稿</strong>
+                  </div>
+                  <div class="item-sub">
+                    <span v-if="m.resource_namespace === null">集群资源</span>
+                    <span v-else>命名空间：{{ selectedComponentNamespace }}</span>
+                  </div>
+                  <div v-if="m.source_file_name" class="item-meta">
+                    <span>{{ m.source_file_name }}#{{ m.source_doc_index ?? 1 }}</span>
+                  </div>
+                </NButton>
+                <NButton
+                  text
+                  type="error"
+                  class="resource-item-close"
+                  title="删除资源"
+                  aria-label="删除资源"
+                  @click="openDeleteResourceDialog(m)"
+                >
+                  ×
+                </NButton>
+              </div>
+              <div v-if="!manifestsByComponent.length" class="empty empty--tier-muted">当前组件暂无资源</div>
+            </div>
+          </template>
+        </aside>
+
+        <section class="editor-panel">
+          <input
+            ref="importFileInput"
+            type="file"
+            accept=".yaml,.yml"
+            multiple
+            class="import-file-input"
+            @change="onImportFilesSelected"
+          />
+          <div v-if="createYamlActive" class="meta-row">
+            <div class="meta-component-editor">
+              <div class="meta-field">
+                <span>新建资源</span>
+                <strong class="meta-component-name">{{ importComponent || selectedComponent || "default" }}</strong>
+              </div>
+            </div>
+            <NSpace v-bind="kfSpace.metaActions" class="meta-actions">
+              <NButton type="primary" size="small" :loading="importLoading" @click="triggerImportFileSelect">
+                {{ importLoading ? "导入中…" : "导入文件" }}
+              </NButton>
+              <NButton
+                size="small"
+                :disabled="importLoading"
+                @click="importTextDraft = ''; importPreviewItems = []; importSummaryMessage = null"
+              >清空</NButton>
+              <NButton size="small" :disabled="importLoading" @click="closeCreateYamlDialog">关闭</NButton>
+            </NSpace>
+          </div>
+          <div v-else-if="selectedManifest" class="meta-row">
+            <div class="meta-component-editor">
+              <div class="meta-field">
+                <span>{{ selectedManifest.resource_kind }}/{{ selectedManifest.resource_name }}</span>
+                <span v-if="selectedManifest.source_file_name" class="hint">
+                  来源：{{ selectedManifest.source_file_name }}#{{ selectedManifest.source_doc_index ?? 1 }}
+                </span>
+              </div>
+            </div>
+            <NSpace v-bind="kfSpace.metaActions" class="meta-actions">
+              <NButton
+                size="small"
+                :type="historyPanelOpen ? 'primary' : 'default'"
+                :secondary="!historyPanelOpen"
+                :disabled="createYamlActive"
+                @click="historyPanelOpen = !historyPanelOpen"
+              >历史</NButton>
+              <NButton
+                size="small"
+                secondary
+                :disabled="!selectedManifestId || diffLoading || createYamlActive"
+                :loading="diffLoading"
+                @click="loadDiff"
+              >{{ diffLoading ? "生成中…" : "差异" }}</NButton>
+              <NButton
+                size="small"
+                type="primary"
+                :disabled="!selectedManifestId || createYamlActive"
+                @click="onSaveYaml"
+              >保存</NButton>
+              <NButton
+                size="small"
+                type="primary"
+                :disabled="!canApplyCurrent || applying || createYamlActive"
+                :loading="applying"
+                @click="onApplyCurrent"
+              >{{ applying ? "应用中…" : "应用此资源" }}</NButton>
+            </NSpace>
+          </div>
+          <template v-if="createYamlActive">
+            <div class="create-toolbar">
+              <label class="field-label create-field">
+                <span>保存到组件</span>
+                <NInput
+                  v-model:value="importComponent"
+                  type="text"
+                  size="small"
+                  class="import-component-naive"
+                  placeholder="输入组件名称"
+                />
+              </label>
+              <NCheckbox v-model:checked="importOverwrite" :disabled="importLoading" class="create-overwrite-naive">
+                遇到同名资源时覆盖已有编排资产
+              </NCheckbox>
+              <div class="create-toolbar-actions">
+                <NButton
+                  type="primary"
+                  size="small"
+                  :disabled="!canConfirmImport"
+                  :loading="importLoading"
+                  @click="onConfirmImport"
+                >
+                  {{
+                    importLoading
+                      ? "保存中…"
+                      : importValidItems.length === 1
+                        ? "保存资源"
+                        : `保存 ${importValidItems.length} 个资源`
+                  }}
+                </NButton>
+              </div>
+            </div>
+            <CodeEditor
+              v-model:value="importTextDraft"
+              language="yaml"
+              :theme="monacoTheme"
+              :options="editorOptions"
+              class="editor"
+            />
+            <div v-if="importSummaryMessage" class="message message-ok">{{ importSummaryMessage }}</div>
+            <div v-if="opError" class="message message-error">{{ opError }}</div>
+            <div v-if="opMessage" class="message message-ok">{{ opMessage }}</div>
+          </template>
+          <template v-else-if="selectedManifest">
+            <CodeEditor
+              v-model:value="editYaml"
+              language="yaml"
+              :theme="monacoTheme"
+              :options="editorOptions"
+              class="editor"
+            />
+            <div v-if="validationErrors.length" class="message message-error">
+              {{ validationErrors.join("；") }}
+            </div>
+            <div v-if="validationWarnings.length" class="message message-warn">
+              {{ validationWarnings.join("；") }}
+            </div>
+            <div v-if="opError" class="message message-error">{{ opError }}</div>
+            <div v-if="opMessage" class="message message-ok">{{ opMessage }}</div>
+          </template>
+          <div v-else class="editor-empty-state">
+            <div class="editor-empty-icon">YAML</div>
+            <div class="editor-empty-title">还没有打开任何资源</div>
+            <div class="editor-empty-desc">
+              可以从左侧选择一个已有资源继续编辑，或者直接新建一份 YAML 草稿。
+            </div>
+            <NSpace v-bind="kfSpace.editorEmptyActions" class="editor-empty-actions">
+              <NButton type="primary" @click="openCreateYamlDialog">新建资源</NButton>
+              <NButton
+                v-if="manifestsByComponent.length"
+                secondary
+                @click="onSelectManifest(manifestsByComponent[0].id)"
+              >打开第一个资源</NButton>
+            </NSpace>
+          </div>
+        </section>
+
+        <aside v-if="historyPanelOpen || createYamlActive" class="history">
+          <template v-if="createYamlActive">
+            <div class="history-title">解析预览</div>
+            <div class="copy-tip preview-tip">可以直接编写 YAML，也可以先导入文件到当前草稿。</div>
+            <div v-if="!importPreviewItems.length" class="empty">草稿为空或尚未识别到资源。</div>
+            <div v-else class="create-preview-list">
+              <div
+                v-for="item in importPreviewItems"
+                :key="item.id"
+                class="import-preview-item"
+                :class="{
+                  valid: item.valid && !item.conflict && !item.duplicate && item.warnings.length === 0,
+                  conflict: item.valid && (item.conflict || item.duplicate || item.warnings.length > 0),
+                  invalid: !item.valid,
+                }"
+              >
+                <div class="import-preview-title-row">
+                  <span class="import-preview-type">{{ item.valid ? item.kind : "未识别资源" }}</span>
+                  <span class="import-preview-doc">文档 #{{ item.docIndex }}</span>
+                </div>
+                <div class="import-preview-name-row">
+                  <strong class="import-preview-name">{{ item.valid ? item.name : "请检查 YAML 结构" }}</strong>
+                </div>
+                <div class="import-preview-main">
+                  <span>{{ item.valid ? `命名空间：${item.namespace || "default"}` : "当前文档未识别出有效资源" }}</span>
+                </div>
+                <div v-if="item.fileName !== '当前草稿'" class="import-preview-meta">
+                  <small class="import-preview-source">来源文件：{{ item.fileName }}</small>
+                </div>
+                <div v-for="(msg, idx) in item.errors" :key="`err-side-${item.id}-${idx}`" class="import-preview-tip error-tip">{{ msg }}</div>
+                <div v-for="(msg, idx) in item.warnings" :key="`warn-side-${item.id}-${idx}`" class="import-preview-tip">
+                  {{ msg }}
+                </div>
+              </div>
+            </div>
+          </template>
+          <template v-else>
+            <div class="history-title">历史快照</div>
+            <div v-if="!selectedManifest" class="empty">先选择一个资源，或新建 YAML 后再查看这里的内容。</div>
+            <div v-else-if="selectedHistory.length === 0" class="empty">暂无历史</div>
+            <div v-else class="history-list">
+              <NButton
+                v-for="h in selectedHistory"
+                :key="h.id"
+                quaternary
+                block
+                class="history-item"
+                :class="`history-${h.action}`"
+                @click="onViewHistory(h)"
+              >
+                <span>{{ ACTION_LABELS[h.action] ?? h.action }}</span>
+                <span>{{ new Date(h.at).toLocaleString() }}</span>
+              </NButton>
+            </div>
+          </template>
+        </aside>
+      </div>
     </div>
 
     <div v-else class="pkg-view-host">
@@ -1225,6 +1309,7 @@ function onViewHistory(item: ManifestHistoryItem) {
         @op-error="opError = $event"
       />
     </div>
+
     <OrchestratorDiffModal
       :visible="diffVisible"
       :loading="diffLoading"
@@ -1233,36 +1318,6 @@ function onViewHistory(item: ManifestHistoryItem) {
       @close="diffVisible = false; diffRows = []; diffNotFound = false"
     />
 
-    <BaseModal
-      :visible="applyDialogVisible"
-      title="选择应用范围"
-      width="520px"
-      @close="closeApplyDialog"
-    >
-      <div class="apply-body">
-        <NButton
-          block
-          class="apply-option"
-          :disabled="!canApplyCurrent || applying"
-          @click="onApplyCurrentFromDialog"
-        >
-          <span class="apply-option-title">应用当前</span>
-          <span class="apply-option-desc">仅应用当前选中的资源 YAML</span>
-        </NButton>
-        <NButton
-          block
-          class="apply-option"
-          :disabled="!canApplyComponent || applying"
-          @click="onApplyComponentFromDialog"
-        >
-          <span class="apply-option-title">应用组件</span>
-          <span class="apply-option-desc">按顺序应用当前组件下全部资源</span>
-        </NButton>
-      </div>
-      <template #footer>
-        <NButton secondary @click="closeApplyDialog">取消</NButton>
-      </template>
-    </BaseModal>
     <BaseModal
       :visible="componentApplyDialogVisible"
       title="应用组件"
@@ -1348,15 +1403,19 @@ function onViewHistory(item: ManifestHistoryItem) {
         </NButton>
       </template>
     </BaseModal>
+
     <OrchestratorCopyDialog
       :visible="copyDialogVisible"
       :selected-env-id="selectedEnvId"
       :selected-component="selectedComponent"
       :environments="environments"
+      :draft-count="manifestDraftCount"
+      :flush-drafts="flushComponentDrafts"
       @close="copyDialogVisible = false"
       @op-message="opMessage = $event"
       @op-error="opError = $event"
     />
+
     <BaseModal
       :visible="componentAssignDialogVisible"
       title="变更组件归属"
@@ -1401,6 +1460,7 @@ function onViewHistory(item: ManifestHistoryItem) {
         </NButton>
       </template>
     </BaseModal>
+
     <BaseModal
       :visible="listDeleteDialogVisible"
       :title="listContextTarget?.type === 'component' ? '确认删除应用组件' : '确认删除资源'"
@@ -1417,7 +1477,7 @@ function onViewHistory(item: ManifestHistoryItem) {
         </div>
         <div v-else class="copy-tip">
           将删除资源
-          <strong>{{ listContextTarget?.type === "resource" ? listContextTarget.label : "" }}</strong>。
+          <strong>{{ listContextTarget?.type === 'resource' ? listContextTarget.label : '' }}</strong>。
         </div>
       </div>
       <template #footer>
@@ -1426,6 +1486,7 @@ function onViewHistory(item: ManifestHistoryItem) {
       </template>
     </BaseModal>
   </div>
+
   <ResourceSnapshotViewer
     :visible="!!viewingHistoryItem"
     :snapshot="viewingHistorySnapshot"

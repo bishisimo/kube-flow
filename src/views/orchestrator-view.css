@@ -277,12 +277,104 @@
   background: var(--kf-danger);
   color: #fff;
 }
+.body-stack {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.toolbar-env {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+.toolbar-env-label {
+  font-size: 0.75rem;
+  color: var(--kf-text-secondary);
+  white-space: nowrap;
+}
+.toolbar-env-select {
+  width: 11.5rem;
+  min-width: 0;
+}
+.toolbar-trailing {
+  margin-left: auto;
+}
+.component-bar {
+  padding: 0.55rem 0.9rem;
+  border-bottom: 1px solid var(--kf-border);
+  background: color-mix(in srgb, var(--kf-bg-soft) 70%, var(--kf-surface-strong));
+}
+.component-bar-row {
+  width: 100%;
+  min-width: 0;
+}
+.component-bar-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+.component-bar-label {
+  font-size: 0.75rem;
+  color: var(--kf-text-secondary);
+  white-space: nowrap;
+}
+.component-bar-select {
+  width: 14rem;
+  min-width: 0;
+}
+.component-bar-actions {
+  margin-left: auto;
+}
+.draft-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 1.5rem;
+  padding: 0 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--kf-warning) 82%, black);
+  background: var(--kf-warning-soft);
+}
+.ns-chip {
+  border: 1px solid var(--kf-border);
+  background: var(--kf-surface-strong);
+  color: var(--kf-text-secondary);
+  border-radius: 999px;
+  font-size: 0.72rem;
+  padding: 0.15rem 0.55rem;
+  cursor: pointer;
+}
+.ns-chip:hover {
+  border-color: color-mix(in srgb, var(--kf-primary) 40%, var(--kf-border));
+  color: var(--kf-text-primary);
+}
+.ns-edit-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.45rem;
+}
+.ns-edit-input {
+  width: 14rem;
+  max-width: 100%;
+}
+.orch-env-empty {
+  padding: 1.5rem 1rem;
+}
 .body {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 260px 1fr 240px;
+  grid-template-columns: 240px minmax(0, 1fr);
   background: var(--kf-bg-soft);
+}
+.body.body--history-open {
+  grid-template-columns: 240px minmax(0, 1fr) 200px;
 }
 .list,
 .history {

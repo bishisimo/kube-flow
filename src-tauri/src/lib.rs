@@ -67,6 +67,7 @@ pub fn run() {
             commands::log_commands::log_clear,
             commands::log_commands::log_delete,
             commands::storage_commands::storage_get_disk_usage,
+            commands::storage_commands::storage_write_text_file,
             commands::storage_commands::storage_delete_ssh_backups,
             commands::env_commands::env_list,
             commands::env_commands::env_add,
