@@ -4,7 +4,6 @@ import { NLayout, NLayoutSider, useDialog } from "naive-ui";
 
 defineOptions({ name: "Main" });
 import { extractErrorMessage } from "../utils/errorMessage";
-import { createStorage } from "../utils/storage";
 import { useEnvStore, readEnvViewState, workbenchPendingNav, setEnvNamespaces, flushEnvViewState } from "../stores/env";
 import EnvBar from "../components/EnvBar.vue";
 import WorkbenchBreadcrumb from "../components/workbench/WorkbenchBreadcrumb.vue";
@@ -15,7 +14,6 @@ import { RESOURCE_GROUPS, RESOURCE_KINDS_FLAT, type ResourceKind } from "../cons
 import { resourceKindMatchesSearch } from "../constants/resourceAliases";
 import {
   WORKBENCH_ACTION_MENU_OFFSET,
-  WORKBENCH_ENV_BAR_COLLAPSED_KEY,
   WORKBENCH_NODE_ALLOC_REFRESH_MS,
   WORKBENCH_NODE_TERMINAL_RESOURCE_KINDS,
   WORKBENCH_SHELL_WORKLOAD_KINDS,
@@ -199,18 +197,6 @@ const {
 
 const sshAuth = useSshAuthStore();
 const strongholdAuth = useStrongholdAuthStore();
-
-const envBarCollapsedStorage = createStorage<boolean>({
-  key: WORKBENCH_ENV_BAR_COLLAPSED_KEY,
-  version: 1,
-  fallback: true,
-  migrate: (old) => old === "1" || old === 1 || old === true,
-});
-const envBarCollapsed = ref(envBarCollapsedStorage.read());
-function setEnvBarCollapsed(v: boolean) {
-  envBarCollapsed.value = v;
-  envBarCollapsedStorage.write(v);
-}
 
 const selectedNamespace = ref<string | null>(null);
 const selectedKind = ref<ResourceKind>("namespaces");
@@ -1911,17 +1897,11 @@ const {
       v-if="openedEnvs.length"
       bordered
       :width="236"
-      :collapsed-width="52"
-      collapse-mode="width"
-      :collapsed="envBarCollapsed"
       content-style="height: 100%; overflow: hidden; background: var(--kf-surface);"
-      @update:collapsed="setEnvBarCollapsed"
     >
       <EnvBar
-        :collapsed="envBarCollapsed"
         :on-reconnect="handleReconnect"
         :on-open-terminal="openEnvironmentTerminal"
-        @toggle-collapsed="setEnvBarCollapsed(!envBarCollapsed)"
       />
     </NLayoutSider>
     <div v-if="openedEnvs.length" class="content">

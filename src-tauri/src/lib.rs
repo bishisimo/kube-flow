@@ -22,13 +22,16 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // 仅发关闭信号并 kill SSH 子进程；不在事件循环线程上 join，避免卡住退出。
+            // 关闭时尽快返回事件循环：隧道清理放到后台线程，避免主线程偶发卡住导致窗口关不掉。
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 if let Some(store) = window
                     .app_handle()
                     .try_state::<crate::kube::KubeClientStore>()
                 {
-                    store.close_all_tunnels();
+                    let store = store.inner().clone();
+                    std::thread::spawn(move || {
+                        store.close_all_tunnels();
+                    });
                 }
             }
         })

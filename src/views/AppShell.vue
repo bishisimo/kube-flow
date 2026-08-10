@@ -14,8 +14,7 @@ import {
 import { NIcon, NMenu, NSpace } from "naive-ui";
 import { kfSpace } from "../kf";
 import type { MenuOption } from "naive-ui";
-import { useEnvStore, hydrateEnvViewStates, flushEnvViewState } from "../stores/env";
-import { flushOrchestratorData } from "../stores/orchestratorPersistence";
+import { useEnvStore, hydrateEnvViewStates } from "../stores/env";
 import { useShellStore } from "../stores/shell";
 import { useLogCenterStore } from "../stores/logCenter";
 import { useSnapshotCenterStore } from "../stores/snapshotCenter";
@@ -118,23 +117,8 @@ function onUseEnv() {
 onMounted(async () => {
   await hydrateEnvViewStates();
   await loadEnvironments();
-
-  try {
-    const { getCurrentWindow } = await import("@tauri-apps/api/window");
-    /**
-     * 关闭前尽量落盘视图状态。不 preventDefault：
-     * Tauri 下 preventDefault 后再 destroy/close 容易导致窗口无法真正退出。
-     * 日常变更已有异步 persist，此处仅为尽力而为。
-     */
-    void getCurrentWindow().onCloseRequested(() => {
-      const id = currentId.value;
-      if (!id) return;
-      void flushEnvViewState(id);
-      void flushOrchestratorData();
-    });
-  } catch {
-    // 非 Tauri 环境（如纯 Web 预览）跳过
-  }
+  // 不在 CloseRequested 里做 flush/invoke：关闭路径上的 IPC 会与主线程隧道清理互相拖死，导致窗口关不掉。
+  // 视图/编排状态已在日常变更时异步落盘。
 });
 
 /** 构造一个返回 NIcon(内联 SVG) 的渲染函数，供 NMenu 的 icon 字段使用。 */

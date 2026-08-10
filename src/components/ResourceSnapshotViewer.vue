@@ -38,10 +38,16 @@ const monacoOptions = {
   lineNumbers: "on",
   scrollBeyondLastLine: false,
   readOnly: true,
+  domReadOnly: true,
+  contextmenu: true,
 };
 
 type ViewMode = "yaml" | "image-diff" | "env-diff";
 const viewMode = ref<ViewMode>("yaml");
+
+/** 最近一次成功复制的目标，用于按钮短时反馈 */
+const copiedKey = ref<string | null>(null);
+let copiedResetTimer: ReturnType<typeof setTimeout> | null = null;
 
 // 镜像双版本视图
 const hasDualView = computed(() => Boolean(props.snapshot?.afterYaml));
@@ -59,6 +65,31 @@ const title = computed(() => props.snapshot?.title || "资源快照");
 const summary = computed(() => props.snapshot?.summary || "");
 const yaml = computed(() => props.snapshot?.yaml || "");
 const afterYaml = computed(() => props.snapshot?.afterYaml || "");
+
+async function copyText(text: string, key: string) {
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+  }
+  copiedKey.value = key;
+  if (copiedResetTimer) clearTimeout(copiedResetTimer);
+  copiedResetTimer = setTimeout(() => {
+    if (copiedKey.value === key) copiedKey.value = null;
+  }, 2000);
+}
+
+function copyLabel(key: string, idle: string): string {
+  return copiedKey.value === key ? "已复制 ✓" : idle;
+}
 
 async function loadEnvDiff() {
   if (!props.envId || !props.snapshot) return;
@@ -181,6 +212,12 @@ watch(
               >与环境对比</NButton>
             </div>
             <NButton
+              v-if="viewMode === 'yaml' && yaml"
+              size="small"
+              secondary
+              @click="copyText(yaml, 'yaml')"
+            >{{ copyLabel("yaml", "复制 YAML") }}</NButton>
+            <NButton
               v-if="showWorkbenchLink && snapshot"
               size="small"
               secondary
@@ -193,12 +230,30 @@ watch(
         <!-- 镜像前后对比 -->
         <div v-if="viewMode === 'image-diff'" class="snapshot-viewer-dual">
           <div class="snapshot-viewer-pane">
-            <div class="snapshot-viewer-pane-label snapshot-viewer-pane-label-before">变更前</div>
+            <div class="snapshot-viewer-pane-label snapshot-viewer-pane-label-before">
+              <span>变更前</span>
+              <NButton
+                size="tiny"
+                quaternary
+                class="snapshot-pane-copy"
+                :disabled="!yaml"
+                @click="copyText(yaml, 'before')"
+              >{{ copyLabel("before", "复制") }}</NButton>
+            </div>
             <CodeEditor :value="yaml" language="yaml" :theme="monacoTheme" :options="monacoOptions" class="snapshot-viewer-editor" />
           </div>
           <div class="snapshot-viewer-divider" />
           <div class="snapshot-viewer-pane">
-            <div class="snapshot-viewer-pane-label snapshot-viewer-pane-label-after">变更后</div>
+            <div class="snapshot-viewer-pane-label snapshot-viewer-pane-label-after">
+              <span>变更后</span>
+              <NButton
+                size="tiny"
+                quaternary
+                class="snapshot-pane-copy"
+                :disabled="!afterYaml"
+                @click="copyText(afterYaml, 'after')"
+              >{{ copyLabel("after", "复制") }}</NButton>
+            </div>
             <CodeEditor :value="afterYaml" language="yaml" :theme="monacoTheme" :options="monacoOptions" class="snapshot-viewer-editor" />
           </div>
         </div>
@@ -213,13 +268,31 @@ watch(
           <NEmpty v-else-if="!envDiffRows.length" class="snapshot-diff-empty" description="暂无对比数据" />
           <template v-else>
             <div class="snapshot-diff-legend">
-              <span class="snapshot-diff-legend-left">快照</span>
+              <span class="snapshot-diff-legend-left">
+                快照
+                <NButton
+                  size="tiny"
+                  quaternary
+                  class="snapshot-pane-copy"
+                  :disabled="!yaml"
+                  @click="copyText(yaml, 'env-snapshot')"
+                >{{ copyLabel("env-snapshot", "复制") }}</NButton>
+              </span>
               <template v-if="diffHasChanges">
                 <NTag size="small" :bordered="false" type="error" class="diff-legend-tag">−{{ diffStats.removed }}</NTag>
                 <NTag size="small" :bordered="false" type="success" class="diff-legend-tag">+{{ diffStats.added }}</NTag>
               </template>
               <NTag v-else size="small" :bordered="false" class="diff-legend-tag">与当前环境一致</NTag>
-              <span class="snapshot-diff-legend-right">当前环境</span>
+              <span class="snapshot-diff-legend-right">
+                当前环境
+                <NButton
+                  size="tiny"
+                  quaternary
+                  class="snapshot-pane-copy"
+                  :disabled="!envDiffLiveYaml"
+                  @click="copyText(envDiffLiveYaml, 'env-live')"
+                >{{ copyLabel("env-live", "复制") }}</NButton>
+              </span>
               <NButton size="tiny" secondary class="snapshot-diff-refresh" @click="loadEnvDiff">刷新</NButton>
             </div>
             <NScrollbar class="snapshot-diff-table-scroll" trigger="hover">
@@ -291,6 +364,12 @@ watch(
           >与环境对比</NButton>
         </div>
         <NButton
+          v-if="viewMode === 'yaml' && yaml"
+          size="small"
+          secondary
+          @click="copyText(yaml, 'yaml')"
+        >{{ copyLabel("yaml", "复制 YAML") }}</NButton>
+        <NButton
           v-if="showWorkbenchLink && snapshot"
           size="small"
           secondary
@@ -301,12 +380,30 @@ watch(
 
     <div v-if="viewMode === 'image-diff'" class="snapshot-viewer-dual">
       <div class="snapshot-viewer-pane">
-        <div class="snapshot-viewer-pane-label snapshot-viewer-pane-label-before">变更前</div>
+        <div class="snapshot-viewer-pane-label snapshot-viewer-pane-label-before">
+          <span>变更前</span>
+          <NButton
+            size="tiny"
+            quaternary
+            class="snapshot-pane-copy"
+            :disabled="!yaml"
+            @click="copyText(yaml, 'before')"
+          >{{ copyLabel("before", "复制") }}</NButton>
+        </div>
         <CodeEditor :value="yaml" language="yaml" :theme="monacoTheme" :options="monacoOptions" class="snapshot-viewer-editor" />
       </div>
       <div class="snapshot-viewer-divider" />
       <div class="snapshot-viewer-pane">
-        <div class="snapshot-viewer-pane-label snapshot-viewer-pane-label-after">变更后</div>
+        <div class="snapshot-viewer-pane-label snapshot-viewer-pane-label-after">
+          <span>变更后</span>
+          <NButton
+            size="tiny"
+            quaternary
+            class="snapshot-pane-copy"
+            :disabled="!afterYaml"
+            @click="copyText(afterYaml, 'after')"
+          >{{ copyLabel("after", "复制") }}</NButton>
+        </div>
         <CodeEditor :value="afterYaml" language="yaml" :theme="monacoTheme" :options="monacoOptions" class="snapshot-viewer-editor" />
       </div>
     </div>
@@ -320,13 +417,31 @@ watch(
       <NEmpty v-else-if="!envDiffRows.length" class="snapshot-diff-empty" description="暂无对比数据" />
       <template v-else>
         <div class="snapshot-diff-legend">
-          <span class="snapshot-diff-legend-left">快照</span>
+          <span class="snapshot-diff-legend-left">
+            快照
+            <NButton
+              size="tiny"
+              quaternary
+              class="snapshot-pane-copy"
+              :disabled="!yaml"
+              @click="copyText(yaml, 'env-snapshot')"
+            >{{ copyLabel("env-snapshot", "复制") }}</NButton>
+          </span>
           <template v-if="diffHasChanges">
             <NTag size="small" :bordered="false" type="error" class="diff-legend-tag">−{{ diffStats.removed }}</NTag>
             <NTag size="small" :bordered="false" type="success" class="diff-legend-tag">+{{ diffStats.added }}</NTag>
           </template>
           <NTag v-else size="small" :bordered="false" class="diff-legend-tag">与当前环境一致</NTag>
-          <span class="snapshot-diff-legend-right">当前环境</span>
+          <span class="snapshot-diff-legend-right">
+            当前环境
+            <NButton
+              size="tiny"
+              quaternary
+              class="snapshot-pane-copy"
+              :disabled="!envDiffLiveYaml"
+              @click="copyText(envDiffLiveYaml, 'env-live')"
+            >{{ copyLabel("env-live", "复制") }}</NButton>
+          </span>
           <NButton size="tiny" secondary class="snapshot-diff-refresh" @click="loadEnvDiff">刷新</NButton>
         </div>
         <NScrollbar class="snapshot-diff-table-scroll" trigger="hover">
@@ -500,10 +615,24 @@ watch(
 }
 .snapshot-viewer-pane-label {
   flex-shrink: 0;
-  padding: 0.35rem 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.35rem 0.75rem 0.35rem 1rem;
   font-size: 0.75rem;
   font-weight: 700;
   letter-spacing: 0.02em;
+}
+.snapshot-pane-copy {
+  font-size: 0.7rem !important;
+  font-weight: 600 !important;
+  height: auto !important;
+  padding: 0.1rem 0.45rem !important;
+  opacity: 0.85;
+}
+.snapshot-pane-copy:hover {
+  opacity: 1;
 }
 .snapshot-viewer-pane-label-before {
   background: var(--kf-warning-soft);
@@ -549,11 +678,15 @@ watch(
 }
 .snapshot-diff-legend-left,
 .snapshot-diff-legend-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
   font-weight: 700;
   color: var(--kf-text-secondary);
   flex: 1;
 }
 .snapshot-diff-legend-right {
+  justify-content: flex-end;
   text-align: right;
 }
 .snapshot-diff-stat {
@@ -616,6 +749,8 @@ watch(
   white-space: pre-wrap;
   word-break: break-all;
   vertical-align: top;
+  user-select: text;
+  -webkit-user-select: text;
 }
 .diff-left {
   border-right: 1px solid var(--kf-border);

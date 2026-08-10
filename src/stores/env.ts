@@ -205,11 +205,16 @@ export function useEnvStore() {
   }
 
   async function closeEnv(id: string) {
+    // 先同步切走 UI 状态，再后台拆客户端；避免 kubeRemoveClient 卡住时侧栏关不掉。
     openedIds.value = openedIds.value.filter((x) => x !== id);
-    await kubeRemoveClient(id);
     if (currentId.value === id) {
       const rest = [...openedIds.value];
       currentId.value = rest.length > 0 ? rest[0] : null;
+    }
+    try {
+      await kubeRemoveClient(id);
+    } catch (e) {
+      console.warn("[env] closeEnv remove client failed:", e);
     }
   }
 
