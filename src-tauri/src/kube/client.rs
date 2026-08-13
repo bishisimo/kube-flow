@@ -202,6 +202,19 @@ fn current_context_from_yaml(yaml: &str) -> Option<String> {
     root.current_context
 }
 
+/// 从本地 kubeconfig 路径构建 Client（供 MCP 独立进程只读路径使用）。
+pub async fn build_local_client(
+    kubeconfig_path: &str,
+    context_name: &str,
+    default_namespace: Option<&str>,
+) -> Result<kube::Client, KubeClientError> {
+    let path = expand_tilde(kubeconfig_path);
+    if !path.exists() {
+        return Err(KubeClientError::FileNotFound(path.display().to_string()));
+    }
+    build_client_from_kubeconfig_path(&path, context_name, default_namespace).await
+}
+
 async fn build_client_from_kubeconfig_path(
     path: &Path,
     context_name: &str,

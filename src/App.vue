@@ -8,6 +8,7 @@ import { useSshAuthStore } from "./stores/sshAuth";
 import { useStrongholdAuthStore } from "./stores/strongholdAuth";
 import SshCredentialDialog from "./components/SshCredentialDialog.vue";
 import StrongholdUnlockDialog from "./components/StrongholdUnlockDialog.vue";
+import McpApprovalDialog from "./components/McpApprovalDialog.vue";
 
 const sshAuth = useSshAuthStore();
 const strongholdAuth = useStrongholdAuthStore();
@@ -62,6 +63,8 @@ function onStrongholdCancel() {
           @confirm="onStrongholdConfirm"
           @cancel="onStrongholdCancel"
         />
+
+        <McpApprovalDialog />
       </NMessageProvider>
     </NDialogProvider>
   </NConfigProvider>

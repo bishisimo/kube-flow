@@ -74,8 +74,9 @@ import { useSnapshotCenterStore } from "../stores/snapshotCenter";
 import { appChromeScheme, setAppChromeScheme, APP_CHROME_OPTIONS } from "../stores/appChromeTheme";
 import SettingsSecurityPanel from "../components/settings/SettingsSecurityPanel.vue";
 import SettingsDataPanel from "../components/settings/SettingsDataPanel.vue";
+import SettingsMcpPanel from "../components/settings/SettingsMcpPanel.vue";
 
-type CategoryId = "appearance" | "workspace" | "debug" | "ssh" | "security" | "data";
+type CategoryId = "appearance" | "workspace" | "debug" | "ssh" | "security" | "data" | "mcp";
 
 const CATEGORIES: { id: CategoryId; label: string; icon: string }[] = [
   { id: "appearance", label: "外观", icon: "🎨" },
@@ -84,6 +85,7 @@ const CATEGORIES: { id: CategoryId; label: string; icon: string }[] = [
   { id: "debug", label: "调试", icon: "🔧" },
   { id: "ssh", label: "SSH 隧道", icon: "📡" },
   { id: "security", label: "安全与凭证", icon: "🔒" },
+  { id: "mcp", label: "MCP", icon: "🤖" },
 ];
 
 const { themeIdLight, themeIdDark, activeYamlThemeId } = useYamlTheme();
@@ -1385,6 +1387,11 @@ const menuOptions = computed<MenuOption[]>(() =>
       <!-- 安全与凭证 -->
       <template v-if="activeCategory === 'security'">
         <SettingsSecurityPanel />
+      </template>
+
+      <!-- MCP -->
+      <template v-if="activeCategory === 'mcp'">
+        <SettingsMcpPanel />
       </template>
 
       <!-- 数据与存储 -->

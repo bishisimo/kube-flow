@@ -1,4 +1,4 @@
-//! Kube-Flow：Tauri 2 + K8s 资源管理。模块分层：config → credentials → env → kube → commands。
+//! Kube-Flow：Tauri 2 + K8s 资源管理。模块分层：config → credentials → env → kube → mcp → commands。
 
 mod commands;
 mod config;
@@ -6,10 +6,16 @@ mod credentials;
 mod debug_log;
 mod env;
 mod kube;
+pub mod mcp;
 mod ssh_askpass;
 mod ssh_sftp;
 
 use tauri::Manager;
+
+/// MCP stdio 入口（供 `kube-flow-mcp` 二进制调用）。
+pub fn run_mcp_stdio() -> Result<(), String> {
+    mcp::run_stdio_blocking()
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -19,6 +25,11 @@ pub fn run() {
         .setup(|app| {
             commands::setup_app_state(app)?;
             let _ = crate::debug_log::init_current_debug_log_path();
+            // 按策略尝试启动 MCP Gateway（失败不阻断 App）
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = crate::mcp::gateway::sync_mcp_services(&handle).await;
+            });
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -179,6 +190,24 @@ pub fn run() {
             commands::credential_commands::stronghold_initialize,
             commands::credential_commands::stronghold_unlock,
             commands::credential_commands::stronghold_lock,
+            // MCP
+            commands::mcp_commands::mcp_get_policy,
+            commands::mcp_commands::mcp_set_policy,
+            commands::mcp_commands::mcp_gateway_status,
+            commands::mcp_commands::mcp_gateway_start,
+            commands::mcp_commands::mcp_gateway_stop,
+            commands::mcp_commands::mcp_service_status,
+            commands::mcp_commands::mcp_service_start,
+            commands::mcp_commands::mcp_service_stop,
+            commands::mcp_commands::mcp_diagnose,
+            commands::mcp_commands::mcp_resolve_binary,
+            commands::mcp_commands::mcp_ensure_token,
+            commands::mcp_commands::mcp_regenerate_token,
+            commands::mcp_commands::mcp_approve,
+            commands::mcp_commands::mcp_deny,
+            commands::mcp_commands::mcp_audit_recent,
+            commands::mcp_commands::mcp_export_client_configs,
+            commands::mcp_commands::mcp_export_cursor_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

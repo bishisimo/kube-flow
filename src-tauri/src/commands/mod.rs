@@ -12,6 +12,7 @@ pub mod env_commands;
 pub mod kube;
 pub mod kube_command_context;
 pub mod log_commands;
+pub mod mcp_commands;
 pub mod orchestrator_commands;
 pub mod storage_commands;
 pub mod terminal_commands;
@@ -47,6 +48,8 @@ pub fn setup_app_state(app: &mut tauri::App) -> Result<(), Box<dyn std::error::E
         .unwrap_or_default();
     app.manage(new_from_settings(&settings));
     app.manage(StrongholdAutoLockController::default());
+    app.manage(std::sync::Arc::new(crate::mcp::McpGatewayState::new()));
+    app.manage(std::sync::Arc::new(crate::mcp::McpHttpState::new()));
 
     Ok(())
 }

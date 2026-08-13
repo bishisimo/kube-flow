@@ -20,7 +20,7 @@ pub mod session_store;
 pub mod terminal_codec;
 mod tunnel;
 
-pub use client::KubeClientStore;
+pub use client::{build_local_client, KubeClientStore};
 pub use resource_alias_cache::{
     ResolvedAliasTarget, ResourceAliasCacheStore, ResourceAliasRefreshResult,
 };

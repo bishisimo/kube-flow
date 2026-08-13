@@ -35,6 +35,37 @@ pub fn app_settings_config_path() -> Option<PathBuf> {
     app_data_dir().map(|p| p.join("app-settings.toml"))
 }
 
+/// MCP 权限策略：`{app_data_dir}/mcp-policy.toml`
+pub fn mcp_policy_config_path() -> Option<PathBuf> {
+    app_data_dir().map(|p| p.join("mcp-policy.toml"))
+}
+
+/// MCP 访问令牌：`{app_data_dir}/mcp.token`
+pub fn mcp_token_path() -> Option<PathBuf> {
+    app_data_dir().map(|p| p.join("mcp.token"))
+}
+
+/// MCP 审计日志：`{app_data_dir}/mcp-audit.jsonl`
+pub fn mcp_audit_log_path() -> Option<PathBuf> {
+    app_data_dir().map(|p| p.join("mcp-audit.jsonl"))
+}
+
+/// MCP App Gateway Unix socket：`{app_data_dir}/mcp.sock`（仅 Unix）。
+#[cfg(unix)]
+pub fn mcp_gateway_sock_path() -> Option<PathBuf> {
+    app_data_dir().map(|p| p.join("mcp.sock"))
+}
+
+/// MCP App Gateway 监听端口文件：`{app_data_dir}/mcp.port`（Windows / 回退）。
+pub fn mcp_gateway_port_path() -> Option<PathBuf> {
+    app_data_dir().map(|p| p.join("mcp.port"))
+}
+
+/// MCP HTTP 服务监听端口文件：`{app_data_dir}/mcp-http.port`。
+pub fn mcp_http_port_path() -> Option<PathBuf> {
+    app_data_dir().map(|p| p.join("mcp-http.port"))
+}
+
 /// 确保应用数据目录存在；若路径不可用则返回 None。
 pub fn ensure_app_data_dir() -> Option<PathBuf> {
     let dir = app_data_dir()?;

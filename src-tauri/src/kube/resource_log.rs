@@ -17,7 +17,8 @@ const POD_LOG_STREAM_END_EVENT: &str = "pod-log-stream-end";
 const EMIT_MAX_BYTES: usize = 16 * 1024;
 const EMIT_MAX_LINES: usize = 64;
 
-/// 获取 Pod 的容器名称列表（含 initContainers），用于日志页面的容器选择。
+/// 获取 Pod 的容器名称列表（含 initContainers），用于日志/终端的容器选择。
+/// 普通容器在前、initContainers 在后，默认选中第一项即为业务容器。
 pub async fn get_pod_container_names(
     client: &Client,
     namespace: &str,
@@ -31,15 +32,15 @@ pub async fn get_pod_container_names(
         .and_then(|s| s.as_object())
         .ok_or_else(|| "Pod spec not found".to_string())?;
     let mut names = Vec::new();
-    if let Some(init) = spec.get("initContainers").and_then(|c| c.as_array()) {
-        for c in init {
+    if let Some(containers) = spec.get("containers").and_then(|c| c.as_array()) {
+        for c in containers {
             if let Some(name) = c.get("name").and_then(|n| n.as_str()) {
                 names.push(name.to_string());
             }
         }
     }
-    if let Some(containers) = spec.get("containers").and_then(|c| c.as_array()) {
-        for c in containers {
+    if let Some(init) = spec.get("initContainers").and_then(|c| c.as_array()) {
+        for c in init {
             if let Some(name) = c.get("name").and_then(|n| n.as_str()) {
                 names.push(name.to_string());
             }
